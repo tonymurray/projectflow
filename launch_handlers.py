@@ -357,7 +357,10 @@ def handle_rsync_backup(path, expanded_path):
         return "Error: rsync_backup requires: source destination"
 
     source = os.path.expanduser(parts[0])
-    destination = parts[1]  # Don't expand - may be remote path
+    destination = parts[1]
+    # Expand ~ for local paths (remote paths use user@host: format)
+    if destination.startswith('~'):
+        destination = os.path.expanduser(destination)
 
     # Safety check for trailing slash
     is_valid, error_msg = _validate_rsync_source(source)
@@ -400,7 +403,10 @@ def handle_rsync_backup_id(path, expanded_path):
 
     identity_file = os.path.expanduser(parts[0])
     source = os.path.expanduser(parts[1])
-    destination = parts[2]  # Don't expand - may be remote path
+    destination = parts[2]
+    # Expand ~ for local paths (remote paths use user@host: format)
+    if destination.startswith('~'):
+        destination = os.path.expanduser(destination)
 
     # Safety check for trailing slash
     is_valid, error_msg = _validate_rsync_source(source)
@@ -444,7 +450,10 @@ def handle_rsync_backup_id_port(path, expanded_path):
     identity_file = os.path.expanduser(parts[0])
     port = parts[1]
     source = os.path.expanduser(parts[2])
-    destination = parts[3]  # Don't expand - may be remote path
+    destination = parts[3]
+    # Expand ~ for local paths (remote paths use user@host: format)
+    if destination.startswith('~'):
+        destination = os.path.expanduser(destination)
 
     # Safety check for trailing slash
     is_valid, error_msg = _validate_rsync_source(source)
