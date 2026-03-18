@@ -2,6 +2,10 @@
 
 A project/activity focused organizer for Linux desktops to collect links to project files, folders, websites, documents, backups, and actions with notes and to-dos. Organize your project workflow with categorized shortcuts in column 1, display a website, PDF, or image in column 2; make project related notes in column 3. The application is designed to be flexible to individual project organization and integrate with existing desktop applications and workflows. You can create individual screens for each of your projects, and switch between them, or open in new windows.
 
+![ProjectFlow dark mode](screenshots/projectflow_darkmode.png)
+
+![ProjectFlow light mode](screenshots/projectflow_lightmode.png)
+
 ## Features
 
 - **Three-column layout** with customizable categories
