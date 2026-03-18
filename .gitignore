@@ -1,0 +1,32 @@
+# User-specific settings (per-machine preferences)
+.projectflow_settings.json
+launch_handlers_custom.json
+
+# Projects directory (synced via Syncthing/Nextcloud, not Git)
+# Contains personal/client-specific project files
+projects
+projects/
+# Legacy configs directory (for migration)
+configs
+configs/
+
+# Notes directory (markdown files, synced via Nextcloud)
+notes
+notes/
+
+# Jupyter/qtconsole runtime config
+.jupyter/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

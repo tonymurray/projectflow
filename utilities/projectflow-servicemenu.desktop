@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Service
+MimeType=all/all;inode/directory;
+Actions=addToProjectFlow
+
+# Installation:
+# 1. Copy this file to ~/.local/share/kio/servicemenus/
+# 2. Edit the Exec line below to point to where you installed add-projectflow-servicemenu.sh
+# Example: Exec=/home/youruser/Programs/projectflow/utilities/add-projectflow-servicemenu.sh %F
+
+[Desktop Action addToProjectFlow]
+Name=Add to ProjectFlow
+Icon=preferences-desktop-icons
+Exec=add-projectflow-servicemenu.sh %F

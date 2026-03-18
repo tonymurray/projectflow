@@ -1,0 +1,34 @@
+{
+  "column_headers": [
+    "Getting Started",
+    "Documentation",
+    "Notes"
+  ],
+  "columns": [
+    [
+      {
+        "Resources": [
+          ["New project", "new_project.json", "projectflowlink"],
+          ["Terminal", "~/", "terminal"]
+        ]
+      },
+      {
+        "Websites": [
+          ["Kagi Science news", "https://news.kagi.com/science/latest", "firefox"],
+          ["GitHub website", "https://github.com/", "browser"]
+          
+        ]
+      },
+      {
+        "Places": [
+          ["Open Home Folder", "~/", "file_manager"],
+          ["Open Documents Folder", "~/Documents", "file_manager"]
+        ]
+      }
+    ],
+    [],
+    []
+  ],
+  "column2_default": "help",
+  "webview_url": "https://news.kagi.com/science/latest"
+}

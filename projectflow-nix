@@ -1,0 +1,3 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p python313 python313Packages.pyqt6 python313Packages.pymupdf python313Packages.pyqt6-webengine python313Packages.qtconsole python313Packages.ipykernel
+exec "$(dirname "$0")/projectflow.py" "$@"

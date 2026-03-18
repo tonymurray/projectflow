@@ -1,0 +1,357 @@
+"""
+Launch Handlers for ProjectFlow
+
+This file defines custom application launchers that extend ProjectFlow's
+built-in launch capabilities. You can add your own handlers here.
+
+Built-in handlers (always available, cannot be overridden):
+  - "browser"      : Opens URLs in your default browser (xdg-open)
+  - "file_manager" : Opens folders in your default file manager (xdg-open)
+  - "editor"       : Opens files in your default editor (xdg-open)
+  - "default"      : Lets the system decide how to open the path (xdg-open)
+
+Handler types:
+  1. Simple handlers (LAUNCH_HANDLERS): Define a command template
+  2. Complex handlers (COMPLEX_HANDLERS): Python functions for advanced logic
+"""
+
+import subprocess
+import shlex
+import shutil
+import os
+
+# =============================================================================
+# TERMINAL CONFIGURATION
+# =============================================================================
+# This will be set by projectflow.py at runtime with the configured terminal
+
+_terminal_config = {
+    "terminal": "konsole",  # Will be overwritten by projectflow.py
+    "workdir_command_builder": None,  # Function to build workdir command
+    "shell_command_builder": None,  # Function to build shell command
+}
+
+
+def set_terminal_config(terminal, workdir_builder, shell_builder):
+    """Set the terminal configuration. Called by projectflow.py at startup."""
+    _terminal_config["terminal"] = terminal
+    _terminal_config["workdir_command_builder"] = workdir_builder
+    _terminal_config["shell_command_builder"] = shell_builder
+
+
+def _get_terminal():
+    """Get the configured terminal name."""
+    return _terminal_config["terminal"]
+
+
+def _build_terminal_workdir_cmd(path):
+    """Build command to open terminal at specified directory."""
+    builder = _terminal_config["workdir_command_builder"]
+    if builder:
+        return builder(path)
+    # Fallback if not configured (shouldn't happen in normal use)
+    terminal = _get_terminal()
+    return [terminal, "--workdir", path]
+
+
+def _build_terminal_shell_cmd(shell_cmd, hold=False):
+    """Build command to run shell command in terminal."""
+    builder = _terminal_config["shell_command_builder"]
+    if builder:
+        return builder(shell_cmd, hold)
+    # Fallback if not configured
+    terminal = _get_terminal()
+    cmd = [terminal]
+    if hold:
+        cmd.append("--hold")
+    cmd.extend(["-e", "bash", "-c", shell_cmd])
+    return cmd
+
+
+# =============================================================================
+# SIMPLE HANDLERS
+# =============================================================================
+# Each handler defines a command to execute. Use {path} as placeholder for the
+# expanded file/folder path.
+#
+# Options:
+#   "command"     : List of command arguments, or string for shell commands
+#   "type"        : "exec" (default) or "shell" (runs through bash -c)
+#   "terminal"    : True to run in terminal
+#   "hold"        : True to keep terminal open after command finishes
+#   "description" : Human-readable description (for documentation)
+
+LAUNCH_HANDLERS = {
+    # Note: "terminal" handler is now handled dynamically in projectflow.py
+    # to use the configured terminal emulator
+
+    # Tail a debug.log file in terminal
+    "tail_log": {
+        "type": "shell",
+        "command": "cd {path} && tail -n 500 -f debug.log",
+        "terminal": True,
+        "hold": True,
+        "description": "Tail debug.log in terminal"
+    },
+
+    # Tail a debug.log file in kitty (--hold keeps window open after Ctrl+C)
+    "kitty_tail": {
+        "command": ["kitty", "--directory", "{path}", "--hold", "tail", "-n", "500", "-f", "debug.log"],
+        "description": "Tail debug.log in kitty"
+    },
+
+    # Run rsync with common excludes (path should be: source destination)
+    "rsync_backup": {
+        "type": "shell",
+        "command": "rsync -avz --delete --exclude='.git/' --exclude='build/' --exclude='node_modules/' {path}",
+        "terminal": True,
+        "hold": True,
+        "description": "Run rsync with common excludes"
+    },
+
+    # Firefox: Open in a new window
+    "firefox": {
+        "command": ["firefox", "--new-window", "{path}"],
+        "description": "Open in Firefox (new window)"
+    },
+
+    # Chrome: Open via Flatpak in a new window
+    "chrome": {
+        "command": ["flatpak", "run", "--command=/app/bin/chrome",
+                    "com.google.Chrome", "--new-window", "{path}"],
+        "description": "Open in Chrome via Flatpak (new window)"
+    },
+}
+
+
+# =============================================================================
+# COMPLEX HANDLERS
+# =============================================================================
+# For handlers that need Python logic beyond simple command templates.
+# Each function receives (path, expanded_path) and should return a status message.
+
+def handle_ssh_session(path, expanded_path):
+    """
+    SSH session handler with cd/command parsing.
+
+    Usage in config:
+        ["Server SSH", "user@host cd /path command args", "ssh_session"]
+
+    Examples:
+        "user@server"                    -> SSH to server, run bash
+        "user@server cd /var/www"        -> SSH, cd to /var/www, run bash
+        "user@server cd /app npm start"  -> SSH, cd to /app, run npm start
+    """
+    parts = expanded_path.split()
+    remote_user, remote_host = parts[0].split("@")
+
+    if "cd" in parts:
+        cd_index = parts.index("cd")
+        remote_dir = parts[cd_index + 1]
+        remote_command = " ".join(parts[cd_index + 2:])
+    else:
+        remote_dir = "~"
+        remote_command = " ".join(parts[1:])
+
+    if not remote_command:
+        remote_command = "bash"
+
+    # Build the remote command safely
+    remote_command_quoted = shlex.quote(f"cd {remote_dir} && {remote_command}")
+
+    # Build shell command that keeps terminal open after SSH exits
+    shell_cmd = f'ssh -t {remote_user}@{remote_host} {remote_command_quoted}; exec bash'
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=False)  # exec bash keeps it open
+    subprocess.Popen(cmd, start_new_session=True)
+
+    return f"SSH connection to {remote_user}@{remote_host}"
+
+
+def handle_terminal_npm(path, expanded_path):
+    """
+    Run npm start in terminal (legacy handler).
+
+    Usage in config:
+        ["My App", "~/projects/myapp", "terminal_npm"]
+    """
+    shell_cmd = f'cd {shlex.quote(expanded_path)} && npm start'
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    subprocess.Popen(cmd, start_new_session=True)
+    return f"npm start in {expanded_path}"
+
+
+def handle_npm(path, expanded_path):
+    """
+    Run npm commands in terminal.
+
+    Usage in config:
+        ["My App", "~/projects/myapp", "npm"]           -> npm start
+        ["My App", "~/projects/myapp dev", "npm"]       -> npm run dev
+        ["My App", "~/projects/myapp build", "npm"]     -> npm run build
+        ["My App", "~/projects/myapp test", "npm"]      -> npm test
+        ["My App", "~/projects/myapp install", "npm"]   -> npm install
+
+    The command is appended after the path, separated by space.
+    """
+    parts = expanded_path.split()
+    project_path = os.path.expanduser(parts[0])
+    npm_cmd = parts[1] if len(parts) > 1 else "start"
+
+    # Map common commands to their npm equivalents
+    if npm_cmd in ("start", "test", "install"):
+        shell_cmd = f'cd {shlex.quote(project_path)} && npm {npm_cmd}'
+    else:
+        shell_cmd = f'cd {shlex.quote(project_path)} && npm run {npm_cmd}'
+
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    subprocess.Popen(cmd, start_new_session=True)
+    return f"npm {npm_cmd} in {project_path}"
+
+
+def handle_directorydev_action(expanded_path, action):
+    """
+    Execute a single directorydev action.
+
+    Args:
+        expanded_path: The path (possibly with npm command appended)
+        action: One of "dolphin", "terminal", "code", "npm"
+    """
+    parts = expanded_path.split()
+    project_path = os.path.expanduser(parts[0])
+    npm_cmd = parts[1] if len(parts) > 1 else "dev"
+
+    if action == "dolphin":
+        subprocess.Popen(["dolphin", project_path], start_new_session=True)
+    elif action == "terminal":
+        cmd = _build_terminal_workdir_cmd(project_path)
+        subprocess.Popen(cmd, start_new_session=True)
+    elif action == "code":
+        subprocess.Popen(["code", project_path], start_new_session=True)
+    elif action == "npm":
+        if npm_cmd in ("start", "test", "install"):
+            shell_cmd = f'cd {shlex.quote(project_path)} && npm {npm_cmd}'
+        else:
+            shell_cmd = f'cd {shlex.quote(project_path)} && npm run {npm_cmd}'
+        cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+        subprocess.Popen(cmd, start_new_session=True)
+
+
+def handle_directorydev(path, expanded_path):
+    """
+    Open a full dev environment: VSCode, terminal, Dolphin, and optionally npm.
+
+    Usage in config:
+        ["My Project", "~/projects/myapp", "directorydev"]           -> Opens 3 apps (no npm)
+        ["My Project", "~/projects/myapp dev", "directorydev"]       -> npm run dev
+        ["My Project", "~/projects/myapp build", "directorydev"]     -> npm run build
+        ["My Project", "~/projects/myapp test", "directorydev"]      -> npm test
+
+    The npm command is appended after the path, separated by space.
+    npm only runs if a recognized command is specified: start, dev, build, test, install, run
+    """
+    parts = expanded_path.split()
+    project_path = os.path.expanduser(parts[0])
+    npm_cmd = parts[1] if len(parts) > 1 else None
+    npm_commands = ("start", "dev", "build", "test", "install", "run")
+    has_npm_cmd = npm_cmd in npm_commands
+
+    # Always open these 3
+    for action in ["code", "terminal", "dolphin"]:
+        handle_directorydev_action(expanded_path, action)
+
+    # Only run npm if a command is specified
+    if has_npm_cmd:
+        handle_directorydev_action(expanded_path, "npm")
+
+    return f"Opened dev environment at {project_path}"
+
+
+def handle_dolphin_tabs(path, expanded_path):
+    """
+    Open multiple folders in Dolphin as tabs.
+
+    Usage in config:
+        ["My Folders", "~/Documents ~/Projects ~/Pictures", "dolphin_tabs"]
+
+    Paths are space-separated. Each path will open as a tab in Dolphin.
+    """
+    # Split by spaces and expand each path
+    paths = expanded_path.split()
+    expanded_paths = [os.path.expanduser(p) for p in paths]
+
+    # Run dolphin with all paths as arguments
+    subprocess.Popen(["dolphin"] + expanded_paths, start_new_session=True)
+
+    return f"Opened {len(expanded_paths)} folders in Dolphin tabs"
+
+
+def handle_rsync_backup_id(path, expanded_path):
+    """
+    Run rsync with SSH identity file.
+
+    Usage in config:
+        ["Backup to Server", "~/.ssh/my_key ~/local/path user@server:/remote/path", "rsync_backup_id"]
+
+    Path format: identity_file source destination
+    The identity file is passed to SSH via -e "ssh -i identity_file"
+    """
+    parts = expanded_path.split()
+    if len(parts) < 3:
+        return "Error: rsync_backup_id requires: identity_file source destination"
+
+    identity_file = os.path.expanduser(parts[0])
+    source = os.path.expanduser(parts[1])
+    destination = parts[2]  # Don't expand - may be remote path
+
+    shell_cmd = (
+        f'rsync -avz -e "ssh -i {shlex.quote(identity_file)}" '
+        f"--delete --exclude='.git/' --exclude='build/' --exclude='node_modules/' "
+        f"{shlex.quote(source)} {shlex.quote(destination)}"
+    )
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    subprocess.Popen(cmd, start_new_session=True)
+
+    return f"rsync with identity to {destination}"
+
+
+def handle_rsync_backup_id_port(path, expanded_path):
+    """
+    Run rsync with SSH identity file and custom port.
+
+    Usage in config:
+        ["Backup to Server", "~/.ssh/my_key 65 ~/local/path user@server:/remote/path", "rsync_backup_id_port"]
+
+    Path format: identity_file port source destination
+    The identity file and port are passed to SSH via -e "ssh -i identity_file -p port"
+    """
+    parts = expanded_path.split()
+    if len(parts) < 4:
+        return "Error: rsync_backup_id_port requires: identity_file port source destination"
+
+    identity_file = os.path.expanduser(parts[0])
+    port = parts[1]
+    source = os.path.expanduser(parts[2])
+    destination = parts[3]  # Don't expand - may be remote path
+
+    shell_cmd = (
+        f'rsync -avz -e "ssh -i {shlex.quote(identity_file)} -p {port}" '
+        f"--delete --exclude='.git/' --exclude='build/' --exclude='node_modules/' "
+        f"{shlex.quote(source)} {shlex.quote(destination)}"
+    )
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    subprocess.Popen(cmd, start_new_session=True)
+
+    return f"rsync with identity (port {port}) to {destination}"
+
+
+# Register complex handlers
+COMPLEX_HANDLERS = {
+    "ssh_session": handle_ssh_session,
+    "ssh_cd_npm": handle_ssh_session,  # Alias - describes the SSH + cd + npm functionality
+    "terminal_npm": handle_terminal_npm,  # Legacy, use "npm" instead
+    "npm": handle_npm,
+    "directorydev": handle_directorydev,
+    "dolphin_tabs": handle_dolphin_tabs,
+    "rsync_backup_id": handle_rsync_backup_id,
+    "rsync_backup_id_port": handle_rsync_backup_id_port,
+}

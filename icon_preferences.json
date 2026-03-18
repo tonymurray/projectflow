@@ -1,0 +1,114 @@
+{
+  "browser": {
+    "icon": "\ud83c\udf10",
+    "name": "Default Browser"
+  },
+  "directorydev": {
+    "icon": "\ud83d\uddc4\ufe0f$_\ud83d\udca0",
+    "name": "Dev Environment"
+  },
+  "chrome": {
+    "icon": "\ud83e\uddff",
+    "name": "Google Chrome"
+  },
+  "chromium": {
+    "icon": "\ud83d\udd35\ud83e\uddff",
+    "name": "Chromium"
+  },
+  "code": {
+    "icon": "\ud83d\udca0",
+    "name": "VS Code"
+  },
+  "com.Google.Chrome": {
+    "icon": "\ud83e\uddff",
+    "name": "Google Chrome"
+  },
+  "dolphin": {
+    "icon": "\ud83d\uddc4\ufe0f",
+    "name": "Dolphin"
+  },
+  "dolphin_tabs": {
+    "icon": "\ud83d\uddc4\ufe0f\ud83d\uddc4\ufe0f",
+    "name": "Dolphin Tabs"
+  },
+  "editor": {
+    "icon": "\u2328\ufe0f",
+    "name": "Editor"
+  },
+  "file_manager": {
+    "icon": "\ud83d\udcc1",
+    "name": "File Manager"
+  },
+  "firefox": {
+    "icon": "\ud83c\udf10",
+    "name": "Firefox"
+  },
+  "waterfox": {
+    "icon": "\ud83e\udd8a",
+    "name": "Firefox"
+  },
+  "gimp": {
+    "icon": "\ud83c\udfa8",
+    "name": "GIMP"
+  },
+  "kate": {
+    "icon": "\ud83d\udcdd",
+    "name": "Kate"
+  },
+  "konsole": {
+    "icon": "$_",
+    "name": "Konsole"
+  },
+  "tail_log": {
+    "icon": "\u25a0",
+    "name": "View Debug Log"
+  },
+  "rsync_backup": {
+    "icon": "\ud83d\udcbe",
+    "name": "Quick Backup"
+  },
+  "ssh_session": {
+    "icon": "\ud83d\udda5\ufe0f>_\u26a1",
+    "name": "SSH Remote"
+  },
+  "libreoffice": {
+    "icon": "\ud83d\udcdd",
+    "name": "LibreOffice"
+  },
+  "link": {
+    "icon": "\ud83d\udd17",
+    "name": "Link"
+  },
+  "npm run start": {
+    "icon": ">_\u26a1",
+    "name": "Dev Server"
+  },
+  "okular": {
+    "icon": "\ud83d\udcd5",
+    "name": "Okular"
+  },
+  "projectflowlink": {
+    "icon": "\u229e",
+    "name": "Config Link"
+  },
+  "spotify": {
+    "icon": "\ud83c\udfbc",
+    "name": "Spotify"
+  },
+  "terminal": {
+    "icon": "\ud83d\udcdf",
+    "name": "Terminal"
+  },
+  "thunderbird": {
+    "icon": "\ud83d\udce9",
+    "name": "Thunderbird"
+  },
+  "zettlr": {
+    "icon": "\u269b\ufe0f",
+    "name": "Zettlr"
+  },
+  "inkscape": {
+    "icon": "\ud83d\udcd0",
+    "name": "Inkscape"
+  }
+}
