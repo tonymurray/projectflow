@@ -14,8 +14,8 @@
       },
       {
         "Websites": [
-          ["Kagi Science news", "https://news.kagi.com/science/latest", "firefox"],
-          ["GitHub website", "https://github.com/", "browser"]
+          ["Wikipedia", "https://www.wikipedia.org/", "firefox"],
+          ["This application's website", "https://github.com/", "browser"]
           
         ]
       },
@@ -30,5 +30,5 @@
     []
   ],
   "column2_default": "help",
-  "webview_url": "https://news.kagi.com/science/latest"
+  "webview_url": "https://www.wikipedia.org/"
 }
