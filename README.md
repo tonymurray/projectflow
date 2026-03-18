@@ -1,6 +1,6 @@
 # ProjectFlow
 
-A project/activity focused organizer for Linux desktops to collect links to project files, folders, websites, documents, backups, and actions with notes and to-dos. Organize your project workflow with categorized shortcuts in column 1, display a website, PDF, or image in column 2; make project related notes in column 3. The application is designed to be flexible to individual project organization and integrate with existing desktop applications and workflows. You can create individual screens for each of your projects.
+A project/activity focused organizer for Linux desktops to collect links to project files, folders, websites, documents, backups, and actions with notes and to-dos. Organize your project workflow with categorized shortcuts in column 1, display a website, PDF, or image in column 2; make project related notes in column 3. The application is designed to be flexible to individual project organization and integrate with existing desktop applications and workflows. You can create individual screens for each of your projects, and switch between them, or open in new windows.
 
 ## Features
 
@@ -171,6 +171,7 @@ Main button opens all apps. The npm button only appears if a command is specifie
 ```json
 ["Backup", "~/.ssh/my_key 2222 ~/local/path user@server:/remote/path", "rsync_backup_id_port"]
 ```
+Trailing slashes on the source folder are not allowed in rsync commands because this can lead to accidental data loss. The rsync command uses options `-avz` (archive, verbose, compress) and `--delete` to keep the destination in sync with source. See the [rsync man page](https://linux.die.net/man/1/rsync) for details. If files are deleted from the destination, backups are saved to `~/.rsync_backups/`. You may wish to monitor this folder periodically to remove obsolete files.
 
 ### Other Handlers
 

@@ -91,35 +91,32 @@ LAUNCH_HANDLERS = {
         "command": "cd {path} && tail -n 500 -f debug.log",
         "terminal": True,
         "hold": True,
-        "description": "Tail debug.log in terminal"
+        "description": "Tail debug.log in terminal",
+        "example": "~/projects/myapp"
     },
 
     # Tail a debug.log file in kitty (--hold keeps window open after Ctrl+C)
     "kitty_tail": {
         "command": ["kitty", "--directory", "{path}", "--hold", "tail", "-n", "500", "-f", "debug.log"],
-        "description": "Tail debug.log in kitty"
+        "description": "Tail debug.log in kitty",
+        "example": "~/projects/myapp"
     },
 
-    # Run rsync with common excludes (path should be: source destination)
-    "rsync_backup": {
-        "type": "shell",
-        "command": "rsync -avz --delete --exclude='.git/' --exclude='build/' --exclude='node_modules/' {path}",
-        "terminal": True,
-        "hold": True,
-        "description": "Run rsync with common excludes"
-    },
+    # Note: rsync_backup is now a complex handler with safety checks (see COMPLEX_HANDLERS)
 
     # Firefox: Open in a new window
     "firefox": {
         "command": ["firefox", "--new-window", "{path}"],
-        "description": "Open in Firefox (new window)"
+        "description": "Open URL in a new Firefox window",
+        "example": "https://wikipedia.org"
     },
 
     # Chrome: Open via Flatpak in a new window
     "chrome": {
         "command": ["flatpak", "run", "--command=/app/bin/chrome",
                     "com.google.Chrome", "--new-window", "{path}"],
-        "description": "Open in Chrome via Flatpak (new window)"
+        "description": "Open URL in Chrome via Flatpak",
+        "example": "https://wikipedia.org"
     },
 }
 
@@ -271,7 +268,7 @@ def handle_dolphin_tabs(path, expanded_path):
     Open multiple folders in Dolphin as tabs.
 
     Usage in config:
-        ["My Folders", "~/Documents ~/Projects ~/Pictures", "dolphin_tabs"]
+    ["My Folders", "~/Documents ~/Projects ~/Pictures", "dolphin_tabs"]
 
     Paths are space-separated. Each path will open as a tab in Dolphin.
     """
@@ -285,15 +282,117 @@ def handle_dolphin_tabs(path, expanded_path):
     return f"Opened {len(expanded_paths)} folders in Dolphin tabs"
 
 
+# =============================================================================
+# RSYNC SAFETY HELPERS
+# =============================================================================
+
+def _validate_rsync_source(source):
+    """
+    Check rsync source path for dangerous patterns.
+
+    With --delete, a trailing slash means "copy contents" which can lead to
+    unintended deletion of files in the destination directory.
+
+    Returns:
+        tuple: (is_valid: bool, error_message: str or None)
+    """
+    if source.rstrip('/') != source:
+        return (False,
+            f"BLOCKED: Source path ends with '/'\n\n"
+            f"Path: {source}\n\n"
+            f"With --delete, this would copy CONTENTS and may delete "
+            f"all other files in the destination directory.\n\n"
+            f"Remove the trailing slash to sync the directory itself.")
+    return (True, None)
+
+
+def _get_rsync_backup_dir(source):
+    """
+    Generate backup directory path for rsync --backup-dir.
+
+    Creates a timestamped directory under ~/.rsync_backups/ where
+    files deleted by --delete will be moved instead of being
+    permanently removed.
+
+    Returns:
+        str: Expanded path like ~/.rsync_backups/myproject_20240315_143025
+    """
+    from datetime import datetime
+    source_name = os.path.basename(source.rstrip('/'))
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return os.path.expanduser(f"~/.rsync_backups/{source_name}_{timestamp}")
+
+
+def _show_rsync_error(error_message):
+    """Show rsync validation error in a dialog (requires PyQt6)."""
+    try:
+        from PyQt6.QtWidgets import QMessageBox, QApplication
+        app = QApplication.instance()
+        if app:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("Rsync Safety Check")
+            msg.setText(error_message)
+            msg.exec()
+    except ImportError:
+        # Fall back to console output if PyQt6 not available
+        print(f"ERROR: {error_message}")
+
+
+def handle_rsync_backup(path, expanded_path):
+    """
+    Run rsync with common excludes and safety checks.
+
+    Usage in config:
+        ["Backup", "~/source ~/destination", "rsync_backup"]
+
+    Path format: source destination
+
+    Safety features:
+    - Blocks trailing slashes on source (dangerous with --delete)
+    - Backs up deleted files to ~/.rsync_backups/
+    """
+    parts = expanded_path.split()
+    if len(parts) < 2:
+        return "Error: rsync_backup requires: source destination"
+
+    source = os.path.expanduser(parts[0])
+    destination = parts[1]  # Don't expand - may be remote path
+
+    # Safety check for trailing slash
+    is_valid, error_msg = _validate_rsync_source(source)
+    if not is_valid:
+        _show_rsync_error(error_msg)
+        return f"Blocked: {error_msg.split(chr(10))[0]}"
+
+    # Generate backup directory for deleted files
+    backup_dir = _get_rsync_backup_dir(source)
+
+    shell_cmd = (
+        f"rsync -avz --delete "
+        f"--backup --backup-dir={shlex.quote(backup_dir)} "
+        f"--exclude='.git/' --exclude='build/' --exclude='node_modules/' "
+        f"{shlex.quote(source)} {shlex.quote(destination)}"
+    )
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    subprocess.Popen(cmd, start_new_session=True)
+
+    return f"rsync to {destination} (backups in {backup_dir})"
+
+
 def handle_rsync_backup_id(path, expanded_path):
     """
-    Run rsync with SSH identity file.
+    Run rsync with SSH identity file and safety checks.
 
     Usage in config:
         ["Backup to Server", "~/.ssh/my_key ~/local/path user@server:/remote/path", "rsync_backup_id"]
 
     Path format: identity_file source destination
     The identity file is passed to SSH via -e "ssh -i identity_file"
+
+    Safety features:
+    - Blocks trailing slashes on source (dangerous with --delete)
+    - Backs up deleted files to ~/.rsync_backups/
     """
     parts = expanded_path.split()
     if len(parts) < 3:
@@ -303,26 +402,40 @@ def handle_rsync_backup_id(path, expanded_path):
     source = os.path.expanduser(parts[1])
     destination = parts[2]  # Don't expand - may be remote path
 
+    # Safety check for trailing slash
+    is_valid, error_msg = _validate_rsync_source(source)
+    if not is_valid:
+        _show_rsync_error(error_msg)
+        return f"Blocked: {error_msg.split(chr(10))[0]}"
+
+    # Generate backup directory for deleted files
+    backup_dir = _get_rsync_backup_dir(source)
+
     shell_cmd = (
         f'rsync -avz -e "ssh -i {shlex.quote(identity_file)}" '
-        f"--delete --exclude='.git/' --exclude='build/' --exclude='node_modules/' "
+        f"--delete --backup --backup-dir={shlex.quote(backup_dir)} "
+        f"--exclude='.git/' --exclude='build/' --exclude='node_modules/' "
         f"{shlex.quote(source)} {shlex.quote(destination)}"
     )
     cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
     subprocess.Popen(cmd, start_new_session=True)
 
-    return f"rsync with identity to {destination}"
+    return f"rsync with identity to {destination} (backups in {backup_dir})"
 
 
 def handle_rsync_backup_id_port(path, expanded_path):
     """
-    Run rsync with SSH identity file and custom port.
+    Run rsync with SSH identity file, custom port, and safety checks.
 
     Usage in config:
         ["Backup to Server", "~/.ssh/my_key 65 ~/local/path user@server:/remote/path", "rsync_backup_id_port"]
 
     Path format: identity_file port source destination
     The identity file and port are passed to SSH via -e "ssh -i identity_file -p port"
+
+    Safety features:
+    - Blocks trailing slashes on source (dangerous with --delete)
+    - Backs up deleted files to ~/.rsync_backups/
     """
     parts = expanded_path.split()
     if len(parts) < 4:
@@ -333,15 +446,70 @@ def handle_rsync_backup_id_port(path, expanded_path):
     source = os.path.expanduser(parts[2])
     destination = parts[3]  # Don't expand - may be remote path
 
+    # Safety check for trailing slash
+    is_valid, error_msg = _validate_rsync_source(source)
+    if not is_valid:
+        _show_rsync_error(error_msg)
+        return f"Blocked: {error_msg.split(chr(10))[0]}"
+
+    # Generate backup directory for deleted files
+    backup_dir = _get_rsync_backup_dir(source)
+
     shell_cmd = (
         f'rsync -avz -e "ssh -i {shlex.quote(identity_file)} -p {port}" '
-        f"--delete --exclude='.git/' --exclude='build/' --exclude='node_modules/' "
+        f"--delete --backup --backup-dir={shlex.quote(backup_dir)} "
+        f"--exclude='.git/' --exclude='build/' --exclude='node_modules/' "
         f"{shlex.quote(source)} {shlex.quote(destination)}"
     )
     cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
     subprocess.Popen(cmd, start_new_session=True)
 
-    return f"rsync with identity (port {port}) to {destination}"
+    return f"rsync with identity (port {port}) to {destination} (backups in {backup_dir})"
+
+
+# =============================================================================
+# COMPLEX HANDLER INFO
+# =============================================================================
+# Metadata for complex handlers (descriptions and examples for the UI)
+
+COMPLEX_HANDLER_INFO = {
+    "ssh_session": {
+        "description": "SSH with cd/command support",
+        "example": "user@host cd /var/www npm start"
+    },
+    "ssh_cd_npm": {
+        "description": "SSH with cd/command support (alias)",
+        "example": "user@host cd /app npm start"
+    },
+    "terminal_npm": {
+        "description": "Run npm start in terminal (legacy)",
+        "example": "~/projects/myapp"
+    },
+    "npm": {
+        "description": "Run npm commands in terminal",
+        "example": "~/projects/myapp dev"
+    },
+    "directorydev": {
+        "description": "Open VSCode + terminal + Dolphin",
+        "example": "~/projects/myapp dev"
+    },
+    "dolphin_tabs": {
+        "description": "Open folders as Dolphin tabs",
+        "example": "~/Documents ~/Projects ~/Pictures"
+    },
+    "rsync_backup": {
+        "description": "Rsync with safety checks",
+        "example": "~/source ~/destination"
+    },
+    "rsync_backup_id": {
+        "description": "Rsync with SSH identity file",
+        "example": "~/.ssh/key ~/local user@server:/remote"
+    },
+    "rsync_backup_id_port": {
+        "description": "Rsync with identity + custom port",
+        "example": "~/.ssh/key 2222 ~/local user@server:/remote"
+    },
+}
 
 
 # Register complex handlers
@@ -352,6 +520,7 @@ COMPLEX_HANDLERS = {
     "npm": handle_npm,
     "directorydev": handle_directorydev,
     "dolphin_tabs": handle_dolphin_tabs,
+    "rsync_backup": handle_rsync_backup,
     "rsync_backup_id": handle_rsync_backup_id,
     "rsync_backup_id_port": handle_rsync_backup_id_port,
 }

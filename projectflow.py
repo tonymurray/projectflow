@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit
 )
-from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint
+from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
 import re
 import urllib.request
@@ -533,7 +533,7 @@ class ProjectFlowApp(QMainWindow):
 
         apply_btn.clicked.connect(lambda: self._apply_settings(dialog))
         cancel_btn.clicked.connect(dialog.reject)
-        ok_btn.clicked.connect(lambda: self._save_settings_and_close(dialog))
+        ok_btn.clicked.connect(lambda: self._save_project_settings_and_close(dialog))
 
         layout.addWidget(button_box)
 
@@ -684,7 +684,7 @@ class ProjectFlowApp(QMainWindow):
         baloo_label = QLabel("Baloo Tags:")
         baloo_label.setStyleSheet(label_style)
         self._settings_baloo = QCheckBox("Enable Baloo tag querying for tagged files")
-        self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", True))
+        self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
 
@@ -1631,7 +1631,8 @@ class ProjectFlowApp(QMainWindow):
             all_handlers[name] = {
                 'type': 'builtin',
                 'data': handler,
-                'description': handler.get('description', '')
+                'description': handler.get('description', ''),
+                'example': handler.get('example', '')
             }
 
         # Add custom handlers (may override built-in)
@@ -1639,16 +1640,20 @@ class ProjectFlowApp(QMainWindow):
             all_handlers[name] = {
                 'type': 'custom',
                 'data': handler,
-                'description': handler.get('description', '')
+                'description': handler.get('description', ''),
+                'example': handler.get('example', '')
             }
 
         # Add complex handlers
         for name in self.complex_handlers.keys():
             if name not in all_handlers:  # Don't override if already in simple handlers
+                # Get info from COMPLEX_HANDLER_INFO
+                info = self.complex_handler_info.get(name, {})
                 all_handlers[name] = {
                     'type': 'complex',
                     'data': None,
-                    'description': f"Python function handler (edit in launch_handlers.py)"
+                    'description': info.get('description', 'Python handler'),
+                    'example': info.get('example', '')
                 }
 
         # Sort and add to list
@@ -1656,6 +1661,7 @@ class ProjectFlowApp(QMainWindow):
             info = all_handlers[name]
             handler_type = info['type']
             description = info['description']
+            example = info['example']
 
             # Format display text
             if handler_type == 'custom':
@@ -1665,7 +1671,14 @@ class ProjectFlowApp(QMainWindow):
             else:  # complex
                 badge = "[Python]"
 
-            display_text = f"{name:<20} {description:<40} {badge}"
+            # Two-line display: name + description + badge on line 1, example on line 2
+            line1 = f"{name:<20} {description:<40} {badge}"
+            if example:
+                line2 = f"{'':20} Example: {example}"
+                display_text = f"{line1}\n{line2}"
+            else:
+                display_text = line1
+
             item = QListWidgetItem(display_text)
             item.setData(Qt.ItemDataRole.UserRole, {'name': name, 'type': handler_type})
 
@@ -1673,6 +1686,10 @@ class ProjectFlowApp(QMainWindow):
             font = QFont("monospace")
             font.setPointSize(10)
             item.setFont(font)
+
+            # Set taller size hint for two-line items
+            if example:
+                item.setSizeHint(QSize(0, 36))
 
             self._handlers_list.addItem(item)
 
@@ -1738,9 +1755,12 @@ class ProjectFlowApp(QMainWindow):
                 source_code = inspect.getsource(func)
             except (TypeError, OSError):
                 source_code = "(Could not retrieve source code)"
+            # Get info from COMPLEX_HANDLER_INFO
+            info = self.complex_handler_info.get(name, {})
             handler_data = {
                 'command': source_code,
-                'description': docstring.strip().split('\n')[0],  # First line of docstring
+                'description': info.get('description', docstring.strip().split('\n')[0]),
+                'example': info.get('example', ''),
                 '_is_python_func': True  # Flag for dialog to adjust height
             }
             readonly = True
@@ -1840,9 +1860,9 @@ class ProjectFlowApp(QMainWindow):
         dialog.setWindowTitle(title)
         # Larger dialog for Python function source code
         if is_python_func:
-            dialog.resize(700, 600)
+            dialog.resize(700, 650)
         else:
-            dialog.resize(500, 380)
+            dialog.resize(500, 420)
 
         layout = QFormLayout(dialog)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -1946,6 +1966,15 @@ class ProjectFlowApp(QMainWindow):
         desc_input.setReadOnly(readonly)
         layout.addRow(desc_label, desc_input)
 
+        # Example
+        example_label = QLabel("Example:")
+        example_label.setStyleSheet(label_style)
+        example_input = QLineEdit(handler_data.get('example', ''))
+        example_input.setStyleSheet(style)
+        example_input.setPlaceholderText("e.g., ~/source ~/destination")
+        example_input.setReadOnly(readonly)
+        layout.addRow(example_label, example_input)
+
         # Buttons - different for readonly vs edit mode
         if readonly:
             button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -1988,6 +2017,10 @@ class ProjectFlowApp(QMainWindow):
             description = desc_input.text().strip()
             if description:
                 new_handler['description'] = description
+
+            example = example_input.text().strip()
+            if example:
+                new_handler['example'] = example
 
             return (new_name, new_handler)
         return None
@@ -2146,6 +2179,12 @@ class ProjectFlowApp(QMainWindow):
 
     def _save_settings_and_close(self, dialog):
         """Save settings and close the dialog"""
+        self._apply_settings(dialog)
+        dialog.accept()
+
+    def _save_project_settings_and_close(self, dialog):
+        """Save project settings, exit edit mode, and close the dialog"""
+        self.edit_mode = False
         self._apply_settings(dialog)
         dialog.accept()
 
@@ -2392,7 +2431,7 @@ class ProjectFlowApp(QMainWindow):
         tag_name = self.get_tag_name_for_config()
 
         # Query Baloo if enabled
-        if self.settings.get('enable_baloo_tags', True):
+        if self.settings.get('enable_baloo_tags', False):
             try:
                 result = subprocess.run(
                     ['baloosearch6', f'tag:{tag_name}'],
@@ -2696,6 +2735,7 @@ class ProjectFlowApp(QMainWindow):
         self.builtin_handlers = {}  # Simple handlers from launch_handlers.py
         self.custom_handlers = {}   # User-defined handlers from JSON
         self.complex_handlers = {}  # Python function handlers (cannot be edited via UI)
+        self.complex_handler_info = {}  # Metadata for complex handlers (descriptions, examples)
 
         # Load built-in handlers from launch_handlers.py
         handlers_file = os.path.join(self.script_dir, "launch_handlers.py")
@@ -2710,6 +2750,8 @@ class ProjectFlowApp(QMainWindow):
                     self.builtin_handlers = handlers_module.LAUNCH_HANDLERS.copy()
                 if hasattr(handlers_module, 'COMPLEX_HANDLERS'):
                     self.complex_handlers = handlers_module.COMPLEX_HANDLERS
+                if hasattr(handlers_module, 'COMPLEX_HANDLER_INFO'):
+                    self.complex_handler_info = handlers_module.COMPLEX_HANDLER_INFO
                 # Configure terminal for complex handlers
                 if hasattr(handlers_module, 'set_terminal_config'):
                     handlers_module.set_terminal_config(
