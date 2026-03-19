@@ -2429,7 +2429,7 @@ class ProjectFlowApp(QMainWindow):
         if 'gnome' in de:
             icon = "text-x-script"
         else:
-            icon = "text-x-script"
+            icon = "preferences-desktop-icons"
 
         content = f"""[Desktop Entry]
 Type=Application
@@ -7178,13 +7178,21 @@ Examples:
         app.setDesktopFileName("projectflow")
 
     # Set window icon with fallback chain for different desktop environments
-    icon_candidates = [
-        "text-x-script",              # Primary icon (works on GNOME and KDE)
-        "preferences-desktop-icons",  # KDE Breeze fallback
-        "application-x-executable",   # Generic app icon
-        "system-run",                 # Generic freedesktop
-        "folder",                     # Universal fallback
-    ]
+    de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+    if 'gnome' in de:
+        icon_candidates = [
+            "text-x-script",              # GNOME icon
+            "application-x-executable",   # Generic app icon
+            "system-run",                 # Generic freedesktop
+            "folder",                     # Universal fallback
+        ]
+    else:
+        icon_candidates = [
+            "preferences-desktop-icons",  # KDE Breeze icon
+            "application-x-executable",   # Generic app icon
+            "system-run",                 # Generic freedesktop
+            "folder",                     # Universal fallback
+        ]
     for icon_name in icon_candidates:
         icon = QIcon.fromTheme(icon_name)
         if not icon.isNull():
