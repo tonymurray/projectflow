@@ -6957,8 +6957,9 @@ StartupNotify=true
             with open(servicemenu_dest, 'w') as f:
                 f.write(content)
 
-            # Make script executable
+            # Make both script and desktop file executable (KDE security requirement)
             os.chmod(script_src, 0o755)
+            os.chmod(servicemenu_dest, 0o755)
 
             QMessageBox.information(self, "Install Service Menu",
                 "Service menu installed successfully!\n\n"
