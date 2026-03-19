@@ -321,6 +321,9 @@ class ProjectFlowApp(QMainWindow):
         # Setup first run (copy examples if needed)
         self.setup_first_run()
 
+        # Install .desktop file for GNOME/COSMIC dock icon support
+        self.ensure_desktop_file_installed()
+
         # Determine which config file to use
         self.current_config_file = self.get_config_file_to_use()
 
@@ -2284,6 +2287,50 @@ class ProjectFlowApp(QMainWindow):
             if os.path.exists(example_note):
                 shutil.copy(example_note, os.path.join(notes_dir, "projectflow.md"))
 
+    def ensure_desktop_file_installed(self):
+        """Install base .desktop file for GNOME/COSMIC dock icon matching.
+
+        On KDE, per-project WM_CLASS naming works for Activities pinning.
+        On GNOME/COSMIC, the app_id must match an installed .desktop file
+        for the dock to show the correct icon.
+        """
+        desktop_file = os.path.expanduser("~/.local/share/applications/projectflow.desktop")
+
+        # Skip if already installed
+        if os.path.exists(desktop_file):
+            return
+
+        # Skip on KDE - it doesn't need this mechanism
+        de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+        if 'kde' in de or 'plasma' in de:
+            return
+
+        script_path = os.path.join(self.script_dir, "projectflow.py")
+
+        # Choose appropriate icon based on DE
+        if 'gnome' in de:
+            icon = "applications-utilities"
+        else:
+            icon = "preferences-desktop-icons"
+
+        content = f"""[Desktop Entry]
+Type=Application
+Name=ProjectFlow
+Comment=Quick Launcher for Projects and Files
+Exec={script_path} %F
+Icon={icon}
+Terminal=false
+Categories=Utility;Development;
+StartupWMClass=projectflow
+StartupNotify=true
+"""
+        os.makedirs(os.path.dirname(desktop_file), exist_ok=True)
+        try:
+            with open(desktop_file, 'w') as f:
+                f.write(content)
+        except Exception as e:
+            print(f"Could not install desktop file: {e}")
+
     def add_to_recent_projects(self, config_path):
         """Add a project to recent projects list (max 10)"""
         if "recent_projects" not in self.settings:
@@ -3123,12 +3170,19 @@ class ProjectFlowApp(QMainWindow):
         self.setWindowTitle(f"{display_name} - ProjectFlow")
         self.setWindowIconText(display_name)
 
-        # Set unique WM_CLASS for KDE to distinguish different projects
-        # This allows each project to be pinned separately in KDE Activities
+        # Set application identification based on desktop environment
+        desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
         app = QApplication.instance()
-        app.setApplicationName(f"ProjectFlow-{display_name}")
-        app.setApplicationDisplayName(f"{display_name} - ProjectFlow")
-        app.setDesktopFileName(f"ProjectFlow-{display_name}")
+
+        if 'kde' in desktop or 'plasma' in desktop:
+            # KDE: Set unique WM_CLASS for per-project pinning in Activities
+            app.setApplicationName(f"ProjectFlow-{display_name}")
+            app.setApplicationDisplayName(f"{display_name} - ProjectFlow")
+            app.setDesktopFileName(f"ProjectFlow-{display_name}")
+        else:
+            # GNOME/COSMIC/others: Keep consistent app_id for dock icon matching
+            # Only change display name - desktopFileName must match installed .desktop file
+            app.setApplicationDisplayName(f"{display_name} - ProjectFlow")
 
         self.setGeometry(100, 100, 1000, 600)
 
@@ -6801,9 +6855,21 @@ Examples:
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("ProjectFlow")
+
+    # Detect desktop environment for app identification strategy
+    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+
     app.setOrganizationName("ProjectFlow")
-    app.setDesktopFileName("ProjectFlow")
+
+    if 'kde' in desktop or 'plasma' in desktop:
+        # KDE: Per-project naming works for Activities pinning
+        app.setApplicationName("ProjectFlow")
+        app.setDesktopFileName("ProjectFlow")
+    else:
+        # GNOME/COSMIC/others: Consistent name for icon matching
+        # Must match the installed projectflow.desktop file's StartupWMClass
+        app.setApplicationName("projectflow")
+        app.setDesktopFileName("projectflow")
 
     # Set window icon with fallback chain for different desktop environments
     icon_candidates = [

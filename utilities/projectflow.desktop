@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ProjectFlow
+Comment=Quick Launcher for Projects and Files
+Exec=projectflow.py %F
+Icon=preferences-desktop-icons
+Terminal=false
+Categories=Utility;Development;
+StartupWMClass=projectflow
+StartupNotify=true
