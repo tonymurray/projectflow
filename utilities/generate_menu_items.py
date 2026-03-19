@@ -7,6 +7,13 @@ This allows KDE to distinguish different projects as separate applications
 import os
 import glob
 
+# Choose appropriate icon based on desktop environment
+de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+if 'gnome' in de:
+    icon = "text-x-script"
+else:
+    icon = "preferences-desktop-icons"
+
 # Get the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)  # Go up from utilities/
@@ -39,7 +46,7 @@ Type=Application
 Name=ProjectFlow ({project_identifier})
 Comment=Quick launcher for {project_identifier}
 Exec={projectflow_path} {project_file}
-Icon=preferences-desktop-icons
+Icon={icon}
 Terminal=false
 Categories=Utility;Development;
 StartupWMClass=ProjectFlow-{project_identifier}

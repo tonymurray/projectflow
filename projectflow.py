@@ -7102,7 +7102,7 @@ Exec={script_path} "{project_path}"
         if 'gnome' in de:
             icon = "text-x-script"
         else:
-            icon = "text-x-script"
+            icon = "preferences-desktop-icons"
 
         content = f"""[Desktop Entry]
 Type=Application
