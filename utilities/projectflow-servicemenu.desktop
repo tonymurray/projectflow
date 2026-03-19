@@ -10,5 +10,5 @@ Actions=addToProjectFlow
 
 [Desktop Action addToProjectFlow]
 Name=Add to ProjectFlow
-Icon=preferences-desktop-icons
+Icon=text-x-script
 Exec=add-projectflow-servicemenu.sh %F

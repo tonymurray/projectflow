@@ -2419,9 +2419,9 @@ class ProjectFlowApp(QMainWindow):
 
         # Choose appropriate icon based on DE
         if 'gnome' in de:
-            icon = "applications-utilities"
+            icon = "text-x-script"
         else:
-            icon = "preferences-desktop-icons"
+            icon = "text-x-script"
 
         content = f"""[Desktop Entry]
 Type=Application
@@ -7044,9 +7044,9 @@ Exec={script_path} "{project_path}"
         # DE-specific icon
         de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
         if 'gnome' in de:
-            icon = "applications-utilities"
+            icon = "text-x-script"
         else:
-            icon = "preferences-desktop-icons"
+            icon = "text-x-script"
 
         content = f"""[Desktop Entry]
 Type=Application
@@ -7123,8 +7123,8 @@ Examples:
 
     # Set window icon with fallback chain for different desktop environments
     icon_candidates = [
-        "preferences-desktop-icons",  # KDE Breeze
-        "text-x-script",              # GNOME script icon
+        "text-x-script",              # Primary icon (works on GNOME and KDE)
+        "preferences-desktop-icons",  # KDE Breeze fallback
         "application-x-executable",   # Generic app icon
         "system-run",                 # Generic freedesktop
         "folder",                     # Universal fallback
