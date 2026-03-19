@@ -3466,20 +3466,21 @@ StartupNotify=true
         self.reset_btn.setVisible(False)  # Will be shown if pinned projects exist
         header_row.addWidget(self.reset_btn)
 
-        # Mode toggle button
-        self.mode_toggle_btn = QPushButton("🕐")
-        self.mode_toggle_btn.setFixedWidth(20)
-        self.mode_toggle_btn.setFixedHeight(20)
-        self.mode_toggle_btn.setToolTip("Show all projects (alphabetical)")
+        # Mode toggle button - shows opposite mode as clickable option
+        self.mode_toggle_btn = QPushButton("All Projects")
+        self.mode_toggle_btn.setToolTip("Switch to alphabetical view")
         self.mode_toggle_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: transparent;
+                background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_muted')};
-                border: none;
-                font-size: 14px;
+                border: 1px solid #cccccc;
+                border-radius: 3px;
+                font-size: 11px;
+                padding: 3px 8px;
             }}
             QPushButton:hover {{
-                color: {self.t('fg_primary')};
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
             }}
         """)
         self.mode_toggle_btn.clicked.connect(self.toggle_projects_mode)
@@ -3505,37 +3506,33 @@ StartupNotify=true
 
     def toggle_projects_mode(self):
         """Toggle between recent and alphabetical project modes"""
+        subtle_btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_muted')};
+                border: 1px solid #cccccc;
+                border-radius: 3px;
+                font-size: 11px;
+                padding: 3px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
         if self.projects_mode == 'recent':
             self.projects_mode = 'alphabetical'
             self.projects_header_label.setText("All Projects")
-            self.mode_toggle_btn.setToolTip("Show recent projects")
-            self.mode_toggle_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent;
-                    color: {self.t('fg_link')};
-                    border: none;
-                    font-size: 14px;
-                }}
-                QPushButton:hover {{
-                    color: {self.t('fg_primary')};
-                }}
-            """)
+            self.mode_toggle_btn.setText("Recent Projects")
+            self.mode_toggle_btn.setToolTip("Switch to recent projects view")
+            self.mode_toggle_btn.setStyleSheet(subtle_btn_style)
             self.reset_btn.setVisible(False)
         else:
             self.projects_mode = 'recent'
             self.projects_header_label.setText("Recent Projects")
-            self.mode_toggle_btn.setToolTip("Show all projects (alphabetical)")
-            self.mode_toggle_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent;
-                    color: {self.t('fg_muted')};
-                    border: none;
-                    font-size: 14px;
-                }}
-                QPushButton:hover {{
-                    color: {self.t('fg_primary')};
-                }}
-            """)
+            self.mode_toggle_btn.setText("All Projects")
+            self.mode_toggle_btn.setToolTip("Switch to alphabetical view")
+            self.mode_toggle_btn.setStyleSheet(subtle_btn_style)
         self.populate_projects()
 
     def populate_projects(self):
