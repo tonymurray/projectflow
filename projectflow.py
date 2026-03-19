@@ -775,6 +775,14 @@ class ProjectFlowApp(QMainWindow):
         upgrade_btn.clicked.connect(self.check_for_upgrade)
         actions_layout.addWidget(upgrade_btn)
 
+        # Install KDE service menu button (only show on KDE)
+        if self.detect_desktop_environment() == 'kde':
+            servicemenu_btn = QPushButton("📂 Install Dolphin Service Menu")
+            servicemenu_btn.setStyleSheet(action_btn_style)
+            servicemenu_btn.setToolTip("Install 'Add to ProjectFlow' right-click menu in Dolphin")
+            servicemenu_btn.clicked.connect(self.install_kde_servicemenu)
+            actions_layout.addWidget(servicemenu_btn)
+
         actions_layout.addStretch()
         layout.addRow(actions_label, actions_layout)
 
@@ -6912,6 +6920,53 @@ StartupNotify=true
         except Exception:
             pass
         return "unknown"
+
+    def install_kde_servicemenu(self):
+        """Install the KDE Dolphin service menu for 'Add to ProjectFlow' functionality"""
+        try:
+            # Source files
+            servicemenu_src = os.path.join(self.script_dir, "utilities", "projectflow-servicemenu.desktop")
+            script_src = os.path.join(self.script_dir, "utilities", "add-projectflow-servicemenu.sh")
+
+            # Check source files exist
+            if not os.path.exists(servicemenu_src):
+                QMessageBox.warning(self, "Install Service Menu",
+                    f"Service menu file not found:\n{servicemenu_src}")
+                return
+            if not os.path.exists(script_src):
+                QMessageBox.warning(self, "Install Service Menu",
+                    f"Service menu script not found:\n{script_src}")
+                return
+
+            # Destination directory
+            servicemenu_dir = os.path.expanduser("~/.local/share/kio/servicemenus")
+            os.makedirs(servicemenu_dir, exist_ok=True)
+
+            # Read and modify the desktop file to point to the correct script path
+            with open(servicemenu_src, 'r') as f:
+                content = f.read()
+
+            # Update the Exec line to use the absolute path
+            content = content.replace(
+                "Exec=add-projectflow-servicemenu.sh %F",
+                f"Exec={script_src} %F"
+            )
+
+            # Write to destination
+            servicemenu_dest = os.path.join(servicemenu_dir, "projectflow-servicemenu.desktop")
+            with open(servicemenu_dest, 'w') as f:
+                f.write(content)
+
+            # Make script executable
+            os.chmod(script_src, 0o755)
+
+            QMessageBox.information(self, "Install Service Menu",
+                "Service menu installed successfully!\n\n"
+                "You can now right-click files/folders in Dolphin\n"
+                "and select 'Add to ProjectFlow'.")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Install Service Menu", f"Installation failed:\n{str(e)}")
 
     def check_for_upgrade(self):
         """Check for updates and upgrade if available"""
