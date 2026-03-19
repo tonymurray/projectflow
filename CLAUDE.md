@@ -69,6 +69,8 @@ User preferences are stored in `.projectflow_settings.json`:
 - `open_note_external`: External markdown editor command (e.g., `"zettlr"`, `"code"`, `"kate"`). When set, adds a 📝 button to the notepad toolbar that opens the current note's markdown file in this editor.
 - `enable_baloo_tags`: Enable/disable Baloo tag querying for tagged files (default: `true`). Set to `false` on non-KDE systems.
 - `terminal`: External terminal application (default: auto-detected based on desktop environment). Used by terminal-related handlers and the Console viewer's "External" button. Leave empty for auto-detection.
+- `editor`: Default code/text editor (default: auto-detected based on desktop environment). Used by `directorydev` handler. Leave empty for auto-detection. Auto-detection: KDE→kate, GNOME→gedit, XFCE→mousepad, etc.
+- `file_manager`: Default file manager (default: auto-detected based on desktop environment). Used by `directorydev` and `dolphin_tabs` handlers. Leave empty for auto-detection. Auto-detection: KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.
 
 ### Per-Config Options
 
@@ -260,13 +262,15 @@ Custom handlers override built-in handlers with the same name. Format:
 ("Server", "user@host cd /app npm start", "ssh_session")    # SSH, cd, run command
 ```
 
-`directorydev` - Open full dev environment (Dolphin + terminal + VSCode, optionally npm):
+`directorydev` - Open full dev environment (file manager + terminal + editor, optionally npm):
 ```python
 ("My Project", "~/projects/myapp", "directorydev")           # Opens 3 apps (no npm)
 ("My Project", "~/projects/myapp dev", "directorydev")       # Also runs npm run dev
 ("My Project", "~/projects/myapp build", "directorydev")     # Also runs npm run build
 ("My Project", "~/projects/myapp test", "directorydev")      # Also runs npm test
 ```
+
+Uses the configured `editor` and `file_manager` settings (auto-detected if not set).
 
 The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠) to the right of the main button allow opening each app separately. The npm button (⚡) only appears if a recognized command is specified: start, dev, build, test, install, run.
 
@@ -367,7 +371,9 @@ Access via the ⚙️ button in the footer. The dialog has five tabs:
 - **Theme**: Dropdown to select "System", "Light", or "Dark"
 - **PDF Viewer**: Path to external PDF viewer application
 - **Note Editor**: Command for external markdown editor
-- **Terminal**: Terminal application for console external button
+- **Terminal**: Terminal application for console external button (auto-detected if empty)
+- **Editor**: Default code/text editor for directorydev handler (auto-detected if empty)
+- **File Manager**: Default file manager for directorydev handler (auto-detected if empty)
 - **Notes Folder**: Path where markdown notes are stored
 - **Enable Baloo Tags**: Checkbox to enable/disable KDE Baloo tag integration
 - **Joplin Token**: API token for Joplin Web Clipper sync
@@ -459,24 +465,3 @@ When maintaining this codebase:
 4. **Config organization**: Keep all configuration files in the `projects/` directory for clarity and to separate code from configuration.
 
 5. **Remove duplicates**: If multiple config files are identical, consolidate to a single source of truth.
-
-## Potential Improvements
-
-### Make File Manager Agnostic (like terminal)
-
-Similar to the terminal-agnostic changes, the app currently has hardcoded "dolphin" references that should be made configurable:
-
-1. **Add `detect_default_file_manager()`**: Auto-detect based on desktop environment (KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.)
-2. **Add `file_manager` setting**: Allow users to configure their preferred file manager
-3. **Update handlers**: `dolphin_tabs`, `directorydev` action for "dolphin"
-4. **Config migration needed**: Once-off find/replace in config files for:
-   - Handler/app names: `"dolphin"` → `"file_manager"`
-   - Display labels containing "Dolphin" → more generic names
-
-### Config Migration Tasks
-
-After handler renames, existing config files may need updating:
-- `"konsoles"` → `"ssh_session"` or `"ssh_cd_npm"`
-- `"konsolelog"` → `"tail_log"`
-- `"konsolersync"` → `"rsync_backup"`
-- Display labels referencing "Konsole" → "Terminal"

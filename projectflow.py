@@ -669,6 +669,51 @@ class ProjectFlowApp(QMainWindow):
         self._settings_terminal.setToolTip(f"Terminal used for handlers. Leave empty to auto-detect (currently: {detected})")
         layout.addRow(terminal_label, self._settings_terminal)
 
+        # Editor
+        editor_label = QLabel("Editor:")
+        editor_label.setStyleSheet(label_style)
+        self._settings_editor = QComboBox()
+        self._settings_editor.setEditable(True)
+        editor_options = [
+            "",  # Empty = auto-detect
+            "code", "codium", "kate", "gedit", "mousepad", "pluma", "xed",
+            "featherpad", "leafpad", "geany", "sublime", "atom",
+            "vim", "nvim", "emacs", "nano"
+        ]
+        self._settings_editor.addItems(editor_options)
+        current_editor = self.settings.get("editor", "")
+        idx = self._settings_editor.findText(current_editor)
+        if idx >= 0:
+            self._settings_editor.setCurrentIndex(idx)
+        else:
+            self._settings_editor.setCurrentText(current_editor)
+        self._settings_editor.setStyleSheet(input_style)
+        detected_editor = self.detect_default_editor()
+        self._settings_editor.setToolTip(f"Editor for directorydev handler. Leave empty to auto-detect (currently: {detected_editor})")
+        layout.addRow(editor_label, self._settings_editor)
+
+        # File Manager
+        fm_label = QLabel("File Manager:")
+        fm_label.setStyleSheet(label_style)
+        self._settings_file_manager = QComboBox()
+        self._settings_file_manager.setEditable(True)
+        fm_options = [
+            "",  # Empty = auto-detect
+            "dolphin", "nautilus", "thunar", "nemo", "caja",
+            "pcmanfm", "pcmanfm-qt", "cosmic-files"
+        ]
+        self._settings_file_manager.addItems(fm_options)
+        current_fm = self.settings.get("file_manager", "")
+        idx = self._settings_file_manager.findText(current_fm)
+        if idx >= 0:
+            self._settings_file_manager.setCurrentIndex(idx)
+        else:
+            self._settings_file_manager.setCurrentText(current_fm)
+        self._settings_file_manager.setStyleSheet(input_style)
+        detected_fm = self.detect_default_file_manager()
+        self._settings_file_manager.setToolTip(f"File manager for directorydev handler. Leave empty to auto-detect (currently: {detected_fm})")
+        layout.addRow(fm_label, self._settings_file_manager)
+
         # Notes Folder
         notes_label = QLabel("Notes Folder:")
         notes_label.setStyleSheet(label_style)
@@ -1098,19 +1143,19 @@ class ProjectFlowApp(QMainWindow):
                     self._rename_category_in_config(col_idx, category_name, new_name)
                 self._refresh_column_tree(tree, col_idx)
 
-    def _show_item_edit_dialog(self, col_idx, category_name, item_data, tree):
+    def _show_item_edit_dialog(self, col_idx, category_name, item_data, tree=None):
         """Show dialog for adding/editing an item"""
         is_new = item_data is None
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Item" if is_new else "Edit Item")
-        dialog.resize(450, 200)
+        dialog.resize(450, 280)
 
         layout = QFormLayout(dialog)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
         input_style = f"""
-            QLineEdit, QComboBox {{
+            QLineEdit, QComboBox, QPlainTextEdit {{
                 background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
@@ -1128,15 +1173,16 @@ class ProjectFlowApp(QMainWindow):
         name_input.setPlaceholderText("Display name")
         layout.addRow(name_label, name_input)
 
-        # Path field with browse
-        path_label = QLabel("Path:")
+        # Path field with browse - multi-line
+        path_label = QLabel("Path(s)/Folders:")
         path_label.setStyleSheet(label_style)
-        path_layout = QHBoxLayout()
-        path_input = QLineEdit(item_data.get("path", "") if item_data else "")
+        path_layout = QVBoxLayout()
+        path_input = QPlainTextEdit(item_data.get("path", "") if item_data else "")
         path_input.setStyleSheet(input_style)
-        path_input.setPlaceholderText("File path, folder path, or URL")
+        path_input.setPlaceholderText("File path, folder path, or URL (one per line for multiple)")
+        path_input.setMaximumHeight(80)
         path_browse = QPushButton("Browse")
-        path_browse.clicked.connect(lambda: self._browse_file_or_folder(path_input))
+        path_browse.clicked.connect(lambda: self._browse_file_or_folder_multiline(path_input))
         path_layout.addWidget(path_input)
         path_layout.addWidget(path_browse)
         layout.addRow(path_label, path_layout)
@@ -1196,7 +1242,7 @@ class ProjectFlowApp(QMainWindow):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_name = name_input.text().strip()
-            new_path = path_input.text().strip()
+            new_path = path_input.toPlainText().strip()
             new_app = app_combo.currentText().strip()
 
             if new_name and new_path:
@@ -1204,7 +1250,10 @@ class ProjectFlowApp(QMainWindow):
                     self._add_item_to_config(col_idx, category_name, new_name, new_path, new_app)
                 else:
                     self._update_item_in_config(col_idx, category_name, item_data.get("index"), new_name, new_path, new_app)
-                self._refresh_column_tree(tree, col_idx)
+                if tree is not None:
+                    self._refresh_column_tree(tree, col_idx)
+                else:
+                    self.refresh_projects()
 
     def _browse_file_or_folder(self, line_edit):
         """Open a dialog to browse for file or folder"""
@@ -1226,6 +1275,39 @@ class ProjectFlowApp(QMainWindow):
             )
             if folder_path:
                 line_edit.setText(folder_path)
+
+    def _browse_file_or_folder_multiline(self, text_edit):
+        """Open a dialog to browse for file or folder, appending to QPlainTextEdit"""
+        # First try file dialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select File or cancel to select folder",
+            os.path.expanduser("~"),
+            "All Files (*)"
+        )
+        if file_path:
+            current = text_edit.toPlainText()
+            if current and not current.endswith('\n'):
+                text_edit.setPlainText(current + '\n' + file_path)
+            elif current:
+                text_edit.setPlainText(current + file_path)
+            else:
+                text_edit.setPlainText(file_path)
+        else:
+            # If cancelled, try folder dialog
+            folder_path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Folder",
+                os.path.expanduser("~")
+            )
+            if folder_path:
+                current = text_edit.toPlainText()
+                if current and not current.endswith('\n'):
+                    text_edit.setPlainText(current + '\n' + folder_path)
+                elif current:
+                    text_edit.setPlainText(current + folder_path)
+                else:
+                    text_edit.setPlainText(folder_path)
 
     def _add_category_to_config(self, col_idx, category_name):
         """Add a new category to a column"""
@@ -1294,7 +1376,10 @@ class ProjectFlowApp(QMainWindow):
                         del items[item_idx]
                     break
             dialog.reject()
-            self._refresh_column_tree(tree, col_idx)
+            if tree is not None:
+                self._refresh_column_tree(tree, col_idx)
+            else:
+                self.refresh_projects()
 
     def _refresh_column_tree(self, tree, col_idx):
         """Refresh a column tree with current data"""
@@ -2101,6 +2186,18 @@ class ProjectFlowApp(QMainWindow):
             elif "terminal" in self.settings:
                 del self.settings["terminal"]  # Remove to enable auto-detection
 
+            editor = self._settings_editor.currentText().strip()
+            if editor:
+                self.settings["editor"] = editor
+            elif "editor" in self.settings:
+                del self.settings["editor"]  # Remove to enable auto-detection
+
+            file_manager = self._settings_file_manager.currentText().strip()
+            if file_manager:
+                self.settings["file_manager"] = file_manager
+            elif "file_manager" in self.settings:
+                del self.settings["file_manager"]  # Remove to enable auto-detection
+
             notes_folder = self._settings_notes_folder.text().strip()
             if notes_folder:
                 self.settings["notes_folder"] = notes_folder
@@ -2116,6 +2213,19 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["joplin_token"]
 
             self.save_settings()
+
+            # Update launch handlers with new editor/file_manager/terminal settings
+            if self.handlers_module:
+                if hasattr(self.handlers_module, 'set_terminal_config'):
+                    self.handlers_module.set_terminal_config(
+                        self.get_configured_terminal(),
+                        self._get_terminal_workdir_command,
+                        self._get_terminal_command
+                    )
+                if hasattr(self.handlers_module, 'set_editor_config'):
+                    self.handlers_module.set_editor_config(self.get_configured_editor())
+                if hasattr(self.handlers_module, 'set_file_manager_config'):
+                    self.handlers_module.set_file_manager_config(self.get_configured_file_manager())
 
             # Apply theme change if needed
             if new_theme != old_theme:
@@ -2783,15 +2893,19 @@ StartupNotify=true
         self.custom_handlers = {}   # User-defined handlers from JSON
         self.complex_handlers = {}  # Python function handlers (cannot be edited via UI)
         self.complex_handler_info = {}  # Metadata for complex handlers (descriptions, examples)
+        self.handlers_module = None  # Store module reference for later config updates
 
         # Load built-in handlers from launch_handlers.py
         handlers_file = os.path.join(self.script_dir, "launch_handlers.py")
         if os.path.exists(handlers_file):
             try:
                 import importlib.util
+                import sys
                 spec = importlib.util.spec_from_file_location("launch_handlers", handlers_file)
                 handlers_module = importlib.util.module_from_spec(spec)
+                sys.modules["launch_handlers"] = handlers_module  # Register in sys.modules
                 spec.loader.exec_module(handlers_module)
+                self.handlers_module = handlers_module  # Store reference
 
                 if hasattr(handlers_module, 'LAUNCH_HANDLERS'):
                     self.builtin_handlers = handlers_module.LAUNCH_HANDLERS.copy()
@@ -2806,6 +2920,12 @@ StartupNotify=true
                         self._get_terminal_workdir_command,
                         self._get_terminal_command
                     )
+                # Configure editor for complex handlers
+                if hasattr(handlers_module, 'set_editor_config'):
+                    handlers_module.set_editor_config(self.get_configured_editor())
+                # Configure file manager for complex handlers
+                if hasattr(handlers_module, 'set_file_manager_config'):
+                    handlers_module.set_file_manager_config(self.get_configured_file_manager())
 
             except Exception as e:
                 print(f"Error loading launch_handlers.py: {e}")
@@ -2872,6 +2992,70 @@ StartupNotify=true
                 return term
 
         return 'xterm'  # Ultimate fallback
+
+    def detect_default_editor(self):
+        """Detect appropriate editor based on desktop environment."""
+        de = self.detect_desktop_environment()
+
+        editor_map = {
+            'kde': 'kate',
+            'gnome': 'gedit',
+            'xfce': 'mousepad',
+            'cosmic': 'cosmic-edit',
+            'mate': 'pluma',
+            'cinnamon': 'xed',
+            'lxqt': 'featherpad',
+            'lxde': 'leafpad',
+        }
+
+        if de in editor_map and shutil.which(editor_map[de]):
+            return editor_map[de]
+
+        # Fallback: check what's installed
+        for editor in ['code', 'kate', 'gedit', 'nano']:
+            if shutil.which(editor):
+                return editor
+
+        return 'xdg-open'  # Ultimate fallback
+
+    def get_configured_editor(self):
+        """Get the configured editor, with auto-detection fallback."""
+        editor = self.settings.get("editor", "")
+        if not editor:
+            editor = self.detect_default_editor()
+        return editor
+
+    def detect_default_file_manager(self):
+        """Detect appropriate file manager based on desktop environment."""
+        de = self.detect_desktop_environment()
+
+        fm_map = {
+            'kde': 'dolphin',
+            'gnome': 'nautilus',
+            'xfce': 'thunar',
+            'cosmic': 'cosmic-files',
+            'mate': 'caja',
+            'cinnamon': 'nemo',
+            'lxqt': 'pcmanfm-qt',
+            'lxde': 'pcmanfm',
+        }
+
+        if de in fm_map and shutil.which(fm_map[de]):
+            return fm_map[de]
+
+        # Fallback: check what's installed
+        for fm in ['dolphin', 'nautilus', 'thunar', 'pcmanfm']:
+            if shutil.which(fm):
+                return fm
+
+        return 'xdg-open'  # Ultimate fallback
+
+    def get_configured_file_manager(self):
+        """Get the configured file manager, with auto-detection fallback."""
+        fm = self.settings.get("file_manager", "")
+        if not fm:
+            fm = self.detect_default_file_manager()
+        return fm
 
     def get_configured_terminal(self):
         """Get the configured terminal, with auto-detection fallback."""
@@ -3876,6 +4060,14 @@ StartupNotify=true
                                 col_idx, category_name, idx, display_name, path, app
                             )
                             group_layout.addWidget(item_widget)
+
+                            # Add separator line between items with spacing
+                            group_layout.addSpacing(10)
+                            separator = QFrame()
+                            separator.setFrameShape(QFrame.Shape.HLine)
+                            separator.setStyleSheet(f"background-color: {self.t('border')}; max-height: 1px;")
+                            group_layout.addWidget(separator)
+                            group_layout.addSpacing(5)
                         else:
                             # VIEW MODE: Show normal button
                             # Get app icon if available
@@ -3911,10 +4103,12 @@ StartupNotify=true
 
                                 # Individual action buttons (icons match icon_preferences.json)
                                 # Only show npm button if a recognized command is specified
+                                file_manager = self.get_configured_file_manager()
+                                editor = self.get_configured_editor()
                                 actions = [
-                                    ("🗄️", "dolphin", f"Open {project_path} in Dolphin"),
+                                    ("🗄️", "file_manager", f"Open {project_path} in {file_manager}"),
                                     ("$_", "terminal", f"Open terminal at {project_path}"),
-                                    ("💠", "code", f"Open {project_path} in VSCode"),
+                                    ("💠", "editor", f"Open {project_path} in {editor}"),
                                 ]
                                 if has_npm_cmd:
                                     actions.append(("⚡", "npm", f"Run npm {npm_cmd}"))
@@ -4986,45 +5180,23 @@ StartupNotify=true
     def create_edit_item_widget(self, col_idx, category_name, item_idx, name, path, app):
         """Create an editable widget for an item in edit mode"""
         item_widget = QWidget()
-        item_layout = QHBoxLayout(item_widget)
-        item_layout.setContentsMargins(2, 2, 2, 2)
-        item_layout.setSpacing(5)
+        main_layout = QVBoxLayout(item_widget)
+        main_layout.setContentsMargins(2, 2, 2, 2)
+        main_layout.setSpacing(3)
 
         # Shared style for edit fields
         edit_style = f"""
-            QLineEdit {{
+            QLineEdit, QPlainTextEdit {{
                 background-color: {self.t('bg_input')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
                 border-radius: 3px;
                 padding: 4px;
             }}
-            QLineEdit:focus {{
+            QLineEdit:focus, QPlainTextEdit:focus {{
                 border: 1px solid {self.t('bg_category')};
             }}
         """
-
-        # Name field
-        name_edit = QLineEdit(name)
-        name_edit.setPlaceholderText("Name")
-        name_edit.setMinimumWidth(120)
-        name_edit.setMaximumWidth(200)
-        name_edit.setStyleSheet(edit_style)
-        item_layout.addWidget(name_edit)
-
-        # Path field
-        path_edit = QLineEdit(path)
-        path_edit.setPlaceholderText("Path or URL")
-        path_edit.setStyleSheet(edit_style)
-        item_layout.addWidget(path_edit, 1)  # Stretch
-
-        # App field (could be combo box in future)
-        app_edit = QLineEdit(app)
-        app_edit.setPlaceholderText("App")
-        app_edit.setMinimumWidth(80)
-        app_edit.setMaximumWidth(120)
-        app_edit.setStyleSheet(edit_style)
-        item_layout.addWidget(app_edit)
 
         # Button style for edit controls
         edit_btn_style = f"""
@@ -5040,29 +5212,58 @@ StartupNotify=true
             }}
         """
 
+        # Row 1: Name, App, Edit button, Up/Down/Delete buttons
+        row1_layout = QHBoxLayout()
+        row1_layout.setSpacing(5)
+
+        # Name field
+        name_edit = QLineEdit(name)
+        name_edit.setPlaceholderText("Name")
+        name_edit.setMinimumWidth(120)
+        name_edit.setMaximumWidth(200)
+        name_edit.setStyleSheet(edit_style)
+        row1_layout.addWidget(name_edit)
+
+        # App field
+        app_edit = QLineEdit(app)
+        app_edit.setPlaceholderText("App")
+        app_edit.setMinimumWidth(80)
+        app_edit.setMaximumWidth(120)
+        app_edit.setStyleSheet(edit_style)
+        row1_layout.addWidget(app_edit)
+
+        # Edit button (opens advanced dialog) - right next to app field
+        edit_btn = QPushButton("✏️")
+        edit_btn.setFixedSize(30, 26)
+        edit_btn.setToolTip("Open edit dialog")
+        edit_btn.setStyleSheet(edit_btn_style)
+        row1_layout.addWidget(edit_btn)
+
+        row1_layout.addStretch()
+
         # Up button
         up_btn = QPushButton("↑")
-        up_btn.setMaximumWidth(30)
+        up_btn.setFixedSize(30, 26)
         up_btn.setToolTip("Move up")
         up_btn.setStyleSheet(edit_btn_style)
         up_btn.clicked.connect(
             lambda: self.move_item_up(col_idx, category_name, item_idx)
         )
-        item_layout.addWidget(up_btn)
+        row1_layout.addWidget(up_btn)
 
         # Down button
         down_btn = QPushButton("↓")
-        down_btn.setMaximumWidth(30)
+        down_btn.setFixedSize(30, 26)
         down_btn.setToolTip("Move down")
         down_btn.setStyleSheet(edit_btn_style)
         down_btn.clicked.connect(
             lambda: self.move_item_down(col_idx, category_name, item_idx)
         )
-        item_layout.addWidget(down_btn)
+        row1_layout.addWidget(down_btn)
 
         # Delete button
         del_btn = QPushButton("🗑")
-        del_btn.setMaximumWidth(30)
+        del_btn.setFixedSize(30, 26)
         del_btn.setToolTip("Delete item")
         del_btn.setStyleSheet(f"""
             QPushButton {{
@@ -5079,7 +5280,25 @@ StartupNotify=true
         del_btn.clicked.connect(
             lambda: self.delete_item(col_idx, category_name, item_idx)
         )
-        item_layout.addWidget(del_btn)
+        row1_layout.addWidget(del_btn)
+
+        main_layout.addLayout(row1_layout)
+
+        # Row 2: Path label and multi-line path field
+        row2_layout = QVBoxLayout()
+        row2_layout.setSpacing(2)
+
+        path_label = QLabel("Path(s)/Folders:")
+        path_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        row2_layout.addWidget(path_label)
+
+        path_edit = QPlainTextEdit(path)
+        path_edit.setPlaceholderText("File path, folder path, or URL (one per line for multiple)")
+        path_edit.setStyleSheet(edit_style)
+        path_edit.setMaximumHeight(60)
+        row2_layout.addWidget(path_edit)
+
+        main_layout.addLayout(row2_layout)
 
         # Store references to the edit fields for saving later
         item_widget.name_edit = name_edit
@@ -5089,12 +5308,32 @@ StartupNotify=true
         item_widget.category_name = category_name
         item_widget.item_idx = item_idx
 
+        # Connect edit button to open dialog
+        edit_btn.clicked.connect(
+            lambda: self._open_edit_dialog_from_inline(item_widget)
+        )
+
         # Connect change handlers to auto-save
         name_edit.textChanged.connect(lambda: self.save_item_changes(item_widget))
         path_edit.textChanged.connect(lambda: self.save_item_changes(item_widget))
         app_edit.textChanged.connect(lambda: self.save_item_changes(item_widget))
 
         return item_widget
+
+    def _open_edit_dialog_from_inline(self, item_widget):
+        """Open the edit dialog from inline edit widget"""
+        item_data = {
+            "name": item_widget.name_edit.text(),
+            "path": item_widget.path_edit.toPlainText(),
+            "app": item_widget.app_edit.text(),
+            "index": item_widget.item_idx
+        }
+        self._show_item_edit_dialog(
+            item_widget.col_idx,
+            item_widget.category_name,
+            item_data,
+            tree=None
+        )
 
     def save_item_changes(self, item_widget):
         """Save changes from an edit widget back to the config data"""
@@ -5104,7 +5343,7 @@ StartupNotify=true
 
         # Get the new values
         new_name = item_widget.name_edit.text()
-        new_path = item_widget.path_edit.text()
+        new_path = item_widget.path_edit.toPlainText()
         new_app = item_widget.app_edit.text()
 
         # Update the in-memory config
@@ -6566,9 +6805,13 @@ StartupNotify=true
 
             # 3. Check complex handlers from launch_handlers.py (need Python logic)
             if app in self.complex_handlers:
-                result = self.complex_handlers[app](path, expanded_path)
-                self.status_label.setText(f"✓ {result}")
-                self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                try:
+                    result = self.complex_handlers[app](path, expanded_path)
+                    self.status_label.setText(f"✓ {result}")
+                    self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                except FileNotFoundError as e:
+                    self.status_label.setText("✗ Command not found. Check editor/terminal/file manager in Settings.")
+                    self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
                 return
 
             # 4. Check simple handlers from launch_handlers.py
@@ -6619,18 +6862,28 @@ StartupNotify=true
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
 
     def directorydev_action(self, path, action):
-        """Execute a single directorydev action (dolphin, terminal, code, or npm)."""
+        """Execute a single directorydev action (file_manager, terminal, editor, or npm)."""
         from launch_handlers import handle_directorydev_action
         expanded_path = os.path.expanduser(path)
-        handle_directorydev_action(expanded_path, action)
 
-        # Update status
+        try:
+            handle_directorydev_action(expanded_path, action)
+        except FileNotFoundError:
+            self.status_label.setText("✗ Command not found. Check editor/terminal/file manager in Settings.")
+            self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
+            return
+
+        # Update status with dynamic app names
         parts = expanded_path.split()
         project_path = parts[0]
+        file_manager = self.get_configured_file_manager()
+        editor = self.get_configured_editor()
         action_names = {
-            "dolphin": "Opened in Dolphin",
+            "file_manager": f"Opened in {file_manager}",
+            "dolphin": f"Opened in {file_manager}",  # Legacy alias
             "terminal": "Opened terminal at",
-            "code": "Opened in VSCode",
+            "editor": f"Opened in {editor}",
+            "code": f"Opened in {editor}",  # Legacy alias
             "npm": "Running npm in"
         }
         self.status_label.setText(f"✓ {action_names.get(action, action)}: {project_path}")
@@ -6874,7 +7127,7 @@ Examples:
     # Set window icon with fallback chain for different desktop environments
     icon_candidates = [
         "preferences-desktop-icons",  # KDE Breeze
-        "view-app-grid-symbolic",     # GNOME app grid
+        "text-x-script",              # GNOME script icon
         "application-x-executable",   # Generic app icon
         "system-run",                 # Generic freedesktop
         "folder",                     # Universal fallback

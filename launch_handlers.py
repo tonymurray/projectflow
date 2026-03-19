@@ -31,12 +31,38 @@ _terminal_config = {
     "shell_command_builder": None,  # Function to build shell command
 }
 
+# Editor and file manager configuration (set by projectflow.py at runtime)
+_editor_config = None
+_file_manager_config = None
+
 
 def set_terminal_config(terminal, workdir_builder, shell_builder):
     """Set the terminal configuration. Called by projectflow.py at startup."""
     _terminal_config["terminal"] = terminal
     _terminal_config["workdir_command_builder"] = workdir_builder
     _terminal_config["shell_command_builder"] = shell_builder
+
+
+def set_editor_config(editor):
+    """Set the editor configuration. Called by projectflow.py at startup."""
+    global _editor_config
+    _editor_config = editor
+
+
+def set_file_manager_config(file_manager):
+    """Set the file manager configuration. Called by projectflow.py at startup."""
+    global _file_manager_config
+    _file_manager_config = file_manager
+
+
+def _get_editor():
+    """Get the configured editor name."""
+    return _editor_config or "code"
+
+
+def _get_file_manager():
+    """Get the configured file manager name."""
+    return _file_manager_config or "dolphin"
 
 
 def _get_terminal():
@@ -211,19 +237,20 @@ def handle_directorydev_action(expanded_path, action):
 
     Args:
         expanded_path: The path (possibly with npm command appended)
-        action: One of "dolphin", "terminal", "code", "npm"
+        action: One of "file_manager", "terminal", "editor", "npm"
+                (legacy names "dolphin" and "code" are also accepted)
     """
     parts = expanded_path.split()
     project_path = os.path.expanduser(parts[0])
     npm_cmd = parts[1] if len(parts) > 1 else "dev"
 
-    if action == "dolphin":
-        subprocess.Popen(["dolphin", project_path], start_new_session=True)
+    if action in ("dolphin", "file_manager"):
+        subprocess.Popen([_get_file_manager(), project_path], start_new_session=True)
     elif action == "terminal":
         cmd = _build_terminal_workdir_cmd(project_path)
         subprocess.Popen(cmd, start_new_session=True)
-    elif action == "code":
-        subprocess.Popen(["code", project_path], start_new_session=True)
+    elif action in ("code", "editor"):
+        subprocess.Popen([_get_editor(), project_path], start_new_session=True)
     elif action == "npm":
         if npm_cmd in ("start", "test", "install"):
             shell_cmd = f'cd {shlex.quote(project_path)} && npm {npm_cmd}'
@@ -235,7 +262,9 @@ def handle_directorydev_action(expanded_path, action):
 
 def handle_directorydev(path, expanded_path):
     """
-    Open a full dev environment: VSCode, terminal, Dolphin, and optionally npm.
+    Open a full dev environment: editor, terminal, file manager, and optionally npm.
+
+    Uses the configured editor (default: code) and file manager (default: dolphin).
 
     Usage in config:
         ["My Project", "~/projects/myapp", "directorydev"]           -> Opens 3 apps (no npm)
@@ -253,7 +282,7 @@ def handle_directorydev(path, expanded_path):
     has_npm_cmd = npm_cmd in npm_commands
 
     # Always open these 3
-    for action in ["code", "terminal", "dolphin"]:
+    for action in ["editor", "terminal", "file_manager"]:
         handle_directorydev_action(expanded_path, action)
 
     # Only run npm if a command is specified
@@ -265,21 +294,22 @@ def handle_directorydev(path, expanded_path):
 
 def handle_dolphin_tabs(path, expanded_path):
     """
-    Open multiple folders in Dolphin as tabs.
+    Open multiple folders in the configured file manager as tabs.
 
     Usage in config:
     ["My Folders", "~/Documents ~/Projects ~/Pictures", "dolphin_tabs"]
 
-    Paths are space-separated. Each path will open as a tab in Dolphin.
+    Paths are space-separated. Each path will open as a tab (if the file manager supports it).
     """
     # Split by spaces and expand each path
     paths = expanded_path.split()
     expanded_paths = [os.path.expanduser(p) for p in paths]
 
-    # Run dolphin with all paths as arguments
-    subprocess.Popen(["dolphin"] + expanded_paths, start_new_session=True)
+    # Run file manager with all paths as arguments
+    file_manager = _get_file_manager()
+    subprocess.Popen([file_manager] + expanded_paths, start_new_session=True)
 
-    return f"Opened {len(expanded_paths)} folders in Dolphin tabs"
+    return f"Opened {len(expanded_paths)} folders in {file_manager}"
 
 
 # =============================================================================
@@ -499,11 +529,11 @@ COMPLEX_HANDLER_INFO = {
         "example": "~/projects/myapp dev"
     },
     "directorydev": {
-        "description": "Open VSCode + terminal + Dolphin",
+        "description": "Open editor + terminal + file manager",
         "example": "~/projects/myapp dev"
     },
     "dolphin_tabs": {
-        "description": "Open folders as Dolphin tabs",
+        "description": "Open folders as file manager tabs",
         "example": "~/Documents ~/Projects ~/Pictures"
     },
     "rsync_backup": {
