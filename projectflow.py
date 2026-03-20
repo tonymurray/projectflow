@@ -2423,7 +2423,12 @@ class ProjectFlowApp(QMainWindow):
         if 'kde' in de or 'plasma' in de:
             return
 
-        script_path = os.path.join(self.script_dir, "projectflow.py")
+        # Use projectflow-nix wrapper if available (for NixOS), otherwise projectflow.py
+        nix_wrapper = os.path.join(self.script_dir, "projectflow-nix")
+        if os.path.exists(nix_wrapper):
+            script_path = nix_wrapper
+        else:
+            script_path = os.path.join(self.script_dir, "projectflow.py")
 
         # Choose appropriate icon based on DE
         if 'gnome' in de:
@@ -7066,8 +7071,12 @@ StartupNotify=true
         desktop_file = os.path.expanduser(f"~/.local/share/applications/projectflow-{project_id}.desktop")
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
 
-        # Use projectflow.py directly (handles both nix and standard)
-        script_path = os.path.join(self.script_dir, "projectflow.py")
+        # Use projectflow-nix wrapper if available (for NixOS), otherwise projectflow.py
+        nix_wrapper = os.path.join(self.script_dir, "projectflow-nix")
+        if os.path.exists(nix_wrapper):
+            script_path = nix_wrapper
+        else:
+            script_path = os.path.join(self.script_dir, "projectflow.py")
 
         # Get all project files for jump list
         project_files = []

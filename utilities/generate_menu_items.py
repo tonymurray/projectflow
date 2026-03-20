@@ -18,8 +18,12 @@ else:
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)  # Go up from utilities/
 
-# Get absolute path to projectflow.py
-projectflow_path = os.path.join(project_dir, "projectflow.py")
+# Use projectflow-nix wrapper if available (for NixOS), otherwise projectflow.py
+nix_wrapper = os.path.join(project_dir, "projectflow-nix")
+if os.path.exists(nix_wrapper):
+    projectflow_path = nix_wrapper
+else:
+    projectflow_path = os.path.join(project_dir, "projectflow.py")
 
 # Directory for desktop files
 desktop_dir = os.path.expanduser("~/.local/share/applications")
