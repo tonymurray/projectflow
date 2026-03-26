@@ -1214,6 +1214,24 @@ class ProjectFlowApp(QMainWindow):
             else:
                 app_combo.setEditText(current_app)
 
+        # Update path placeholder based on selected handler
+        default_placeholder = "File path, folder path, or URL (one per line for multiple)"
+        def update_path_placeholder(app_name):
+            if app_name in self.complex_handler_info:
+                example = self.complex_handler_info[app_name].get("example", "")
+                desc = self.complex_handler_info[app_name].get("description", "")
+                if example:
+                    path_input.setPlaceholderText(f"Example: {example}")
+                else:
+                    path_input.setPlaceholderText(default_placeholder)
+            else:
+                path_input.setPlaceholderText(default_placeholder)
+
+        app_combo.currentTextChanged.connect(update_path_placeholder)
+        # Set initial placeholder if editing existing item
+        if current_app:
+            update_path_placeholder(current_app)
+
         layout.addRow(app_label, app_combo)
 
         # Delete button for existing items
