@@ -1151,7 +1151,7 @@ class ProjectFlowApp(QMainWindow):
                     self._rename_category_in_config(col_idx, category_name, new_name)
                 self._refresh_column_tree(tree, col_idx)
 
-    def _show_item_edit_dialog(self, col_idx, category_name, item_data, tree=None):
+    def _show_item_edit_dialog(self, col_idx, category_name, item_data, tree=None, inline_widget=None):
         """Show dialog for adding/editing an item"""
         is_new = item_data is None
         dialog = QDialog(self)
@@ -1276,7 +1276,17 @@ class ProjectFlowApp(QMainWindow):
                     self._add_item_to_config(col_idx, category_name, new_name, new_path, new_app)
                 else:
                     self._update_item_in_config(col_idx, category_name, item_data.get("index"), new_name, new_path, new_app)
-                if tree is not None:
+
+                # Save config to file
+                self.save_config_to_json()
+
+                # Update UI appropriately
+                if inline_widget is not None:
+                    # Update the inline widget directly without refreshing
+                    inline_widget.name_edit.setText(new_name)
+                    inline_widget.path_edit.setPlainText(new_path)
+                    inline_widget.app_edit.setText(new_app)
+                elif tree is not None:
                     self._refresh_column_tree(tree, col_idx)
                 else:
                     self.refresh_projects()
@@ -5360,7 +5370,8 @@ StartupNotify=true
             item_widget.col_idx,
             item_widget.category_name,
             item_data,
-            tree=None
+            tree=None,
+            inline_widget=item_widget
         )
 
     def save_item_changes(self, item_widget):
