@@ -3918,12 +3918,12 @@ StartupNotify=true
                     """
 
                     # Edit button
-                    edit_btn = QPushButton("Done" if self.edit_mode else "Edit")
+                    edit_btn = QPushButton("Save" if self.edit_mode else "Edit")
                     edit_btn.setMaximumWidth(50)
                     edit_btn.setMinimumHeight(self.d('header_btn_height'))
                     edit_btn.setCheckable(True)
                     edit_btn.setChecked(self.edit_mode)
-                    edit_btn.setToolTip("Done editing" if self.edit_mode else "Edit shortcuts")
+                    edit_btn.setToolTip("Save and exit edit mode" if self.edit_mode else "Edit shortcuts")
                     edit_btn.setStyleSheet(green_btn_style)
                     edit_btn.clicked.connect(self.toggle_edit_mode)
                     header_layout.addWidget(edit_btn)
@@ -4437,6 +4437,28 @@ StartupNotify=true
                     lambda checked=False, c_idx=col_idx: self.add_new_category(c_idx)
                 )
                 column_layout.addWidget(add_category_btn)
+
+                # Add Save button at bottom in edit mode
+                save_btn = QPushButton("💾 Save")
+                save_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {self.t('bg_success')};
+                        color: {self.t('fg_on_dark')};
+                        border: 1px solid {self.t('bg_success_hover')};
+                        border-radius: 3px;
+                        padding: 8px;
+                        font-size: 11px;
+                        font-weight: bold;
+                        margin-top: 10px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {self.t('bg_success_hover')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """)
+                save_btn.setToolTip("Save and exit edit mode")
+                save_btn.clicked.connect(self.toggle_edit_mode)
+                column_layout.addWidget(save_btn)
 
             # Add stretch at bottom of column
             column_layout.addStretch()
