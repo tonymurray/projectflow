@@ -5403,7 +5403,7 @@ StartupNotify=true
             return  # Already at top
 
         # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
 
         column = self.COLUMN_1
         for category_dict in column:
@@ -5414,16 +5414,12 @@ StartupNotify=true
                 break
 
         self.save_config_to_json()
-        self.refresh_projects()
-
-        # Restore scroll position
-        if hasattr(self, 'main_scroll'):
-            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+        self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def move_item_down(self, col_idx, category_name, item_idx):
         """Move an item down in the list"""
         # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
 
         column = self.COLUMN_1
         for category_dict in column:
@@ -5436,16 +5432,12 @@ StartupNotify=true
                 break
 
         self.save_config_to_json()
-        self.refresh_projects()
-
-        # Restore scroll position
-        if hasattr(self, 'main_scroll'):
-            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+        self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def delete_item(self, col_idx, category_name, item_idx):
         """Delete an item from the config"""
         # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
 
         column = self.COLUMN_1
         for category_dict in column:
@@ -5456,16 +5448,12 @@ StartupNotify=true
                 break
 
         self.save_config_to_json()
-        self.refresh_projects()
-
-        # Restore scroll position
-        if hasattr(self, 'main_scroll'):
-            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+        self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def add_new_entry(self, col_idx, category_name):
         """Add a new empty entry to a category"""
         # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
 
         column = self.COLUMN_1
         for category_dict in column:
@@ -5476,16 +5464,12 @@ StartupNotify=true
                 break
 
         self.save_config_to_json()
-        self.refresh_projects()
-
-        # Restore scroll position
-        if hasattr(self, 'main_scroll'):
-            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+        self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def add_new_category(self, col_idx):
         """Add a new category with a blank entry to a column"""
         # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
 
         column = self.COLUMN_1
         # Create a new category with one blank entry
@@ -5493,11 +5477,7 @@ StartupNotify=true
         column.append(new_category)
 
         self.save_config_to_json()
-        self.refresh_projects()
-
-        # Restore scroll position
-        if hasattr(self, 'main_scroll'):
-            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+        self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def rename_category_from_edit(self, col_idx, edit_widget):
         """Rename a category when editing is finished"""
@@ -6792,7 +6772,7 @@ StartupNotify=true
                 cursor.insertText(plain_text, clean_fmt)
             self.notepad.setFocus()
 
-    def refresh_projects(self):
+    def refresh_projects(self, restore_scroll_pos=None):
         """Refresh the project list by reloading the configuration"""
         try:
             # Store current window geometry
@@ -6807,6 +6787,11 @@ StartupNotify=true
 
             # Restore window geometry
             self.setGeometry(current_geometry)
+
+            # Restore scroll position after UI is laid out
+            if restore_scroll_pos is not None and hasattr(self, 'main_scroll'):
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.main_scroll.verticalScrollBar().setValue(restore_scroll_pos))
 
             # Show status message
             self.status_label.setText("✓ Configuration reloaded successfully!")
