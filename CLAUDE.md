@@ -79,7 +79,7 @@ These options can be set in individual config JSON files:
 - `webview_url`: Default URL to load in web viewer for this config
 - `image_file`: Default image file to load for this config
 - `console_path`: Default directory for the embedded console
-- `column2_default`: Which viewer to show by default - `"pdf"`, `"webview"`, `"image"`, `"help"`, or `"console"`
+- `column2_default`: Which viewer to show by default - `"pdf"`, `"webview"`, `"image"`, `"help"`, `"examples"`, or `"console"`
 - `terminal`: Terminal emulator override for this config (e.g., `"gnome-terminal"`, `"alacritty"`). Overrides global terminal setting.
 
 These options can also be set via the 📌 button in each viewer toolbar:
@@ -278,7 +278,8 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 
 - **Three-panel layout**: Shortcuts (left) | Viewer (center) | Notepad (right)
 - **Shortcuts panel**: Single column of categorized launchers with "Open All" buttons per category
-- **Central viewer**: Toggles between PDF viewer, web browser, image viewer, help, and console (cycles PDF → Web → Image → Help → Console). Each viewer has an "External" button to open in a standalone application.
+- **Central viewer**: Toggles between PDF viewer, web browser, image viewer, help, examples, and console (cycles PDF → Web → Image → Help → Examples → Console). Each viewer has an "External" button to open in a standalone application.
+- **Examples viewer**: Displays launch handler documentation from EXAMPLES.html. Uses theme color placeholders (e.g., `{fg_primary}`) that are replaced at runtime. Reload button refreshes content; External button opens the file for editing.
 - **Embedded console**: IPython/qtconsole for quick Python and shell commands (`!ls`, `!git status`). Limitations: no interactive programs (nano, vim) - use External button for full terminal.
   - **Why qtconsole**: Well-established Jupyter project with strong community support. Alternatives considered:
     - `termqt` - Pure Python terminal (supports nano/vim), but small community (61 stars), single maintainer

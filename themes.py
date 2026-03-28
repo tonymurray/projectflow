@@ -125,6 +125,14 @@ THEMES = {
         "fg_help_h3": "#7f8c8d",
         "border_help_h1": "#3498db",
         "border_help_h2": "#bdc3c7",
+
+        # Examples viewer
+        "bg_example_card": "#ffffff",
+        "border_example_card": "#e0e0e0",
+        "bg_example_type_builtin": "#27ae60",   # Green for built-in
+        "bg_example_type_simple": "#3498db",    # Blue for simple
+        "bg_example_type_complex": "#9b59b6",   # Purple for complex
+        "bg_example_type_custom": "#e67e22",    # Orange for custom
     },
 
     "dark": {
@@ -208,6 +216,14 @@ THEMES = {
         "fg_help_h3": "#a0a0a0",
         "border_help_h1": "#182381",
         "border_help_h2": "#192331",
+
+        # Examples viewer
+        "bg_example_card": "#283136",
+        "border_example_card": "#394459",
+        "bg_example_type_builtin": "#1a5a3a",   # Green for built-in (darker)
+        "bg_example_type_simple": "#1a4a7a",    # Blue for simple (darker)
+        "bg_example_type_complex": "#5a2a7a",   # Purple for complex (darker)
+        "bg_example_type_custom": "#8a5a1a",    # Orange for custom (darker)
     }
 }
 

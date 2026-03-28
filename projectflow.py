@@ -833,7 +833,7 @@ class ProjectFlowApp(QMainWindow):
         viewer_label = QLabel("Default Viewer:")
         viewer_label.setStyleSheet(label_style)
         self._proj_default_viewer = QComboBox()
-        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "console"])
+        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "examples", "console"])
         current_viewer = getattr(self, 'config_column2_default', None) or ""
         self._proj_default_viewer.setCurrentText(current_viewer)
         self._proj_default_viewer.setStyleSheet(input_style)
@@ -2922,7 +2922,7 @@ StartupNotify=true
 
             # Use config-specified column2 default mode if set
             if hasattr(self, 'config_column2_default') and self.config_column2_default:
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "console"):
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -4620,6 +4620,24 @@ StartupNotify=true
                 """)
                 help_container_layout.addWidget(self.help_browser)
 
+                # Examples viewer container
+                self.examples_container = QWidget()
+                examples_container_layout = QVBoxLayout(self.examples_container)
+                examples_container_layout.setContentsMargins(0, 0, 0, 0)
+
+                # Create examples toolbar
+                self.create_examples_toolbar(examples_container_layout)
+
+                # Create QWebEngineView for examples content (full CSS support)
+                self.examples_browser = QWebEngineView()
+                self.examples_browser.setStyleSheet(f"""
+                    QWebEngineView {{
+                        border: 2px solid {self.t('border')};
+                        border-radius: 5px;
+                    }}
+                """)
+                examples_container_layout.addWidget(self.examples_browser, 1)  # stretch factor
+
                 # Console container (qtconsole if available)
                 self.console_container = QWidget()
                 console_container_layout = QVBoxLayout(self.console_container)
@@ -4700,6 +4718,7 @@ StartupNotify=true
                 self.column2_stack_layout.addWidget(self.webview_container)
                 self.column2_stack_layout.addWidget(self.image_container)
                 self.column2_stack_layout.addWidget(self.help_container)
+                self.column2_stack_layout.addWidget(self.examples_container)
                 self.column2_stack_layout.addWidget(self.console_container)
 
                 # Show correct container based on mode
@@ -4707,6 +4726,7 @@ StartupNotify=true
                 self.webview_container.hide()
                 self.image_container.hide()
                 self.help_container.hide()
+                self.examples_container.hide()
                 self.console_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
@@ -4717,6 +4737,9 @@ StartupNotify=true
                 elif self.column2_mode == "help":
                     self.help_container.show()
                     self.load_help_content()
+                elif self.column2_mode == "examples":
+                    self.examples_container.show()
+                    self.load_examples_content()
                 elif self.column2_mode == "console":
                     self.console_container.show()
 
@@ -6022,47 +6045,55 @@ StartupNotify=true
             print(f"Error opening PDF in external viewer: {e}")
             self.status_label.setText(f"Error: {e}")
 
+    def get_viewer_cycle_order(self):
+        """Get the viewer cycle order: default -> examples -> help -> remaining viewers"""
+        default_viewer = getattr(self, 'config_column2_default', None) or "pdf"
+        # Fixed positions: default first, examples second, help third
+        # Remaining viewers fill in after
+        remaining = [m for m in ["pdf", "webview", "image", "console"] if m != default_viewer]
+        return [default_viewer, "examples", "help"] + remaining
+
     def toggle_column2_mode(self):
-        """Toggle between PDF viewer, webview, image viewer, help, and console"""
+        """Toggle between viewers: default -> examples -> help -> remaining viewers"""
         # Hide all containers
         self.pdf_container.hide()
         self.webview_container.hide()
         self.image_container.hide()
         self.help_container.hide()
+        self.examples_container.hide()
         self.console_container.hide()
 
-        # Cycle through modes: pdf -> webview -> image -> help -> console -> pdf
-        if self.column2_mode == "pdf":
-            self.column2_mode = "webview"
-            self.column2_toggle_btn.setText("Web")
-            self.column2_toggle_btn.setToolTip("Click for Image viewer")
-            self.column2_header.setText("Web View")
-            self.webview_container.show()
-        elif self.column2_mode == "webview":
-            self.column2_mode = "image"
-            self.column2_toggle_btn.setText("Image")
-            self.column2_toggle_btn.setToolTip("Click for Help viewer")
-            self.column2_header.setText("Image Viewer")
-            self.image_container.show()
-        elif self.column2_mode == "image":
-            self.column2_mode = "help"
-            self.column2_toggle_btn.setText("Help")
-            self.column2_toggle_btn.setToolTip("Click for Console")
-            self.column2_header.setText("Help")
-            self.help_container.show()
+        # Get dynamic cycle order based on default viewer
+        cycle = self.get_viewer_cycle_order()
+        current_idx = cycle.index(self.column2_mode) if self.column2_mode in cycle else -1
+        next_idx = (current_idx + 1) % len(cycle)
+        next_mode = cycle[next_idx]
+        next_next_mode = cycle[(next_idx + 1) % len(cycle)]
+
+        # Mode display info
+        mode_info = {
+            "pdf": ("PDF", "PDF Viewer", self.pdf_container),
+            "webview": ("Web", "Web View", self.webview_container),
+            "image": ("Image", "Image Viewer", self.image_container),
+            "help": ("Help", "Help", self.help_container),
+            "examples": ("Examples", "Handler Examples", self.examples_container),
+            "console": ("Console", "Console", self.console_container),
+        }
+
+        self.column2_mode = next_mode
+        btn_text, header_text, container = mode_info[next_mode]
+        next_btn_text = mode_info[next_next_mode][0]
+
+        self.column2_toggle_btn.setText(btn_text)
+        self.column2_toggle_btn.setToolTip(f"Click for {next_btn_text}")
+        self.column2_header.setText(header_text)
+        container.show()
+
+        # Load content for viewers that need it
+        if next_mode == "help":
             self.load_help_content()
-        elif self.column2_mode == "help":
-            self.column2_mode = "console"
-            self.column2_toggle_btn.setText("Console")
-            self.column2_toggle_btn.setToolTip("Click for PDF viewer")
-            self.column2_header.setText("Console")
-            self.console_container.show()
-        else:
-            self.column2_mode = "pdf"
-            self.column2_toggle_btn.setText("PDF")
-            self.column2_toggle_btn.setToolTip("Click for Web viewer")
-            self.column2_header.setText("PDF Viewer")
-            self.pdf_container.show()
+        elif next_mode == "examples":
+            self.load_examples_content()
 
         self.save_notes()  # Save mode preference
 
@@ -6389,6 +6420,85 @@ StartupNotify=true
         readme_path = os.path.join(self.script_dir, "README.md")
         if os.path.exists(readme_path):
             subprocess.Popen(["kate", readme_path], start_new_session=True)
+
+    def create_examples_toolbar(self, parent_layout):
+        """Create a toolbar for the examples viewer"""
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 5)
+        toolbar_layout.setSpacing(5)
+
+        # Button style
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+                min-width: 28px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+        """
+
+        # Reload button
+        reload_btn = QPushButton("↻")
+        reload_btn.setStyleSheet(btn_style)
+        reload_btn.setToolTip("Reload examples content")
+        reload_btn.clicked.connect(self.load_examples_content)
+        toolbar_layout.addWidget(reload_btn)
+
+        # Separator
+        sep = QLabel("|")
+        sep.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
+        toolbar_layout.addWidget(sep)
+
+        # External button
+        external_btn = QPushButton("External")
+        external_btn.setStyleSheet(btn_style)
+        external_btn.setToolTip("Open EXAMPLES.html in editor")
+        external_btn.clicked.connect(self.open_examples_in_external_editor)
+        toolbar_layout.addWidget(external_btn)
+
+        toolbar_layout.addStretch()
+        parent_layout.addWidget(toolbar_widget)
+
+    def load_examples_content(self):
+        """Load and display EXAMPLES.html content with theme placeholders replaced"""
+        examples_path = os.path.join(self.script_dir, "EXAMPLES.html")
+        if not os.path.exists(examples_path):
+            self.examples_browser.setHtml(f"<h1 style='color: {self.t('fg_help_h1')}'>Examples</h1><p style='color: {self.t('fg_primary')}'>EXAMPLES.html not found.</p>")
+            return
+
+        try:
+            with open(examples_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+
+            # Replace theme placeholders with actual colors
+            # Format: {theme_key} -> actual color value
+            import re
+            def replace_placeholder(match):
+                key = match.group(1)
+                return self.t(key)
+
+            html_content = re.sub(r'\{(\w+)\}', replace_placeholder, html_content)
+            self.examples_browser.setHtml(html_content)
+        except Exception as e:
+            self.examples_browser.setHtml(f"<h1 style='color: {self.t('fg_help_h1')}'>Error</h1><p style='color: {self.t('fg_primary')}'>Could not load EXAMPLES.html: {e}</p>")
+
+    def open_examples_in_external_editor(self):
+        """Open EXAMPLES.html in the configured editor"""
+        examples_path = os.path.join(self.script_dir, "EXAMPLES.html")
+        editor = self.settings.get("open_note_external") or "kate"
+        if os.path.exists(examples_path):
+            subprocess.Popen([editor, examples_path], start_new_session=True)
 
     def create_console_toolbar(self, parent_layout):
         """Create a toolbar for the console"""

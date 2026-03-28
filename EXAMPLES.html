@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    body {
+        font-family: sans-serif;
+        font-size: 11pt;
+        line-height: 1.5;
+        color: {fg_primary};
+        background-color: {bg_help};
+        padding: 15px;
+        margin: 0;
+    }
+    h1 {
+        color: {fg_help_h1};
+        border-bottom: 2px solid {border_help_h1};
+        padding-bottom: 8px;
+        margin-top: 0;
+        font-size: 16pt;
+    }
+    h2 {
+        color: {fg_help_h2};
+        border-bottom: 1px solid {border_help_h2};
+        padding-bottom: 5px;
+        margin-top: 30px;
+        font-size: 13pt;
+    }
+    .card {
+        background-color: {bg_example_card};
+        border: 2px solid {border_example_card};
+        border-radius: 5px;
+        padding: 10px 12px;
+        margin-bottom: 25px;
+    }
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+    }
+    .handler-name {
+        font-weight: bold;
+        font-size: 12pt;
+        color: {fg_help_h1};
+    }
+    .handler-key {
+        font-family: monospace;
+        font-size: 10pt;
+        color: {fg_secondary};
+    }
+    .type-badge {
+        display: inline-block;
+        margin-top: 8px;
+        font-size: 9pt;
+        padding: 2px 6px;
+        border-radius: 3px;
+        color: #ffffff;
+        font-weight: bold;
+        background-color: #4c4c4c;
+    }
+    .type-builtin { background-color: {bg_example_type_builtin}; }
+    .type-simple { background-color: {bg_example_type_simple}; }
+    .type-complex { background-color: {bg_example_type_complex}; }
+    .type-custom { background-color: {bg_example_type_custom}; }
+    .description {
+        color: {fg_primary};
+        margin-bottom: 8px;
+        font-size: 10pt;
+    }
+    .example-label {
+        font-weight: bold;
+        color: {fg_secondary};
+        font-size: 10pt;
+    }
+    .example-code {
+        background-color: {bg_input};
+        color: {fg_primary};
+        border: 1px solid {border};
+        padding: 6px 10px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 9pt;
+        margin-top: 4px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+    .intro {
+        color: {fg_secondary};
+        margin-bottom: 15px;
+        font-size: 10pt;
+    }
+    code {
+        background-color: {bg_input};
+        color: {fg_primary};
+        border: 1px solid {border};
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 9pt;
+    }
+</style>
+</head>
+<body>
+
+<h1>Launch Handler Examples</h1>
+<p class="intro">
+    This guide shows how to use launch handlers in your project config files.
+    Each entry in your config uses the format: <code>["Display Name", "path/arguments", "handler"]</code>
+</p>
+
+<h2>Complex Handlers</h2>
+<p class="intro">Python-based handlers with advanced logic. Support additional arguments after the path.</p>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">NPM</span>
+        <span class="handler-key">npm</span>
+    </div>
+    <div class="description">Run npm commands in a terminal. Append the command after the path. Commands: start, dev, build, test, install, or any script name.</div>
+    <div class="example-label">Examples:</div>
+    <div class="example-code">["Start Server", "~/projects/myapp", "npm"]           # npm start
+["Dev Server", "~/projects/myapp dev", "npm"]       # npm run dev
+["Build", "~/projects/myapp build", "npm"]          # npm run build
+["Run Tests", "~/projects/myapp test", "npm"]       # npm test
+["Install Deps", "~/projects/myapp install", "npm"] # npm install</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Directory Dev</span>
+        <span class="handler-key">directorydev</span>
+    </div>
+    <div class="description">Opens a full development environment: file manager + terminal + code editor. Optionally runs npm if a command is specified.</div>
+    <div class="example-label">Examples:</div>
+    <div class="example-code">["My Project", "~/projects/myapp", "directorydev"]       # 3 apps, no npm
+["My Project", "~/projects/myapp dev", "directorydev"]   # + npm run dev
+["My Project", "~/projects/myapp build", "directorydev"] # + npm run build</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">SSH Session</span>
+        <span class="handler-key">ssh_session</span>
+    </div>
+    <div class="description">SSH to a server with optional cd and command execution. Also available as <code>ssh_cd_npm</code>.</div>
+    <div class="example-label">Examples:</div>
+    <div class="example-code">["Server", "user@host", "ssh_session"]                        # SSH, run bash
+["Server", "user@host cd /var/www", "ssh_session"]            # SSH, cd to dir
+["Server", "user@host cd /app npm start", "ssh_session"]      # SSH, cd, run cmd</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Dolphin Tabs</span>
+        <span class="handler-key">dolphin_tabs</span>
+    </div>
+    <div class="description">Opens multiple folders as tabs in your file manager. Paths are space-separated.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["My Folders", "~/Documents ~/Projects ~/Pictures", "dolphin_tabs"]</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Rsync Backup</span>
+        <span class="handler-key">rsync_backup</span>
+    </div>
+    <div class="description">Run rsync with --delete and safety checks. Backs up deleted files to ~/.rsync_backups/. Blocks trailing slashes on source.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Backup Docs", "~/Documents ~/backup/Documents", "rsync_backup"]</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Rsync + Identity</span>
+        <span class="handler-key">rsync_backup_id</span>
+    </div>
+    <div class="description">Rsync with SSH identity file. Format: identity_file source destination.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Backup to Server", "~/.ssh/key ~/local user@server:/remote", "rsync_backup_id"]</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Rsync + Identity + Port</span>
+        <span class="handler-key">rsync_backup_id_port</span>
+    </div>
+    <div class="description">Rsync with SSH identity file and custom port. Format: identity_file port source destination.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Backup via Port 2222", "~/.ssh/key 2222 ~/local user@server:/remote", "rsync_backup_id_port"]</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<h2>Custom Handlers</h2>
+<p class="intro">
+    User-defined handlers stored in <code>launch_handlers_custom.json</code>.
+    Create and edit via Settings > Launch Handlers tab. Custom handlers can override built-in ones.
+</p>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Example: My Terminal</span>
+        <span class="handler-key">my_terminal</span>
+    </div>
+    <div class="description">Custom handler example - open Alacritty at a directory.</div>
+    <div class="example-label">JSON Definition:</div>
+    <div class="example-code">{
+  "my_terminal": {
+    "command": ["alacritty", "--working-directory", "{path}"],
+    "description": "Open in Alacritty"
+  }
+}</div>
+    <span class="type-badge type-custom">Custom</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Example: Deploy Script</span>
+        <span class="handler-key">deploy</span>
+    </div>
+    <div class="description">Custom handler example - run a deploy script in terminal.</div>
+    <div class="example-label">JSON Definition:</div>
+    <div class="example-code">{
+  "deploy": {
+    "type": "shell",
+    "command": "cd {path} && ./deploy.sh",
+    "terminal": true,
+    "hold": true,
+    "description": "Run deploy script"
+  }
+}</div>
+    <span class="type-badge type-custom">Custom</span>
+</div>
+
+<h2>Built-in Handlers</h2>
+<p class="intro">Always available. These use your default desktop applications.</p>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Browser</span>
+        <span class="handler-key">browser</span>
+    </div>
+    <div class="description">Opens URLs in your default web browser using xdg-open.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Documentation", "https://docs.python.org", "browser"]</div>
+    <span class="type-badge type-builtin">Built-in</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">File Manager</span>
+        <span class="handler-key">file_manager</span>
+    </div>
+    <div class="description">Opens folders in your default file manager (Dolphin, Nautilus, etc.).</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Downloads", "~/Downloads", "file_manager"]</div>
+    <span class="type-badge type-builtin">Built-in</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Editor</span>
+        <span class="handler-key">editor</span>
+    </div>
+    <div class="description">Opens files in your default text editor.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Config File", "~/.bashrc", "editor"]</div>
+    <span class="type-badge type-builtin">Built-in</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Default</span>
+        <span class="handler-key">default</span>
+    </div>
+    <div class="description">Lets the system decide how to open the file based on its type.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Spreadsheet", "~/Documents/budget.xlsx", "default"]</div>
+    <span class="type-badge type-builtin">Built-in</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Terminal</span>
+        <span class="handler-key">terminal</span>
+    </div>
+    <div class="description">Opens a terminal window at the specified directory. Uses your configured terminal (Konsole, GNOME Terminal, etc.).</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Project Terminal", "~/projects/myapp", "terminal"]</div>
+    <span class="type-badge type-builtin">Built-in</span>
+</div>
+
+<h2>Simple Handlers</h2>
+<p class="intro">Defined in launch_handlers.py. These execute specific commands with the path as an argument.</p>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Firefox</span>
+        <span class="handler-key">firefox</span>
+    </div>
+    <div class="description">Opens a URL in a new Firefox window.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Wikipedia", "https://wikipedia.org", "firefox"]</div>
+    <span class="type-badge type-simple">Simple</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Chrome</span>
+        <span class="handler-key">chrome</span>
+    </div>
+    <div class="description">Opens a URL in Chrome via Flatpak in a new window.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Google", "https://google.com", "chrome"]</div>
+    <span class="type-badge type-simple">Simple</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Tail Log</span>
+        <span class="handler-key">tail_log</span>
+    </div>
+    <div class="description">Opens a terminal and tails debug.log in the specified directory.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Watch Logs", "~/projects/myapp", "tail_log"]</div>
+    <span class="type-badge type-simple">Simple</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Kitty Tail</span>
+        <span class="handler-key">kitty_tail</span>
+    </div>
+    <div class="description">Same as tail_log but uses kitty terminal with --hold to keep window open.</div>
+    <div class="example-label">Example:</div>
+    <div class="example-code">["Watch Logs (Kitty)", "~/projects/myapp", "kitty_tail"]</div>
+    <span class="type-badge type-simple">Simple</span>
+</div>
+
+</body>
+</html>
