@@ -3418,16 +3418,16 @@ StartupNotify=true
         main_layout = QVBoxLayout(central_widget)
 
         # Create the Scroll Area and the "Inner" Container
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(f"QScrollArea {{ background-color: {self.t('bg_primary')}; border: none; }}")
+        self.main_scroll = QScrollArea()
+        self.main_scroll.setWidgetResizable(True)
+        self.main_scroll.setStyleSheet(f"QScrollArea {{ background-color: {self.t('bg_primary')}; border: none; }}")
         scroll_content_widget = QWidget()  # This widget will hold all your UI
         scroll_content_widget.setStyleSheet(f"background-color: {self.t('bg_primary')};")
         scroll_layout = QVBoxLayout(scroll_content_widget)  # The new "home" for your elements
 
         # Connect them
-        scroll.setWidget(scroll_content_widget)
-        main_layout.addWidget(scroll)  # Put the scroll area into the main window
+        self.main_scroll.setWidget(scroll_content_widget)
+        main_layout.addWidget(self.main_scroll)  # Put the scroll area into the main window
 
         # Add title bar with project name and status
         self.create_title_bar(scroll_layout)
@@ -5402,6 +5402,9 @@ StartupNotify=true
         if item_idx == 0:
             return  # Already at top
 
+        # Save scroll position
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+
         column = self.COLUMN_1
         for category_dict in column:
             if category_name in category_dict:
@@ -5413,8 +5416,15 @@ StartupNotify=true
         self.save_config_to_json()
         self.refresh_projects()
 
+        # Restore scroll position
+        if hasattr(self, 'main_scroll'):
+            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+
     def move_item_down(self, col_idx, category_name, item_idx):
         """Move an item down in the list"""
+        # Save scroll position
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+
         column = self.COLUMN_1
         for category_dict in column:
             if category_name in category_dict:
@@ -5428,8 +5438,15 @@ StartupNotify=true
         self.save_config_to_json()
         self.refresh_projects()
 
+        # Restore scroll position
+        if hasattr(self, 'main_scroll'):
+            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+
     def delete_item(self, col_idx, category_name, item_idx):
         """Delete an item from the config"""
+        # Save scroll position
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+
         column = self.COLUMN_1
         for category_dict in column:
             if category_name in category_dict:
@@ -5441,8 +5458,15 @@ StartupNotify=true
         self.save_config_to_json()
         self.refresh_projects()
 
+        # Restore scroll position
+        if hasattr(self, 'main_scroll'):
+            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+
     def add_new_entry(self, col_idx, category_name):
         """Add a new empty entry to a category"""
+        # Save scroll position
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+
         column = self.COLUMN_1
         for category_dict in column:
             if category_name in category_dict:
@@ -5454,8 +5478,15 @@ StartupNotify=true
         self.save_config_to_json()
         self.refresh_projects()
 
+        # Restore scroll position
+        if hasattr(self, 'main_scroll'):
+            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
+
     def add_new_category(self, col_idx):
         """Add a new category with a blank entry to a column"""
+        # Save scroll position
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else 0
+
         column = self.COLUMN_1
         # Create a new category with one blank entry
         new_category = {"New Category": [["New Launcher", "/path/to/file", "editor"]]}
@@ -5463,6 +5494,10 @@ StartupNotify=true
 
         self.save_config_to_json()
         self.refresh_projects()
+
+        # Restore scroll position
+        if hasattr(self, 'main_scroll'):
+            self.main_scroll.verticalScrollBar().setValue(scroll_pos)
 
     def rename_category_from_edit(self, col_idx, edit_widget):
         """Rename a category when editing is finished"""
