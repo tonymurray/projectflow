@@ -155,26 +155,35 @@ LAUNCH_HANDLERS = {
 
 def handle_ssh_session(path, expanded_path):
     """
-    SSH session handler with cd/command parsing.
+    SSH session handler with optional path and command.
 
     Usage in config:
-        ["Server SSH", "user@host cd /path command args", "ssh_session"]
+        ["Server SSH", "user@host /path command args", "ssh_session"]
+
+    If second part starts with /, ~, or . it's treated as a path to cd to.
+    Otherwise, everything after user@host is treated as a command.
 
     Examples:
         "user@server"                    -> SSH to server, run bash
-        "user@server cd /var/www"        -> SSH, cd to /var/www, run bash
-        "user@server cd /app npm start"  -> SSH, cd to /app, run npm start
+        "user@server /var/www"           -> SSH, cd to /var/www, run bash
+        "user@server /app ./go.sh"       -> SSH, cd to /app, run ./go.sh
+        "user@server npm start"          -> SSH, run npm start in home dir
     """
     parts = expanded_path.split()
     remote_user, remote_host = parts[0].split("@")
 
-    if "cd" in parts:
-        cd_index = parts.index("cd")
-        remote_dir = parts[cd_index + 1]
-        remote_command = " ".join(parts[cd_index + 2:])
-    else:
-        remote_dir = "~"
-        remote_command = " ".join(parts[1:])
+    remote_dir = "~"
+    remote_command = ""
+
+    if len(parts) > 1:
+        second_part = parts[1]
+        # If second part looks like a path, treat it as directory
+        if second_part.startswith(('/','~', '.')):
+            remote_dir = second_part
+            remote_command = " ".join(parts[2:])
+        else:
+            # Otherwise treat everything as a command (no cd)
+            remote_command = " ".join(parts[1:])
 
     if not remote_command:
         remote_command = "bash"
@@ -229,6 +238,33 @@ def handle_npm(path, expanded_path):
     cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
     subprocess.Popen(cmd, start_new_session=True)
     return f"npm {npm_cmd} in {project_path}"
+
+
+def handle_terminal_cmd(path, expanded_path):
+    """
+    Open terminal at a directory with optional command.
+
+    Usage in config:
+        ["My Project", "~/project command args", "terminal_cmd"]
+
+    Examples:
+        "~/project"              -> cd ~/project, open bash
+        "~/project ./go.sh"      -> cd ~/project && ./go.sh
+        "~/project npm run dev"  -> cd ~/project && npm run dev
+    """
+    parts = expanded_path.split()
+    project_path = os.path.expanduser(parts[0])
+    command = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    if command:
+        shell_cmd = f'cd {shlex.quote(project_path)} && {command}'
+        cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    else:
+        # Just open terminal at directory
+        cmd = _build_terminal_workdir_cmd(project_path)
+
+    subprocess.Popen(cmd, start_new_session=True)
+    return f"Terminal at {project_path}" + (f" running {command}" if command else "")
 
 
 def handle_directorydev_action(expanded_path, action):
@@ -513,12 +549,16 @@ def handle_rsync_backup_id_port(path, expanded_path):
 
 COMPLEX_HANDLER_INFO = {
     "ssh_session": {
-        "description": "SSH with cd/command support",
-        "example": "user@host cd /var/www npm start"
+        "description": "SSH with optional path and command",
+        "example": "user@host /var/www ./go.sh"
     },
     "ssh_cd_npm": {
-        "description": "SSH with cd/command support (alias)",
-        "example": "user@host cd /app npm start"
+        "description": "SSH with optional path and command (alias)",
+        "example": "user@host /app npm start"
+    },
+    "terminal_cmd": {
+        "description": "Terminal at path with optional command",
+        "example": "~/project ./go.sh"
     },
     "terminal_npm": {
         "description": "Run npm start in terminal (legacy)",
@@ -555,6 +595,7 @@ COMPLEX_HANDLER_INFO = {
 COMPLEX_HANDLERS = {
     "ssh_session": handle_ssh_session,
     "ssh_cd_npm": handle_ssh_session,  # Alias - describes the SSH + cd + npm functionality
+    "terminal_cmd": handle_terminal_cmd,
     "terminal_npm": handle_terminal_npm,  # Legacy, use "npm" instead
     "npm": handle_npm,
     "directorydev": handle_directorydev,

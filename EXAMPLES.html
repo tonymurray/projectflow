@@ -145,11 +145,37 @@
         <span class="handler-name">SSH Session</span>
         <span class="handler-key">ssh_session</span>
     </div>
-    <div class="description">SSH to a server with optional cd and command execution. Also available as <code>ssh_cd_npm</code>.</div>
+    <div class="description">SSH to a server with optional path and command. If second part starts with /, ~, or . it's treated as a path.</div>
     <div class="example-label">Examples:</div>
-    <div class="example-code">["Server", "user@host", "ssh_session"]                        # SSH, run bash
-["Server", "user@host cd /var/www", "ssh_session"]            # SSH, cd to dir
-["Server", "user@host cd /app npm start", "ssh_session"]      # SSH, cd, run cmd</div>
+    <div class="example-code">["Server", "user@host", "ssh_session"]
+    -> ssh user@host
+
+["Server", "user@host /var/www", "ssh_session"]
+    -> ssh user@host 'cd /var/www && bash'
+
+["Server", "user@host /app ./go.sh", "ssh_session"]
+    -> ssh user@host 'cd /app && ./go.sh'
+
+["Server", "user@host npm start", "ssh_session"]
+    -> ssh user@host 'npm start'</div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="handler-name">Terminal Command</span>
+        <span class="handler-key">terminal_cmd</span>
+    </div>
+    <div class="description">Open terminal at a directory with optional command. Same syntax as ssh_session but for local paths.</div>
+    <div class="example-label">Examples:</div>
+    <div class="example-code">["Project", "~/project", "terminal_cmd"]
+    -> opens terminal at ~/project
+
+["Run Script", "~/project ./go.sh", "terminal_cmd"]
+    -> cd ~/project && ./go.sh
+
+["Dev Server", "~/project npm run dev", "terminal_cmd"]
+    -> cd ~/project && npm run dev</div>
     <span class="type-badge type-complex">Complex</span>
 </div>
 
@@ -290,9 +316,10 @@
         <span class="handler-name">Terminal</span>
         <span class="handler-key">terminal</span>
     </div>
-    <div class="description">Opens a terminal window at the specified directory. Uses your configured terminal (Konsole, GNOME Terminal, etc.).</div>
+    <div class="description">Opens a terminal window at the specified directory. For running commands, use <code>terminal_cmd</code> instead.</div>
     <div class="example-label">Example:</div>
-    <div class="example-code">["Project Terminal", "~/projects/myapp", "terminal"]</div>
+    <div class="example-code">["Project Terminal", "~/projects/myapp", "terminal"]
+    -> opens terminal at ~/projects/myapp</div>
     <span class="type-badge type-builtin">Built-in</span>
 </div>
 
