@@ -6965,9 +6965,10 @@ StartupNotify=true
 
                 terminal_name = self.get_configured_terminal()
                 if command:
-                    # Run command in terminal
-                    shell_cmd = f'cd {shlex.quote(workdir)} && {command}'
-                    cmd = self._get_terminal_command(shell_cmd, hold=True)
+                    # Run command in subshell with trapped INT for clean exit
+                    # Then drop to interactive shell
+                    shell_cmd = f'cd {shlex.quote(workdir)} && (trap "exit 0" INT; {command}); exec bash'
+                    cmd = self._get_terminal_command(shell_cmd, hold=False)
                     subprocess.Popen(cmd, start_new_session=True)
                     self.status_label.setText(f"✓ Running in {terminal_name}: {command}")
                 else:

@@ -257,8 +257,10 @@ def handle_terminal_cmd(path, expanded_path):
     command = " ".join(parts[1:]) if len(parts) > 1 else ""
 
     if command:
-        shell_cmd = f'cd {shlex.quote(project_path)} && {command}'
-        cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+        # Run command in subshell with trapped INT for clean exit
+        # Then drop to interactive shell
+        shell_cmd = f'cd {shlex.quote(project_path)} && (trap "exit 0" INT; {command}); exec bash'
+        cmd = _build_terminal_shell_cmd(shell_cmd, hold=False)
     else:
         # Just open terminal at directory
         cmd = _build_terminal_workdir_cmd(project_path)
