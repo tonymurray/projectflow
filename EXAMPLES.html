@@ -316,10 +316,16 @@
         <span class="handler-name">Terminal</span>
         <span class="handler-key">terminal</span>
     </div>
-    <div class="description">Opens a terminal window at the specified directory. For running commands, use <code>terminal_cmd</code> instead.</div>
-    <div class="example-label">Example:</div>
+    <div class="description">Opens a terminal at the specified directory with optional command. Also available as <code>konsole</code>.</div>
+    <div class="example-label">Examples:</div>
     <div class="example-code">["Project Terminal", "~/projects/myapp", "terminal"]
-    -> opens terminal at ~/projects/myapp</div>
+    -> opens terminal at ~/projects/myapp
+
+["Run Script", "~/project ./go.sh", "terminal"]
+    -> cd ~/project && ./go.sh
+
+["Dev Server", "~/project npm run dev", "konsole"]
+    -> cd ~/project && npm run dev</div>
     <span class="type-badge type-builtin">Built-in</span>
 </div>
 

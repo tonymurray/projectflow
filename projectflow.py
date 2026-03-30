@@ -6953,12 +6953,28 @@ StartupNotify=true
                 return
 
             # 1b. Handle terminal/konsole using configured terminal
+            # Supports optional command: "~/path command args" -> cd ~/path && command args
             if app in ("konsole", "terminal"):
-                workdir = expanded_path if os.path.isdir(expanded_path) else os.path.dirname(expanded_path)
-                cmd = self._get_terminal_workdir_command(workdir)
-                subprocess.Popen(cmd, start_new_session=True)
+                parts = expanded_path.split()
+                workdir = parts[0]
+                command = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+                # Ensure workdir is a directory
+                if os.path.isfile(workdir):
+                    workdir = os.path.dirname(workdir)
+
                 terminal_name = self.get_configured_terminal()
-                self.status_label.setText(f"✓ Opened terminal ({terminal_name}): {path}")
+                if command:
+                    # Run command in terminal
+                    shell_cmd = f'cd {shlex.quote(workdir)} && {command}'
+                    cmd = self._get_terminal_command(shell_cmd, hold=True)
+                    subprocess.Popen(cmd, start_new_session=True)
+                    self.status_label.setText(f"✓ Running in {terminal_name}: {command}")
+                else:
+                    # Just open terminal at directory
+                    cmd = self._get_terminal_workdir_command(workdir)
+                    subprocess.Popen(cmd, start_new_session=True)
+                    self.status_label.setText(f"✓ Opened terminal ({terminal_name}): {path}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
                 return
 
