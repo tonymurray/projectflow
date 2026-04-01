@@ -157,6 +157,7 @@ Archive file format:
 
 **UI Construction:**
 - `init_ui()`: Creates main window with scroll area
+- `create_title_bar()`: Creates title bar with searchable project name (uses `ClickableSearchTitle` widget)
 - `create_projects_section()`: Builds the quick-access section for recent/all projects
 - `build_main_content()`: Constructs the three-column layout with all buttons
 
@@ -186,6 +187,14 @@ Archive file format:
 - `add_icon_preference()` / `edit_icon_preference()` / `delete_icon_preference()`: CRUD operations for icon mappings
 - `apply_settings()`: Saves both settings and icon preferences to their respective files
 - `update_theme()`: Refreshes dialog styling when theme changes
+
+### `ClickableSearchTitle` (widget in projectflow.py)
+
+Custom widget for the title bar that transforms between display and search modes:
+- Uses `QStackedWidget` to switch between label (display) and `QLineEdit` (search)
+- `QCompleter` provides autocomplete dropdown with case-insensitive substring matching
+- Click title to enter search mode, Enter to select, Escape/click elsewhere to cancel
+- Emits `configSelected` signal with config path when user selects a match
 
 ## Application Launching Logic
 
@@ -294,6 +303,8 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
 - **Item buttons**: Individual launchers with application icons. Drag to reorder within category (saves to config).
 - **Edit mode**: Toggle to enable editing - shows "Add Entry" buttons per category and "Add Category" button at bottom
+- **Title bar search**: Click the project title to enter search mode. Type to filter configs with autocomplete dropdown (case-insensitive substring match). Press Enter to switch to the first/selected match, or click elsewhere to cancel.
+- **Archive buttons**: At bottom-right of notepad. "📥 Archive" saves notes with timestamp and clears notepad. "📜 View" opens archive dialog (greyed out when no archive exists).
 
 ### Theme System
 

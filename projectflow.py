@@ -18,9 +18,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox, QMessageBox, QScrollArea, QFrame, QTextEdit, QToolBar,
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
-    QPlainTextEdit
+    QPlainTextEdit, QStackedWidget, QCompleter
 )
-from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize
+from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, pyqtSignal, QStringListModel, QEvent
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
 import re
 import urllib.request
@@ -295,6 +295,198 @@ class CategoryDropZone(QWidget):
             if pos.y() < widget_rect.center().y():
                 return i
         return len(self.item_widgets)
+
+
+class ClickableSearchTitle(QWidget):
+    """A title widget that transforms into a search input on click"""
+
+    configSelected = pyqtSignal(str)  # Emits config path when selected
+
+    def __init__(self, current_name, config_paths, theme_func, parent=None):
+        """
+        Args:
+            current_name: Display name (uppercased)
+            config_paths: List of available config file paths
+            theme_func: Reference to app.t() for theming
+        """
+        super().__init__(parent)
+        self.current_name = current_name
+        self.config_paths = config_paths
+        self.t = theme_func
+
+        # Build config name to path mapping
+        self.config_map = {}
+        for path in config_paths:
+            name = os.path.basename(path)
+            name = os.path.splitext(name)[0]
+            if name.endswith('_config'):
+                name = name[:-7]
+            display_name = name.replace('_', ' ').upper()
+            self.config_map[display_name] = path
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Stacked widget to switch between label and search
+        self.stack = QStackedWidget()
+        self.stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+        # Page 0: Clickable label (display mode)
+        self.title_label = QLabel(current_name)
+        self.title_label.setStyleSheet(f"font-size: 20pt; font-weight: bold; color: {self.t('fg_secondary')}; padding: 0; margin: 0;")
+        self.title_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.title_label.mousePressEvent = lambda e: self.enter_search_mode()
+        self.stack.addWidget(self.title_label)
+
+        # Page 1: Search input (search mode) - seamless transparent style
+        self.search_input = QLineEdit()
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                font-size: 20pt;
+                font-weight: bold;
+                color: {self.t('fg_secondary')};
+                background-color: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
+            }}
+        """)
+        self.search_input.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.search_input.setPlaceholderText("Search...")
+
+        # Setup completer
+        self.completer = QCompleter(list(self.config_map.keys()))
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.completer.popup().setStyleSheet(f"""
+            QListView {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                font-size: 14pt;
+            }}
+            QListView::item:selected {{
+                background-color: {self.t('bg_category')};
+            }}
+        """)
+        self.search_input.setCompleter(self.completer)
+
+        # Connect signals
+        self.search_input.returnPressed.connect(self.on_return_pressed)
+        self.completer.activated.connect(self.on_completer_activated)
+
+        # Use event filter to detect focus out (more reliable than editingFinished)
+        self.search_input.installEventFilter(self)
+
+        self.stack.addWidget(self.search_input)
+        layout.addWidget(self.stack)
+
+        # Start in display mode
+        self.stack.setCurrentIndex(0)
+
+    def eventFilter(self, obj, event):
+        """Handle focus out to revert to display mode"""
+        if obj == self.search_input and event.type() == QEvent.Type.FocusOut:
+            # Small delay to allow completer click to register
+            QTimer.singleShot(100, self._check_and_exit_search)
+        return super().eventFilter(obj, event)
+
+    def _check_and_exit_search(self):
+        """Check if we should exit search mode after focus out"""
+        # Don't exit if focus returned to search input or completer is active
+        if self.search_input.hasFocus():
+            return
+        popup = self.completer.popup()
+        if popup.isVisible() and popup.hasFocus():
+            return
+        # Exit search mode - revert to showing current config
+        self.exit_search_mode()
+
+    def enter_search_mode(self):
+        """Switch to search input mode"""
+        self.stack.setCurrentIndex(1)
+        self.search_input.clear()
+        self.search_input.setFocus()
+
+    def exit_search_mode(self):
+        """Switch back to label display (reverts to current config name)"""
+        self.stack.setCurrentIndex(0)
+
+    def on_return_pressed(self):
+        """Handle Enter key - switch to first/selected match"""
+        text = self.search_input.text().strip().upper()
+        if not text:
+            self.exit_search_mode()
+            return
+
+        # Check for exact match first
+        if text in self.config_map:
+            self.configSelected.emit(self.config_map[text])
+            self.exit_search_mode()
+            return
+
+        # Check completer popup - use selected item or first match
+        popup = self.completer.popup()
+        if popup.isVisible():
+            # If user selected something, use that
+            if popup.currentIndex().isValid():
+                selected = popup.currentIndex().data()
+                if selected in self.config_map:
+                    self.configSelected.emit(self.config_map[selected])
+                    self.exit_search_mode()
+                    return
+            # Otherwise, use the first item in the filtered list
+            model = self.completer.completionModel()
+            if model.rowCount() > 0:
+                first_match = model.index(0, 0).data()
+                if first_match in self.config_map:
+                    self.configSelected.emit(self.config_map[first_match])
+                    self.exit_search_mode()
+                    return
+
+        # No match found - just exit
+        self.exit_search_mode()
+
+    def on_completer_activated(self, text):
+        """Handle selection from completer dropdown"""
+        if text in self.config_map:
+            self.configSelected.emit(self.config_map[text])
+            self.exit_search_mode()
+
+    def update_title(self, new_name):
+        """Update the displayed title"""
+        self.current_name = new_name
+        self.title_label.setText(new_name)
+
+    def update_theme(self, theme_func):
+        """Update colors when theme changes"""
+        self.t = theme_func
+        self.title_label.setStyleSheet(f"font-size: 20pt; font-weight: bold; color: {self.t('fg_secondary')}; padding: 0; margin: 0;")
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                font-size: 20pt;
+                font-weight: bold;
+                color: {self.t('fg_secondary')};
+                background-color: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
+            }}
+        """)
+        self.completer.popup().setStyleSheet(f"""
+            QListView {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                font-size: 14pt;
+            }}
+            QListView::item:selected {{
+                background-color: {self.t('bg_category')};
+            }}
+        """)
 
 
 class ProjectFlowApp(QMainWindow):
@@ -3440,15 +3632,23 @@ StartupNotify=true
         title_bar = QHBoxLayout()
         title_bar.setContentsMargins(5, 5, 5, 10)
 
-        # Project title on left
+        # Project title on left (clickable search)
         config_name = os.path.basename(self.current_config_file)
         config_name = os.path.splitext(config_name)[0]
         if config_name.endswith('_config'):
             config_name = config_name[:-7]
         config_name = config_name.replace('_', ' ').upper()
-        config_title = QLabel(config_name)
-        config_title.setStyleSheet(f"font-size: 20pt; font-weight: bold; color: {self.t('fg_secondary')};")
-        title_bar.addWidget(config_title)
+
+        # Get available configs for search
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        config_paths = []
+        if os.path.isdir(configs_dir):
+            config_paths = [os.path.join(configs_dir, f) for f in os.listdir(configs_dir)
+                           if f.endswith('.json')]
+
+        self.title_search = ClickableSearchTitle(config_name, config_paths, self.t, self)
+        self.title_search.configSelected.connect(self.switch_to_config)
+        title_bar.addWidget(self.title_search)
 
         title_bar.addStretch()
 
@@ -4847,9 +5047,28 @@ StartupNotify=true
         archive_bar.addWidget(archive_btn)
 
         view_archive_btn = QPushButton("📜 View")
-        view_archive_btn.setStyleSheet(archive_btn_style)
         view_archive_btn.setToolTip("View archive")
         view_archive_btn.clicked.connect(self.view_archive)
+        # Grey out if archive is empty or doesn't exist
+        archive_file = self.get_archive_file_path()
+        has_archive = os.path.exists(archive_file) and os.path.getsize(archive_file) > 0
+        if has_archive:
+            view_archive_btn.setStyleSheet(archive_btn_style)
+        else:
+            view_archive_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_button')};
+                    color: {self.t('border')};
+                    border: 1px solid {self.t('bg_secondary')};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
         archive_bar.addWidget(view_archive_btn)
 
         notepad_layout.addLayout(archive_bar)
