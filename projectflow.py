@@ -3650,6 +3650,14 @@ StartupNotify=true
         self.title_search.configSelected.connect(self.switch_to_config)
         title_bar.addWidget(self.title_search)
 
+        # Keyboard shortcuts to focus search (only create once)
+        if not hasattr(self, '_search_shortcuts_created'):
+            search_shortcut1 = QShortcut(QKeySequence("/"), self)
+            search_shortcut1.activated.connect(self.focus_project_search)
+            search_shortcut2 = QShortcut(QKeySequence("F3"), self)
+            search_shortcut2.activated.connect(self.focus_project_search)
+            self._search_shortcuts_created = True
+
         title_bar.addStretch()
 
         # Status label on right
@@ -3658,6 +3666,11 @@ StartupNotify=true
         title_bar.addWidget(self.status_label)
 
         parent_layout.addLayout(title_bar)
+
+    def focus_project_search(self):
+        """Focus the project search input (called by keyboard shortcut)"""
+        if hasattr(self, 'title_search'):
+            self.title_search.enter_search_mode()
 
     def create_projects_section(self, parent_layout):
         """Create unified projects section with toggle between recent and alphabetical modes"""
@@ -3854,7 +3867,7 @@ StartupNotify=true
         self.projects_layout.addLayout(buttons_layout)
 
     def _populate_alphabetical_projects(self):
-        """Populate with all projects alphabetically in rows of 10"""
+        """Populate with all projects alphabetically in a grid of 10 columns"""
         configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
 
         if not os.path.exists(configs_dir):
@@ -3871,29 +3884,23 @@ StartupNotify=true
         if not config_files:
             return
 
-        # Create rows with max 10 buttons each
+        # Use grid layout for consistent column widths
         max_per_row = 10
-        total_configs = len(config_files)
-        num_full_rows = total_configs // max_per_row
-        last_row_count = total_configs % max_per_row
+        grid = QGridLayout()
+        grid.setSpacing(5)
+        grid.setContentsMargins(0, 0, 0, 0)
 
-        for row_idx in range(num_full_rows + (1 if last_row_count > 0 else 0)):
-            row = QHBoxLayout()
-            row.setSpacing(5)
-            row.setContentsMargins(0, 0, 0, 0)
+        for idx, config_path in enumerate(config_files):
+            row = idx // max_per_row
+            col = idx % max_per_row
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            grid.addWidget(btn_container, row, col)
 
-            start_idx = row_idx * max_per_row
-            is_last_row = (row_idx == num_full_rows) and (last_row_count > 0)
-            items_in_row = last_row_count if is_last_row else max_per_row
+        # Set all columns to stretch equally
+        for col in range(max_per_row):
+            grid.setColumnStretch(col, 1)
 
-            for i in range(items_in_row):
-                config_path = config_files[start_idx + i]
-                btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
-                if is_last_row:
-                    btn_container.setFixedWidth(150)
-                row.addWidget(btn_container)
-
-            self.projects_layout.addLayout(row)
+        self.projects_layout.addLayout(grid)
 
     def _create_config_button(self, config_path, is_pinned, draggable=False):
         """Create a config button with new window button"""
