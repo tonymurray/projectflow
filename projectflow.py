@@ -5722,20 +5722,12 @@ StartupNotify=true
         self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def add_new_entry(self, col_idx, category_name):
-        """Add a new empty entry to a category"""
-        # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
-
-        column = self.COLUMN_1
-        for category_dict in column:
-            if category_name in category_dict:
-                items = category_dict[category_name]
-                # Add a new empty entry
-                items.append(["New Launcher", "/path/to/file", "editor"])
-                break
-
-        self.save_config_to_json()
-        self.refresh_projects(restore_scroll_pos=scroll_pos)
+        """Add a new entry - opens dialog immediately"""
+        self._show_item_edit_dialog(
+            col_idx=col_idx,
+            category_name=category_name,
+            item_data=None
+        )
 
     def add_new_category(self, col_idx):
         """Add a new category with a blank entry to a column"""
