@@ -15,7 +15,7 @@
       {
         "Websites": [
           ["Wikipedia", "https://www.wikipedia.org/", "firefox"],
-          ["This application's website", "https://github.com/", "browser"]
+          ["ProjectFlow on GitHUb", "https://github.com/tonymurray/projectflow", "browser"]
           
         ]
       },

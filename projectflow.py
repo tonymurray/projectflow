@@ -2704,8 +2704,9 @@ StartupNotify=true
         # Priority:
         # 1. Command-line argument
         # 2. Default config set in settings
-        # 3. Last used config
-        # 4. Standard default (projectflow.json)
+        # 3. First pinned project
+        # 4. Last used config
+        # 5. Standard default (projectflow.json)
 
         # Check if config file was passed as CLI argument
         if self.config_file_arg:
@@ -2727,6 +2728,18 @@ StartupNotify=true
             config_path = os.path.join(configs_dir, self.settings["default_project"])
             if os.path.exists(config_path):
                 return config_path
+
+        # Check for first pinned project
+        pinned = self.settings.get("pinned_projects", [])
+        if pinned:
+            first_pinned = pinned[0]
+            # Handle both relative and absolute paths
+            if os.path.isabs(first_pinned):
+                pinned_path = first_pinned
+            else:
+                pinned_path = os.path.join(configs_dir, first_pinned)
+            if os.path.exists(pinned_path):
+                return pinned_path
 
         # Check last used config
         if self.settings.get("last_used_project"):
