@@ -133,6 +133,10 @@ THEMES = {
         "bg_example_type_simple": "#3498db",    # Blue for simple
         "bg_example_type_complex": "#9b59b6",   # Purple for complex
         "bg_example_type_custom": "#e67e22",    # Orange for custom
+
+        # Footer
+        "bg_footer": "#5a5a5a",
+        "fg_footer": "#ffffff",
     },
 
     "dark": {
@@ -224,6 +228,10 @@ THEMES = {
         "bg_example_type_simple": "#1a4a7a",    # Blue for simple (darker)
         "bg_example_type_complex": "#5a2a7a",   # Purple for complex (darker)
         "bg_example_type_custom": "#8a5a1a",    # Orange for custom (darker)
+
+        # Footer
+        "bg_footer": "#363636",
+        "fg_footer": "#ffffff",
     }
 }
 

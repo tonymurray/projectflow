@@ -3621,6 +3621,7 @@ StartupNotify=true
         central_widget.setStyleSheet(f"background-color: {self.t('bg_primary')};")
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Create the Scroll Area and the "Inner" Container
         self.main_scroll = QScrollArea()
@@ -3629,6 +3630,7 @@ StartupNotify=true
         scroll_content_widget = QWidget()  # This widget will hold all your UI
         scroll_content_widget.setStyleSheet(f"background-color: {self.t('bg_primary')};")
         scroll_layout = QVBoxLayout(scroll_content_widget)  # The new "home" for your elements
+        scroll_layout.setContentsMargins(11, 11, 11, 0)  # No bottom margin so footer hugs window edge
 
         # Connect them
         self.main_scroll.setWidget(scroll_content_widget)
@@ -5106,21 +5108,19 @@ StartupNotify=true
         # Create unified projects section
         self.create_projects_section(parent_layout)
 
-        # Add separator line before footer
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet(f"background-color: {self.t('border')}; margin-top: 15px;")
-        separator.setFixedHeight(1)
-        parent_layout.addWidget(separator)
+        # Spacing above footer
+        parent_layout.addSpacing(20)
 
-        # Footer section
-        footer_layout = QHBoxLayout()
-        footer_layout.setContentsMargins(0, 10, 0, 5)
+        # Footer section with background color
+        footer_widget = QWidget()
+        footer_widget.setStyleSheet(f"background-color: {self.t('bg_footer')};")
+        footer_layout = QHBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(15, 10, 15, 10)
 
         # Footer text (left side) with version
         version = self.get_version()
         footer_text = QLabel(f"ProjectFlow  •  Open source project launcher  •  {version}")
-        footer_text.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
+        footer_text.setStyleSheet(f"color: {self.t('fg_footer')}; font-size: 11px;")
         footer_layout.addWidget(footer_text)
 
         footer_layout.addStretch()
@@ -5166,7 +5166,7 @@ StartupNotify=true
         settings_btn.setToolTip("Open application settings")
         footer_layout.addWidget(settings_btn)
 
-        parent_layout.addLayout(footer_layout)
+        parent_layout.addWidget(footer_widget)
 
     def open_config_in_new_window(self, config_path):
         """Launch a new instance of ProjectFlow with the specified config"""
