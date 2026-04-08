@@ -19,6 +19,14 @@ A project/activity focused organizer for Linux desktops to collect links to proj
 
 ## Installation
 
+### uv
+
+```bash
+uv venv
+uv pip install PyQt6 PyQt6-WebEngine PyMuPDF qtconsole
+uv run projectflow.py
+```
+
 ### Standard Linux (Ubuntu, Fedora, Debian, etc.)
 
 Install dependencies via pip:
