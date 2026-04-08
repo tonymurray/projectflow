@@ -4764,9 +4764,9 @@ StartupNotify=true
                 """)
 
                 # Create label for PDF display
-                self.pdf_label = QLabel()
+                self.pdf_label = QLabel("No PDF loaded\n\nUse the 📂 button to open a PDF file")
                 self.pdf_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-                self.pdf_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; padding-top: 15px;")
+                self.pdf_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; padding-top: 50px; font-size: 14px;")
                 self.pdf_scroll.setWidget(self.pdf_label)
 
                 pdf_container_layout.addWidget(self.pdf_scroll)
@@ -4813,9 +4813,9 @@ StartupNotify=true
                 """)
 
                 # Create label for image display
-                self.image_label = QLabel()
+                self.image_label = QLabel("No image loaded\n\nUse the 📂 button to open an image")
                 self.image_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-                self.image_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; padding-top: 15px;")
+                self.image_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; padding-top: 50px; font-size: 14px;")
                 self.image_scroll.setWidget(self.image_label)
 
                 image_container_layout.addWidget(self.image_scroll)
@@ -6279,10 +6279,14 @@ StartupNotify=true
     def get_viewer_cycle_order(self):
         """Get the viewer cycle order: default -> examples -> help -> remaining viewers"""
         default_viewer = getattr(self, 'config_column2_default', None) or "pdf"
-        # Fixed positions: default first, examples second, help third
-        # Remaining viewers fill in after
+        # Build cycle: default first, then examples/help (if not default), then remaining viewers
         remaining = [m for m in ["pdf", "webview", "image", "console"] if m != default_viewer]
-        return [default_viewer, "examples", "help"] + remaining
+        cycle = [default_viewer]
+        if default_viewer != "examples":
+            cycle.append("examples")
+        if default_viewer != "help":
+            cycle.append("help")
+        return cycle + remaining
 
     def toggle_column2_mode(self):
         """Toggle between viewers: default -> examples -> help -> remaining viewers"""
@@ -6465,14 +6469,57 @@ StartupNotify=true
         self.webview_url = url.toString()
         self.save_notes()
 
+    def switch_to_viewer_mode(self, mode):
+        """Switch directly to a specific viewer mode"""
+        # Hide all containers
+        self.pdf_container.hide()
+        self.webview_container.hide()
+        self.image_container.hide()
+        self.help_container.hide()
+        self.examples_container.hide()
+        self.console_container.hide()
+
+        # Mode display info
+        mode_info = {
+            "pdf": ("PDF", "PDF Viewer", self.pdf_container),
+            "webview": ("Web", "Web View", self.webview_container),
+            "image": ("Image", "Image Viewer", self.image_container),
+            "help": ("Help", "Help", self.help_container),
+            "examples": ("Examples", "Handler Examples", self.examples_container),
+            "console": ("Console", "Console", self.console_container),
+        }
+
+        if mode not in mode_info:
+            return
+
+        self.column2_mode = mode
+        btn_text, header_text, container = mode_info[mode]
+
+        # Get next mode for tooltip
+        cycle = self.get_viewer_cycle_order()
+        current_idx = cycle.index(mode) if mode in cycle else 0
+        next_mode = cycle[(current_idx + 1) % len(cycle)]
+        next_btn_text = mode_info[next_mode][0]
+
+        self.column2_toggle_btn.setText(btn_text)
+        self.column2_toggle_btn.setToolTip(f"Click for {next_btn_text}")
+        self.column2_header.setText(header_text)
+        container.show()
+
+        # Load content for viewers that need it
+        if mode == "help":
+            self.load_help_content()
+        elif mode == "examples":
+            self.load_examples_content()
+
     def preview_in_webview(self, url):
         """Preview a URL in the webview panel"""
         if not self.webview:
             return
 
-        # Switch to webview mode if not already
-        while self.column2_mode != "webview":
-            self.toggle_column2_mode()
+        # Switch to webview mode directly
+        if self.column2_mode != "webview":
+            self.switch_to_viewer_mode("webview")
 
         # Load the URL
         if not url.startswith(('http://', 'https://')):
@@ -6484,9 +6531,9 @@ StartupNotify=true
         if not hasattr(self, 'image_label') or not self.image_label:
             return
 
-        # Switch to image mode if not already
-        while self.column2_mode != "image":
-            self.toggle_column2_mode()
+        # Switch to image mode directly
+        if self.column2_mode != "image":
+            self.switch_to_viewer_mode("image")
 
         # Load the image
         self.load_image(path)
