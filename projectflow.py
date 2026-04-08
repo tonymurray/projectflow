@@ -3216,6 +3216,10 @@ StartupNotify=true
 
     def detect_default_terminal(self):
         """Detect appropriate terminal based on desktop environment."""
+        # Prefer xdg-terminal-exec if available (freedesktop standard, respects user's default)
+        if shutil.which('xdg-terminal-exec'):
+            return 'xdg-terminal-exec'
+
         de = self.detect_desktop_environment()
 
         terminal_map = {
@@ -3318,6 +3322,7 @@ StartupNotify=true
         # Terminal-specific argument patterns
         # Format: (hold_flag, execute_separator, needs_shell_wrapper)
         terminal_configs = {
+            "xdg-terminal-exec": (None, [], True),  # command passed directly as args
             "konsole": ("--hold", ["-e"], True),
             "gnome-terminal": (None, ["--"], True),  # gnome-terminal doesn't have hold
             "xfce4-terminal": ("--hold", ["-e"], True),
@@ -3363,6 +3368,7 @@ StartupNotify=true
 
         # Terminal-specific workdir argument patterns
         workdir_args = {
+            "xdg-terminal-exec": ["bash", "-c", "cd " + shlex.quote(path) + " && exec $SHELL"],
             "konsole": ["--workdir", path],
             "gnome-terminal": ["--working-directory=" + path],
             "xfce4-terminal": ["--working-directory=" + path],
