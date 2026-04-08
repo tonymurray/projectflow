@@ -1,15 +1,15 @@
 {
   "column_headers": [
-    "Getting Started",
+    "Example launchers",
     "Documentation",
     "Notes"
   ],
   "columns": [
     [
       {
-        "Resources": [
-          ["New project", "new_project.json", "projectflowlink"],
-          ["Terminal", "~/", "terminal"]
+        "Places": [
+          ["Open Home Folder", "~/", "file_manager"],
+          ["Open Documents Folder", "~/Documents", "file_manager"]
         ]
       },
       {
@@ -20,15 +20,15 @@
         ]
       },
       {
-        "Places": [
-          ["Open Home Folder", "~/", "file_manager"],
-          ["Open Documents Folder", "~/Documents", "file_manager"]
+        "Actions": [
+          ["View a log file", "/var/log/messages", "tail_log"],
+          ["Terminal", "~/", "terminal"]
         ]
       }
     ],
     [],
     []
   ],
-  "column2_default": "help",
+  "column2_default": "examples",
   "webview_url": "https://www.wikipedia.org/"
 }
