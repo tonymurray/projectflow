@@ -68,6 +68,7 @@ User preferences are stored in `.projectflow_settings.json`:
 - `pdfviewer`: Path to an external PDF viewer application (e.g., `"~/Programs/notesviewer/notesviewer.py"`). When set, adds an "External" button to the PDF toolbar that opens the current PDF in this viewer. Omit this setting to hide the button.
 - `open_note_external`: External markdown editor command (e.g., `"zettlr"`, `"code"`, `"kate"`). When set, adds a 📝 button to the notepad toolbar that opens the current note's markdown file in this editor.
 - `enable_baloo_tags`: Enable/disable Baloo tag querying for tagged files (default: `true`). Set to `false` on non-KDE systems.
+- `swap_launcher_viewer`: Swap the positions of launcher and viewer columns (default: `false`). When `true`, layout becomes Viewer | Launchers | Notepad instead of Launchers | Viewer | Notepad.
 - `terminal`: External terminal application (default: auto-detected based on desktop environment). Used by terminal-related handlers and the Console viewer's "External" button. Leave empty for auto-detection.
 - `editor`: Default code/text editor (default: auto-detected based on desktop environment). Used by `directorydev` handler. Leave empty for auto-detection. Auto-detection: KDE→kate, GNOME→gedit, XFCE→mousepad, etc.
 - `file_manager`: Default file manager (default: auto-detected based on desktop environment). Used by `directorydev` and `dolphin_tabs` handlers. Leave empty for auto-detection. Auto-detection: KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.

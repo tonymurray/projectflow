@@ -543,6 +543,7 @@ class ProjectFlowApp(QMainWindow):
                     "last_used_project": None,
                     "recent_projects": [],  # List of recently used projects (max 10)
                     "enable_baloo_tags": False,  # Query Baloo for tagged files (KDE only)
+                    "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
                 }
                 self.save_settings()
         except Exception as e:
@@ -553,7 +554,11 @@ class ProjectFlowApp(QMainWindow):
                 "last_used_project": None,
                 "recent_projects": [],
                 "enable_baloo_tags": False,
+                "swap_launcher_viewer": False,
             }
+
+        # Store swap_columns for easy access
+        self.swap_columns = self.settings.get("swap_launcher_viewer", False)
 
     def _migrate_settings(self):
         """Migrate old settings keys to new names"""
@@ -927,6 +932,15 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
+
+        # Swap Columns
+        swap_label = QLabel("Layout:")
+        swap_label.setStyleSheet(label_style)
+        self._settings_swap_columns = QCheckBox("Swap launcher and viewer columns")
+        self._settings_swap_columns.setChecked(self.settings.get("swap_launcher_viewer", False))
+        self._settings_swap_columns.setStyleSheet(f"color: {self.t('fg_primary')};")
+        self._settings_swap_columns.setToolTip("Show viewer column on the left and launchers in the middle")
+        layout.addRow(swap_label, self._settings_swap_columns)
 
         # Joplin Token
         joplin_label = QLabel("Joplin Token:")
@@ -2433,6 +2447,10 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["notes_folder"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
+
+            # Save swap columns setting and update instance variable
+            self.settings["swap_launcher_viewer"] = self._settings_swap_columns.isChecked()
+            self.swap_columns = self.settings["swap_launcher_viewer"]
 
             joplin_token = self._settings_joplin.text().strip()
             if joplin_token:
@@ -4691,10 +4709,10 @@ StartupNotify=true
             # Add stretch at bottom of column
             column_layout.addStretch()
 
-            # Add this column to the horizontal layout with stretch factor
-            columns_layout.addLayout(column_layout, 1)
+            # Store launcher column layout (will be added after viewer is built)
+            launcher_layout = column_layout
 
-            # After launcher column, add the viewer panel (always shown)
+            # Build the viewer panel (always shown)
             if col_idx == 0:
                 self.column2_layout = QVBoxLayout()
                 self.column2_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
@@ -4985,7 +5003,15 @@ StartupNotify=true
                 if self.image_path:
                     self.load_image(self.image_path)
 
-                columns_layout.addLayout(self.column2_layout, 1)
+        # Add launcher and viewer columns in configurable order
+        if self.swap_columns:
+            # Viewer | Launcher order
+            columns_layout.addLayout(self.column2_layout, 1)
+            columns_layout.addLayout(launcher_layout, 1)
+        else:
+            # Default: Launcher | Viewer order
+            columns_layout.addLayout(launcher_layout, 1)
+            columns_layout.addLayout(self.column2_layout, 1)
 
         # Add notepad panel (always shown)
         notepad_layout = QVBoxLayout()
