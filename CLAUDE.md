@@ -76,17 +76,75 @@ User preferences are stored in `.projectflow_settings.json`:
 ### Per-Config Options
 
 These options can be set in individual config JSON files:
+- `project_name`: Display name for the project (shown in title bar, window title). If not set, defaults to the config filename (without extension) or parent folder name for `.projectflow` files.
 - `pdf_file`: Default PDF file to load for this config
 - `webview_url`: Default URL to load in web viewer for this config
 - `image_file`: Default image file to load for this config
 - `console_path`: Default directory for the embedded console
-- `column2_default`: Which viewer to show by default - `"pdf"`, `"webview"`, `"image"`, `"help"`, `"examples"`, or `"console"`
+- `column2_default`: Which viewer to show by default - `"pdf"`, `"webview"`, `"image"`, `"help"`, `"examples"`, `"console"`, or `"folder"`
 - `terminal`: Terminal emulator override for this config (e.g., `"gnome-terminal"`, `"alacritty"`). Overrides global terminal setting.
+- `notes_file`: Path to project-local notes file (e.g., `"./projectflow.md"`). When set, notes are loaded from this file instead of the global notes folder. Supports relative paths resolved from the config file location.
 
 These options can also be set via the 📌 button in each viewer toolbar:
 - Load a PDF, webpage, or image in the central viewer
 - Click 📌 to save it as the default AND set that viewer as `column2_default`
 - To change default viewer type: switch to the desired viewer, load content, click 📌
+
+### Project-Local Configs (.projectflow)
+
+The Folder Browser viewer can create `.projectflow` config files directly within any folder. These are hidden config files that live alongside your project code.
+
+**Creating a project:**
+1. Navigate to a folder using the Folder Browser viewer
+2. Click "Make Project" to create `.projectflow` and `projectflow.md`
+3. The app auto-detects project type (npm, Python, Git, Docker, etc.) and creates appropriate launchers
+
+**Project-local config structure:**
+```json
+{
+  "project_name": "MyProject",
+  "column_headers": ["MyProject Project"],
+  "columns": [[
+    {
+      "Development": [
+        ["Open in Editor", ".", "editor"],
+        ["Terminal Here", ".", "terminal"],
+        ["File Manager", ".", "file_manager"]
+      ]
+    },
+    {
+      "npm": [
+        ["npm install", ". install", "npm"],
+        ["npm start", ". start", "npm"]
+      ]
+    }
+  ]],
+  "column2_default": "console",
+  "console_path": ".",
+  "notes_file": "./projectflow.md"
+}
+```
+
+**Path conventions in .projectflow:**
+- `.` = current folder (where .projectflow lives)
+- `./file.txt` = relative file path
+- `. command` = run command in folder (e.g., `. start` for `npm start`)
+- All relative paths are automatically resolved to absolute paths when loaded
+
+**Project detection indicators:**
+| File/Folder | Auto-generated launchers |
+|-------------|-------------------------|
+| `package.json` | npm install, start, dev, build, test (based on scripts) |
+| `requirements.txt` / `setup.py` / `pyproject.toml` | pip install |
+| `Makefile` | make |
+| `docker-compose.yml` | docker-compose up/down |
+| `.git` | git status, git log |
+| `README.md` | Open README |
+
+**Project-local notes:**
+- Notes are stored in `projectflow.md` in the same folder (specified by `notes_file`)
+- These are visible, editable markdown files that live with your project
+- Changes sync automatically with any markdown editor or version control
 
 ### Adding Resources
 
@@ -288,7 +346,8 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 
 - **Three-panel layout**: Shortcuts (left) | Viewer (center) | Notepad (right)
 - **Shortcuts panel**: Single column of categorized launchers with "Open All" buttons per category
-- **Central viewer**: Toggles between PDF viewer, web browser, image viewer, help, examples, and console (cycles PDF → Web → Image → Help → Examples → Console). Each viewer has an "External" button to open in a standalone application.
+- **Central viewer**: Toggles between PDF viewer, web browser, image viewer, help, examples, console, and folder browser (cycles PDF → Web → Image → Help → Examples → Console → Folder). Each viewer has an "External" button to open in a standalone application.
+- **Folder browser**: Navigate the filesystem, detect project folders with `.projectflow` configs, and create new projects. Folders with existing `.projectflow` show [P] badge and can be opened directly.
 - **Examples viewer**: Displays launch handler documentation from EXAMPLES.html. Uses theme color placeholders (e.g., `{fg_primary}`) that are replaced at runtime. Reload button refreshes content; External button opens the file for editing.
 - **Embedded console**: IPython/qtconsole for quick Python and shell commands (`!ls`, `!git status`). Limitations: no interactive programs (nano, vim) - use External button for full terminal.
   - **Why qtconsole**: Well-established Jupyter project with strong community support. Alternatives considered:

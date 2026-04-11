@@ -699,8 +699,7 @@ class ProjectFlowApp(QMainWindow):
             initial_tab: Index of tab to show (0=Project Launchers, 1=Project Defaults)
         """
         # Get project name for title
-        config_name = os.path.basename(self.current_config_file)
-        project_name = os.path.splitext(config_name)[0]
+        project_name = self.get_project_name()
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Project Settings - {project_name}")
@@ -1034,6 +1033,15 @@ class ProjectFlowApp(QMainWindow):
 
         form_layout = QFormLayout()
         form_layout.setSpacing(12)
+
+        # Project Name
+        name_label = QLabel("Project Name:")
+        name_label.setStyleSheet(label_style)
+        self._proj_project_name = QLineEdit()
+        self._proj_project_name.setText(getattr(self, 'config_project_name', None) or "")
+        self._proj_project_name.setPlaceholderText(f"Default: {self.get_project_name()}")
+        self._proj_project_name.setStyleSheet(input_style)
+        form_layout.addRow(name_label, self._proj_project_name)
 
         # Default Viewer
         viewer_label = QLabel("Default Viewer:")
@@ -2390,6 +2398,8 @@ class ProjectFlowApp(QMainWindow):
         """Apply settings without closing the dialog"""
         # === Save Project Settings ===
         if hasattr(self, '_proj_default_viewer'):
+            # Project name
+            self.config_project_name = self._proj_project_name.text().strip() or None
             # Viewer defaults
             self.config_column2_default = self._proj_default_viewer.currentText() or None
             self.config_pdf_file = self._proj_pdf_file.text().strip() or None
@@ -2493,6 +2503,12 @@ class ProjectFlowApp(QMainWindow):
             if os.path.exists(self.current_config_file):
                 with open(self.current_config_file, 'r') as f:
                     config_data = json.load(f)
+
+            # Update project name
+            if self.config_project_name:
+                config_data["project_name"] = self.config_project_name
+            elif "project_name" in config_data:
+                del config_data["project_name"]
 
             # Update viewer defaults
             if self.config_column2_default:
@@ -2804,6 +2820,14 @@ StartupNotify=true
                 self.config_column2_default = config_data.get('column2_default', None)
                 # Load per-config terminal override
                 self.config_terminal = config_data.get('terminal', None)
+                # Load project-local notes file path if specified
+                self.config_notes_file = config_data.get('notes_file', None)
+                # Load project name if specified (for display in title bar)
+                self.config_project_name = config_data.get('project_name', None)
+
+                # For .projectflow configs, resolve relative paths in launchers
+                if os.path.basename(self.current_config_file) == '.projectflow':
+                    self.resolve_relative_paths_in_config()
             else:
                 # Create default config file
                 self.create_default_project(self.current_config_file)
@@ -2816,8 +2840,56 @@ StartupNotify=true
                 self.config_console_path = None
                 self.config_column2_default = None
                 self.config_terminal = None
+                self.config_notes_file = None
+                self.config_project_name = None
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
+
+    def resolve_relative_paths_in_config(self):
+        """Resolve relative paths (. and ./) in COLUMN_1 items for .projectflow configs"""
+        config_dir = os.path.dirname(self.current_config_file)
+
+        for category_dict in self.COLUMN_1:
+            for category_name, items in category_dict.items():
+                for item in items:
+                    if len(item) >= 2:
+                        path = item[1]
+                        # Handle "." (current directory)
+                        if path == ".":
+                            item[1] = config_dir
+                        # Handle "./" relative paths
+                        elif path.startswith("./"):
+                            item[1] = os.path.join(config_dir, path[2:])
+                        # Handle ". command" pattern (e.g., ". start" for npm)
+                        elif path.startswith(". "):
+                            item[1] = config_dir + path[1:]  # Replace "." with config_dir
+
+        # Also resolve console_path if it's relative
+        if hasattr(self, 'config_console_path') and self.config_console_path:
+            if self.config_console_path == ".":
+                self.config_console_path = config_dir
+            elif self.config_console_path.startswith("./"):
+                self.config_console_path = os.path.join(config_dir, self.config_console_path[2:])
+
+    def get_project_name(self):
+        """Get the display name for the current project.
+
+        Returns project_name from config if set, otherwise derives from filename.
+        For .projectflow files without project_name, uses the parent folder name.
+        """
+        # Use explicit project_name if set in config
+        if hasattr(self, 'config_project_name') and self.config_project_name:
+            return self.config_project_name
+
+        # Derive from filename
+        config_name = os.path.basename(self.current_config_file)
+
+        # For .projectflow, use parent folder name
+        if config_name == '.projectflow':
+            return os.path.basename(os.path.dirname(self.current_config_file))
+
+        # Remove .json extension
+        return os.path.splitext(config_name)[0]
 
     def load_icon_preferences(self):
         """Load icon preferences from shared icon_preferences.json file"""
@@ -2881,7 +2953,24 @@ StartupNotify=true
         return os.path.expanduser(folder)
 
     def get_notes_file_path(self):
-        """Get the markdown file path for current config's notes"""
+        """Get the markdown file path for current config's notes.
+
+        For .projectflow configs with a notes_file field, returns the resolved path.
+        Otherwise uses the global notes folder with a filename derived from the config.
+        """
+        # Check if config has a project-local notes_file setting
+        if hasattr(self, 'config_notes_file') and self.config_notes_file:
+            notes_path = self.config_notes_file
+            # Resolve relative paths based on config file location
+            if notes_path.startswith('./') or notes_path == '.':
+                config_dir = os.path.dirname(self.current_config_file)
+                notes_path = os.path.join(config_dir, notes_path[2:] if notes_path.startswith('./') else '')
+            elif not os.path.isabs(notes_path):
+                config_dir = os.path.dirname(self.current_config_file)
+                notes_path = os.path.join(config_dir, notes_path)
+            return os.path.expanduser(notes_path)
+
+        # Default: use global notes folder
         folder = self.get_notes_folder()
         # Derive filename from config name (underscores become hyphens)
         config_name = os.path.basename(self.current_config_file)
@@ -2889,14 +2978,30 @@ StartupNotify=true
         return os.path.join(folder, f"{config_name.replace('_', '-')}.md")
 
     def get_archive_folder(self):
-        """Get the hidden .archive folder within the notes folder"""
+        """Get the hidden .archive folder within the notes folder.
+
+        For project-local notes, returns .archive in the project folder.
+        Otherwise returns .archive in the global notes folder.
+        """
+        # For project-local notes, use .archive in the project directory
+        if hasattr(self, 'config_notes_file') and self.config_notes_file:
+            notes_path = self.get_notes_file_path()
+            return os.path.join(os.path.dirname(notes_path), ".archive")
+
         notes_folder = self.get_notes_folder()
         return os.path.join(notes_folder, ".archive")
 
     def get_archive_file_path(self):
         """Get the archive file path for current config's notes"""
         archive_folder = self.get_archive_folder()
-        # Use same naming convention as notes files
+
+        # For project-local notes, use the same filename as the notes file
+        if hasattr(self, 'config_notes_file') and self.config_notes_file:
+            notes_path = self.get_notes_file_path()
+            notes_filename = os.path.basename(notes_path)
+            return os.path.join(archive_folder, notes_filename)
+
+        # Default: use same naming convention as notes files
         config_name = os.path.basename(self.current_config_file)
         config_name = os.path.splitext(config_name)[0]
         return os.path.join(archive_folder, f"{config_name.replace('_', '-')}.md")
@@ -2973,7 +3078,7 @@ StartupNotify=true
 
         # Create dialog with scrollable text browser
         archive_dialog = QDialog(self)
-        archive_dialog.setWindowTitle(f"Archive - {os.path.basename(self.current_config_file)}")
+        archive_dialog.setWindowTitle(f"Archive - {self.get_project_name()}")
         archive_dialog.resize(600, 500)
 
         layout = QVBoxLayout(archive_dialog)
@@ -3615,10 +3720,8 @@ StartupNotify=true
 
     def init_ui(self):
         # Set window properties
-        config_name = os.path.basename(self.current_config_file)
-
-        # Create a clean display name (without extension, capitalized)
-        display_name = config_name.replace('.json', '').replace('_config', '').replace('_', ' ').title()
+        # Create a clean display name from project name
+        display_name = self.get_project_name().replace('_config', '').replace('_', ' ').replace('-', ' ').title()
 
         # Set window title and icon text
         self.setWindowTitle(f"{display_name} - ProjectFlow")
@@ -3672,11 +3775,10 @@ StartupNotify=true
         title_bar.setContentsMargins(5, 5, 5, 10)
 
         # Project title on left (clickable search)
-        config_name = os.path.basename(self.current_config_file)
-        config_name = os.path.splitext(config_name)[0]
+        config_name = self.get_project_name()
         if config_name.endswith('_config'):
             config_name = config_name[:-7]
-        config_name = config_name.replace('_', ' ').upper()
+        config_name = config_name.replace('_', ' ').replace('-', ' ').upper()
 
         # Get available configs for search
         configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
@@ -4959,6 +5061,43 @@ StartupNotify=true
                     """)
                     console_container_layout.addWidget(console_label)
 
+                # Folder browser container
+                self.folder_container = QWidget()
+                folder_container_layout = QVBoxLayout(self.folder_container)
+                folder_container_layout.setContentsMargins(0, 0, 0, 0)
+
+                # Create folder toolbar
+                self.create_folder_toolbar(folder_container_layout)
+
+                # QTreeWidget for file/folder display
+                self.folder_browser = QTreeWidget()
+                self.folder_browser.setHeaderHidden(True)
+                self.folder_browser.setStyleSheet(f"""
+                    QTreeWidget {{
+                        background-color: {self.t('bg_secondary')};
+                        border: 2px solid {self.t('border')};
+                        border-radius: 5px;
+                        color: {self.t('fg_primary')};
+                        font-size: 12px;
+                    }}
+                    QTreeWidget::item {{
+                        padding: 4px 8px;
+                    }}
+                    QTreeWidget::item:hover {{
+                        background-color: {self.t('bg_button_hover')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                    QTreeWidget::item:selected {{
+                        background-color: {self.t('bg_category')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """)
+                self.folder_browser.itemDoubleClicked.connect(self.on_folder_item_double_clicked)
+                folder_container_layout.addWidget(self.folder_browser)
+
+                # Initialize folder browser state
+                self.folder_current_path = os.path.expanduser("~")
+
                 # Add all containers to stack layout
                 self.column2_stack_layout.addWidget(self.pdf_container)
                 self.column2_stack_layout.addWidget(self.webview_container)
@@ -4966,6 +5105,7 @@ StartupNotify=true
                 self.column2_stack_layout.addWidget(self.help_container)
                 self.column2_stack_layout.addWidget(self.examples_container)
                 self.column2_stack_layout.addWidget(self.console_container)
+                self.column2_stack_layout.addWidget(self.folder_container)
 
                 # Show correct container based on mode
                 self.pdf_container.hide()
@@ -4974,6 +5114,7 @@ StartupNotify=true
                 self.help_container.hide()
                 self.examples_container.hide()
                 self.console_container.hide()
+                self.folder_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
                 elif self.column2_mode == "webview":
@@ -4988,6 +5129,9 @@ StartupNotify=true
                     self.load_examples_content()
                 elif self.column2_mode == "console":
                     self.console_container.show()
+                elif self.column2_mode == "folder":
+                    self.folder_container.show()
+                    self.populate_folder_browser(self.folder_current_path)
 
                 self.column2_layout.addWidget(self.column2_stack, 1)  # stretch factor to fill space
 
@@ -6309,11 +6453,13 @@ StartupNotify=true
             self.status_label.setText(f"Error: {e}")
 
     def get_viewer_cycle_order(self):
-        """Get the viewer cycle order: default -> examples -> help -> remaining viewers"""
+        """Get the viewer cycle order: default -> folder -> examples -> help -> remaining viewers"""
         default_viewer = getattr(self, 'config_column2_default', None) or "pdf"
-        # Build cycle: default first, then examples/help (if not default), then remaining viewers
+        # Build cycle: default first, then folder (if not default), then examples/help, then remaining viewers
         remaining = [m for m in ["pdf", "webview", "image", "console"] if m != default_viewer]
         cycle = [default_viewer]
+        if default_viewer != "folder":
+            cycle.append("folder")
         if default_viewer != "examples":
             cycle.append("examples")
         if default_viewer != "help":
@@ -6329,6 +6475,7 @@ StartupNotify=true
         self.help_container.hide()
         self.examples_container.hide()
         self.console_container.hide()
+        self.folder_container.hide()
 
         # Get dynamic cycle order based on default viewer
         cycle = self.get_viewer_cycle_order()
@@ -6345,6 +6492,7 @@ StartupNotify=true
             "help": ("Help", "Help", self.help_container),
             "examples": ("Examples", "Handler Examples", self.examples_container),
             "console": ("Console", "Console", self.console_container),
+            "folder": ("Folder", "Folder Browser", self.folder_container),
         }
 
         self.column2_mode = next_mode
@@ -6361,6 +6509,8 @@ StartupNotify=true
             self.load_help_content()
         elif next_mode == "examples":
             self.load_examples_content()
+        elif next_mode == "folder":
+            self.populate_folder_browser(self.folder_current_path)
 
         self.save_notes()  # Save mode preference
 
@@ -6510,6 +6660,7 @@ StartupNotify=true
         self.help_container.hide()
         self.examples_container.hide()
         self.console_container.hide()
+        self.folder_container.hide()
 
         # Mode display info
         mode_info = {
@@ -6519,6 +6670,7 @@ StartupNotify=true
             "help": ("Help", "Help", self.help_container),
             "examples": ("Examples", "Handler Examples", self.examples_container),
             "console": ("Console", "Console", self.console_container),
+            "folder": ("Folder", "Folder Browser", self.folder_container),
         }
 
         if mode not in mode_info:
@@ -6543,6 +6695,8 @@ StartupNotify=true
             self.load_help_content()
         elif mode == "examples":
             self.load_examples_content()
+        elif mode == "folder":
+            self.populate_folder_browser(self.folder_current_path)
 
     def preview_in_webview(self, url):
         """Preview a URL in the webview panel"""
@@ -6897,6 +7051,374 @@ StartupNotify=true
             expanded_path = os.path.dirname(expanded_path)
         cmd = self._get_terminal_workdir_command(expanded_path)
         subprocess.Popen(cmd, start_new_session=True)
+
+    def create_folder_toolbar(self, parent_layout):
+        """Create a toolbar for the folder browser"""
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 5)
+        toolbar_layout.setSpacing(5)
+
+        # Button style
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+                min-width: 28px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+        """
+
+        # Up button
+        up_btn = QPushButton("↑")
+        up_btn.setStyleSheet(btn_style)
+        up_btn.setToolTip("Go up one directory")
+        up_btn.clicked.connect(self.folder_go_up)
+        toolbar_layout.addWidget(up_btn)
+
+        # Home button
+        home_btn = QPushButton("⌂")
+        home_btn.setStyleSheet(btn_style)
+        home_btn.setToolTip("Go to home directory")
+        home_btn.clicked.connect(self.folder_go_home)
+        toolbar_layout.addWidget(home_btn)
+
+        # Refresh button
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setStyleSheet(btn_style)
+        refresh_btn.setToolTip("Refresh current directory")
+        refresh_btn.clicked.connect(self.folder_refresh)
+        toolbar_layout.addWidget(refresh_btn)
+
+        # Separator
+        sep1 = QLabel("|")
+        sep1.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
+        toolbar_layout.addWidget(sep1)
+
+        # Path label
+        self.folder_path_label = QLabel("~")
+        self.folder_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
+        self.folder_path_label.setToolTip("Current directory")
+        toolbar_layout.addWidget(self.folder_path_label, 1)
+
+        # Separator
+        sep2 = QLabel("|")
+        sep2.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
+        toolbar_layout.addWidget(sep2)
+
+        # Make Project / Open Project button
+        self.folder_project_btn = QPushButton("Make Project")
+        self.folder_project_btn.setStyleSheet(btn_style)
+        self.folder_project_btn.setToolTip("Create a ProjectFlow config for this folder")
+        self.folder_project_btn.clicked.connect(self.folder_handle_project_btn)
+        toolbar_layout.addWidget(self.folder_project_btn)
+
+        # External button (open in file manager)
+        external_btn = QPushButton("External")
+        external_btn.setStyleSheet(btn_style)
+        external_btn.setToolTip("Open in file manager")
+        external_btn.clicked.connect(self.folder_open_external)
+        toolbar_layout.addWidget(external_btn)
+
+        parent_layout.addWidget(toolbar_widget)
+
+    def populate_folder_browser(self, path):
+        """Populate the folder browser with contents of the given path"""
+        self.folder_browser.clear()
+        self.folder_current_path = path
+
+        # Update path label (shorten home dir to ~)
+        display_path = path
+        home = os.path.expanduser("~")
+        if path.startswith(home):
+            display_path = "~" + path[len(home):]
+        self.folder_path_label.setText(display_path)
+
+        # Check if .projectflow exists in this folder
+        projectflow_path = os.path.join(path, ".projectflow")
+        has_projectflow = os.path.exists(projectflow_path)
+
+        # Update project button text
+        if has_projectflow:
+            self.folder_project_btn.setText("Open Project")
+            self.folder_project_btn.setToolTip("Open this folder's ProjectFlow config")
+        else:
+            self.folder_project_btn.setText("Make Project")
+            self.folder_project_btn.setToolTip("Create a ProjectFlow config for this folder")
+
+        try:
+            entries = os.listdir(path)
+        except PermissionError:
+            error_item = QTreeWidgetItem(["Permission denied"])
+            self.folder_browser.addTopLevelItem(error_item)
+            return
+        except Exception as e:
+            error_item = QTreeWidgetItem([f"Error: {str(e)}"])
+            self.folder_browser.addTopLevelItem(error_item)
+            return
+
+        # Separate and sort directories and files
+        dirs = []
+        files = []
+        for entry in entries:
+            if entry.startswith('.'):
+                continue  # Skip hidden files
+            full_path = os.path.join(path, entry)
+            if os.path.isdir(full_path):
+                dirs.append(entry)
+            else:
+                files.append(entry)
+
+        dirs.sort(key=str.lower)
+        files.sort(key=str.lower)
+
+        # Add directories first
+        for d in dirs:
+            full_path = os.path.join(path, d)
+            item = QTreeWidgetItem()
+
+            # Check if this folder has .projectflow
+            if os.path.exists(os.path.join(full_path, ".projectflow")):
+                item.setText(0, f"[P] {d}/")
+                item.setToolTip(0, "ProjectFlow project folder")
+            else:
+                item.setText(0, f"{d}/")
+
+            item.setData(0, Qt.ItemDataRole.UserRole, full_path)
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, "dir")
+            self.folder_browser.addTopLevelItem(item)
+
+        # Add files
+        for f in files:
+            full_path = os.path.join(path, f)
+            item = QTreeWidgetItem([f])
+            item.setData(0, Qt.ItemDataRole.UserRole, full_path)
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, "file")
+            self.folder_browser.addTopLevelItem(item)
+
+    def folder_go_up(self):
+        """Navigate to parent directory"""
+        parent = os.path.dirname(self.folder_current_path)
+        if parent and parent != self.folder_current_path:
+            self.populate_folder_browser(parent)
+
+    def folder_go_home(self):
+        """Navigate to home directory"""
+        self.populate_folder_browser(os.path.expanduser("~"))
+
+    def folder_refresh(self):
+        """Refresh current directory listing"""
+        self.populate_folder_browser(self.folder_current_path)
+
+    def on_folder_item_double_clicked(self, item, column):
+        """Handle double-click on folder browser item"""
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+
+        if not path:
+            return
+
+        if item_type == "dir":
+            # Check if it's a project folder
+            projectflow_path = os.path.join(path, ".projectflow")
+            if os.path.exists(projectflow_path):
+                # Open the project
+                self.switch_to_config(projectflow_path)
+            else:
+                # Navigate into the directory
+                self.populate_folder_browser(path)
+        elif item_type == "file":
+            # Open file with xdg-open
+            subprocess.Popen(["xdg-open", path], start_new_session=True)
+
+    def folder_open_external(self):
+        """Open current folder in file manager"""
+        subprocess.Popen(["xdg-open", self.folder_current_path], start_new_session=True)
+
+    def folder_handle_project_btn(self):
+        """Handle Make Project / Open Project button click"""
+        projectflow_path = os.path.join(self.folder_current_path, ".projectflow")
+        if os.path.exists(projectflow_path):
+            self.folder_open_project()
+        else:
+            self.folder_make_project()
+
+    def folder_make_project(self):
+        """Create a .projectflow config and projectflow.md notes file for the current folder"""
+        folder_path = self.folder_current_path
+        folder_name = os.path.basename(folder_path)
+
+        # Create config content
+        config = self.create_folder_project_config(folder_path)
+
+        # Write .projectflow file
+        projectflow_path = os.path.join(folder_path, ".projectflow")
+        try:
+            with open(projectflow_path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create .projectflow: {str(e)}")
+            return
+
+        # Create projectflow.md notes file
+        self.create_project_notes_file(folder_path)
+
+        # Refresh the folder browser to show updated state
+        self.populate_folder_browser(folder_path)
+
+        # Ask if user wants to open the project
+        reply = QMessageBox.question(
+            self,
+            "Project Created",
+            f"Created ProjectFlow config for '{folder_name}'.\n\nOpen the project now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.switch_to_config(projectflow_path)
+
+    def create_folder_project_config(self, folder_path):
+        """Create a project config based on detected project type"""
+        folder_name = os.path.basename(folder_path)
+
+        # Base config
+        config = {
+            "project_name": folder_name,
+            "column_headers": [f"{folder_name} Project"],
+            "columns": [[]],
+            "column2_default": "console",
+            "console_path": ".",
+            "notes_file": "./projectflow.md"
+        }
+
+        # Detect project type and add appropriate launchers
+        categories = []
+
+        # Always add Development category
+        dev_category = {
+            "Development": [
+                ["Open in Editor", ".", "editor"],
+                ["Terminal Here", ".", "terminal"],
+                ["File Manager", ".", "file_manager"]
+            ]
+        }
+        categories.append(dev_category)
+
+        # Detect npm project (package.json)
+        if os.path.exists(os.path.join(folder_path, "package.json")):
+            npm_items = [["npm install", ". install", "npm"]]
+            # Check package.json for scripts
+            try:
+                with open(os.path.join(folder_path, "package.json"), 'r') as f:
+                    pkg = json.load(f)
+                scripts = pkg.get("scripts", {})
+                if "start" in scripts:
+                    npm_items.append(["npm start", ". start", "npm"])
+                if "dev" in scripts:
+                    npm_items.append(["npm dev", ". dev", "npm"])
+                if "build" in scripts:
+                    npm_items.append(["npm build", ". build", "npm"])
+                if "test" in scripts:
+                    npm_items.append(["npm test", ". test", "npm"])
+            except:
+                pass
+            categories.append({"npm": npm_items})
+
+        # Detect Python project
+        has_python = False
+        if os.path.exists(os.path.join(folder_path, "requirements.txt")):
+            has_python = True
+            categories.append({"Python": [
+                ["pip install -r requirements.txt", "pip install -r requirements.txt", "terminal_cmd"]
+            ]})
+        elif os.path.exists(os.path.join(folder_path, "setup.py")):
+            has_python = True
+            categories.append({"Python": [
+                ["pip install -e .", "pip install -e .", "terminal_cmd"]
+            ]})
+        elif os.path.exists(os.path.join(folder_path, "pyproject.toml")):
+            has_python = True
+            categories.append({"Python": [
+                ["pip install -e .", "pip install -e .", "terminal_cmd"]
+            ]})
+
+        # Detect Makefile
+        if os.path.exists(os.path.join(folder_path, "Makefile")):
+            categories.append({"Build": [
+                ["make", "make", "terminal_cmd"]
+            ]})
+
+        # Detect Docker
+        if os.path.exists(os.path.join(folder_path, "docker-compose.yml")) or \
+           os.path.exists(os.path.join(folder_path, "docker-compose.yaml")):
+            categories.append({"Docker": [
+                ["docker-compose up", "docker-compose up", "terminal_cmd"],
+                ["docker-compose down", "docker-compose down", "terminal_cmd"]
+            ]})
+
+        # Detect git repo
+        if os.path.exists(os.path.join(folder_path, ".git")):
+            categories.append({"Git": [
+                ["git status", "git status", "terminal_cmd"],
+                ["git log", "git log --oneline -20", "terminal_cmd"]
+            ]})
+
+        # Add README if it exists
+        quick_actions = []
+        for readme in ["README.md", "README.txt", "README"]:
+            if os.path.exists(os.path.join(folder_path, readme)):
+                quick_actions.append([f"Open {readme}", f"./{readme}", "editor"])
+                break
+
+        if quick_actions:
+            categories.append({"Quick Actions": quick_actions})
+
+        config["columns"][0] = categories
+        return config
+
+    def create_project_notes_file(self, folder_path):
+        """Create a starter projectflow.md notes file"""
+        folder_name = os.path.basename(folder_path)
+        notes_path = os.path.join(folder_path, "projectflow.md")
+
+        # Don't overwrite existing notes
+        if os.path.exists(notes_path):
+            return
+
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+        content = f"""# {folder_name} Notes
+
+Project created: {date_str}
+
+## TODO
+
+-
+
+## Notes
+
+"""
+        try:
+            with open(notes_path, 'w') as f:
+                f.write(content)
+        except Exception as e:
+            print(f"Warning: Could not create notes file: {e}")
+
+    def folder_open_project(self):
+        """Open the .projectflow config for the current folder"""
+        projectflow_path = os.path.join(self.folder_current_path, ".projectflow")
+        if os.path.exists(projectflow_path):
+            self.switch_to_config(projectflow_path)
 
     def load_help_content(self):
         """Load and display README.md content"""
