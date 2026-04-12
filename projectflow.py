@@ -542,6 +542,7 @@ class ProjectFlowApp(QMainWindow):
                     "projects_directory": "projects",  # Subdirectory for project files
                     "last_used_project": None,
                     "recent_projects": [],  # List of recently used projects (max 10)
+                    "folder_projects": [],  # List of .projectflow configs from folders
                     "enable_baloo_tags": False,  # Query Baloo for tagged files (KDE only)
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
                 }
@@ -553,6 +554,7 @@ class ProjectFlowApp(QMainWindow):
                 "projects_directory": "projects",
                 "last_used_project": None,
                 "recent_projects": [],
+                "folder_projects": [],
                 "enable_baloo_tags": False,
                 "swap_launcher_viewer": False,
             }
@@ -2709,19 +2711,37 @@ StartupNotify=true
             print(f"Could not install desktop file: {e}")
 
     def add_to_recent_projects(self, config_path):
-        """Add a project to recent projects list (max 10)"""
-        if "recent_projects" not in self.settings:
-            self.settings["recent_projects"] = []
+        """Add a project to recent projects or folder projects list"""
+        config_name = os.path.basename(config_path)
 
-        # Remove if already in list
-        if config_path in self.settings["recent_projects"]:
-            self.settings["recent_projects"].remove(config_path)
+        # Route .projectflow configs to folder_projects
+        if config_name == '.projectflow':
+            if "folder_projects" not in self.settings:
+                self.settings["folder_projects"] = []
 
-        # Add to front of list
-        self.settings["recent_projects"].insert(0, config_path)
+            # Remove if already in list
+            if config_path in self.settings["folder_projects"]:
+                self.settings["folder_projects"].remove(config_path)
 
-        # Keep only 10 most recent
-        self.settings["recent_projects"] = self.settings["recent_projects"][:10]
+            # Add to front of list
+            self.settings["folder_projects"].insert(0, config_path)
+
+            # Keep only 20 most recent folder projects
+            self.settings["folder_projects"] = self.settings["folder_projects"][:20]
+        else:
+            # Regular projects go to recent_projects
+            if "recent_projects" not in self.settings:
+                self.settings["recent_projects"] = []
+
+            # Remove if already in list
+            if config_path in self.settings["recent_projects"]:
+                self.settings["recent_projects"].remove(config_path)
+
+            # Add to front of list
+            self.settings["recent_projects"].insert(0, config_path)
+
+            # Keep only 10 most recent
+            self.settings["recent_projects"] = self.settings["recent_projects"][:10]
 
         self.save_settings()
 
@@ -2889,6 +2909,32 @@ StartupNotify=true
             return os.path.basename(os.path.dirname(self.current_config_file))
 
         # Remove .json extension
+        return os.path.splitext(config_name)[0]
+
+    def get_display_name_for_config_path(self, config_path):
+        """Get the display name for any config file path.
+
+        Reads the config to get project_name if set, otherwise derives from filename.
+        For .projectflow files without project_name, uses the parent folder name.
+        """
+        config_name = os.path.basename(config_path)
+
+        # Try to read project_name from config
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config_data = json.load(f)
+                project_name = config_data.get('project_name')
+                if project_name:
+                    return project_name
+        except:
+            pass
+
+        # For .projectflow, use parent folder name
+        if config_name == '.projectflow':
+            return os.path.basename(os.path.dirname(config_path))
+
+        # Remove .json extension and clean up
         return os.path.splitext(config_name)[0]
 
     def load_icon_preferences(self):
@@ -3831,7 +3877,7 @@ StartupNotify=true
         header_row.addWidget(left_line, 1)
 
         # Header label (changes based on mode)
-        self.projects_header_label = QLabel("Recent Projects" if self.projects_mode == 'recent' else "All Projects")
+        self.projects_header_label = QLabel("Recent Projects" if self.projects_mode == 'recent' else "Main Projects")
         self.projects_header_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         header_row.addWidget(self.projects_header_label)
 
@@ -3861,10 +3907,8 @@ StartupNotify=true
         self.reset_btn.setVisible(False)  # Will be shown if pinned projects exist
         header_row.addWidget(self.reset_btn)
 
-        # Mode toggle button - shows opposite mode as clickable option
-        self.mode_toggle_btn = QPushButton("All Projects")
-        self.mode_toggle_btn.setToolTip("Switch to alphabetical view")
-        self.mode_toggle_btn.setStyleSheet(f"""
+        # Style for toggle buttons
+        toggle_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_muted')};
@@ -3877,9 +3921,29 @@ StartupNotify=true
                 background-color: {self.t('bg_button_hover')};
                 color: {self.t('fg_on_dark')};
             }}
-        """)
-        self.mode_toggle_btn.clicked.connect(self.toggle_projects_mode)
-        header_row.addWidget(self.mode_toggle_btn)
+        """
+
+        # Recent Projects toggle button
+        self.recent_projects_btn = QPushButton("Recent")
+        self.recent_projects_btn.setToolTip("Show recent projects")
+        self.recent_projects_btn.setStyleSheet(toggle_btn_style)
+        self.recent_projects_btn.clicked.connect(lambda: self.switch_projects_mode('recent'))
+        self.recent_projects_btn.setVisible(False)  # Hidden when in recent mode
+        header_row.addWidget(self.recent_projects_btn)
+
+        # Main Projects toggle button
+        self.main_projects_btn = QPushButton("Main")
+        self.main_projects_btn.setToolTip("Show all projects from projects/ folder")
+        self.main_projects_btn.setStyleSheet(toggle_btn_style)
+        self.main_projects_btn.clicked.connect(lambda: self.switch_projects_mode('alphabetical'))
+        header_row.addWidget(self.main_projects_btn)
+
+        # Folder Projects toggle button
+        self.folder_projects_btn = QPushButton("Folder")
+        self.folder_projects_btn.setToolTip("Show .projectflow configs from folders")
+        self.folder_projects_btn.setStyleSheet(toggle_btn_style)
+        self.folder_projects_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
+        header_row.addWidget(self.folder_projects_btn)
 
         parent_layout.addLayout(header_row)
 
@@ -3899,35 +3963,30 @@ StartupNotify=true
         # Populate based on current mode
         self.populate_projects()
 
-    def toggle_projects_mode(self):
-        """Toggle between recent and alphabetical project modes"""
-        subtle_btn_style = f"""
-            QPushButton {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_muted')};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                font-size: 11px;
-                padding: 3px 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
-            }}
-        """
-        if self.projects_mode == 'recent':
-            self.projects_mode = 'alphabetical'
-            self.projects_header_label.setText("All Projects")
-            self.mode_toggle_btn.setText("Recent Projects")
-            self.mode_toggle_btn.setToolTip("Switch to recent projects view")
-            self.mode_toggle_btn.setStyleSheet(subtle_btn_style)
-            self.reset_btn.setVisible(False)
-        else:
-            self.projects_mode = 'recent'
+    def switch_projects_mode(self, mode):
+        """Switch to a specific project mode (recent, alphabetical, or folder)"""
+        self.projects_mode = mode
+
+        # Update header label and button visibility
+        if mode == 'recent':
             self.projects_header_label.setText("Recent Projects")
-            self.mode_toggle_btn.setText("All Projects")
-            self.mode_toggle_btn.setToolTip("Switch to alphabetical view")
-            self.mode_toggle_btn.setStyleSheet(subtle_btn_style)
+            self.reset_btn.setVisible(len(self.settings.get("pinned_projects", [])) > 0)
+            self.recent_projects_btn.setVisible(False)
+            self.main_projects_btn.setVisible(True)
+            self.folder_projects_btn.setVisible(True)
+        elif mode == 'alphabetical':
+            self.projects_header_label.setText("Main Projects")
+            self.reset_btn.setVisible(False)
+            self.recent_projects_btn.setVisible(True)
+            self.main_projects_btn.setVisible(False)
+            self.folder_projects_btn.setVisible(True)
+        elif mode == 'folder':
+            self.projects_header_label.setText("Folder Projects")
+            self.reset_btn.setVisible(False)
+            self.recent_projects_btn.setVisible(True)
+            self.main_projects_btn.setVisible(True)
+            self.folder_projects_btn.setVisible(False)
+
         self.populate_projects()
 
     def populate_projects(self):
@@ -3945,8 +4004,45 @@ StartupNotify=true
 
         if self.projects_mode == 'recent':
             self._populate_recent_projects()
-        else:
+        elif self.projects_mode == 'alphabetical':
             self._populate_alphabetical_projects()
+        elif self.projects_mode == 'folder':
+            self._populate_folder_projects()
+
+    def _populate_folder_projects(self):
+        """Populate with folder projects (.projectflow configs)"""
+        folder_projects = self.settings.get("folder_projects", [])
+
+        # Filter to only existing files
+        folder_projects = [p for p in folder_projects if os.path.exists(p)]
+
+        # Update settings if any were removed
+        if folder_projects != self.settings.get("folder_projects", []):
+            self.settings["folder_projects"] = folder_projects
+            self.save_settings()
+
+        if not folder_projects:
+            # Show helpful message
+            label = QLabel("No folder projects yet.\n\nUse the Folder Browser to navigate to a folder and click 'Make Project' to create one.")
+            label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 20px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.projects_layout.addWidget(label)
+            return
+
+        # Create horizontal layout for buttons
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(5)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+
+        for config_path in folder_projects[:10]:
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            buttons_layout.addWidget(btn_container)
+
+        # Left-align if fewer than 10 projects
+        if len(folder_projects) < 10:
+            buttons_layout.addStretch()
+
+        self.projects_layout.addLayout(buttons_layout)
 
     def _populate_recent_projects(self):
         """Populate with recent/pinned projects (drag-drop enabled)"""
@@ -4045,9 +4141,9 @@ StartupNotify=true
 
     def _create_config_button(self, config_path, is_pinned, draggable=False):
         """Create a config button with new window button"""
-        config_name = os.path.basename(config_path)
-        display_name = config_name.replace("_config.json", "").replace(".json", "").replace("_", " ")
-        display_name = display_name.title()
+        # Get display name from config (reads project_name if set)
+        raw_name = self.get_display_name_for_config_path(config_path)
+        display_name = raw_name.replace("_config", "").replace("_", " ").replace("-", " ").title()
         is_current = (config_path == self.current_config_file)
 
         btn_container = QWidget()
@@ -4108,7 +4204,7 @@ StartupNotify=true
         if draggable:
             tooltip = f"{'📌 ' if is_pinned else ''}{config_path}\n(Drag to reorder/pin)"
         else:
-            tooltip = f"Switch to {config_name}"
+            tooltip = f"Switch to {display_name}"
         btn.setToolTip(tooltip)
         btn_container_layout.addWidget(btn)
 

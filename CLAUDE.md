@@ -60,7 +60,8 @@ User preferences are stored in `.projectflow_settings.json`:
 - `default_project`: The project file set as default
 - `projects_directory`: Subdirectory containing additional projects (default: "projects")
 - `last_used_project`: Most recently loaded project file
-- `recent_projects`: List of up to 10 recently used projects (for quick-access bar)
+- `recent_projects`: List of up to 10 recently used main projects (for quick-access bar)
+- `folder_projects`: List of up to 20 recently used `.projectflow` configs from folders (shown in separate "Folder Projects" section)
 - `pinned_projects`: List of projects pinned to the front of the quick-access bar (drag to reorder/pin, ↺ to reset)
 - `theme`: Color theme - `"light"`, `"dark"`, or `"system"` (default: `"system"` - follows desktop preference)
 - `joplin_token`: Joplin Web Clipper API token (enables manual sync button in notepad toolbar)
@@ -356,9 +357,10 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
     - `QProcess + QTextEdit` - Simple but no colors, no terminal features
   - Current approach: qtconsole + External button provides best balance of features and reliability
 - **Preview buttons**: Web links (firefox/chrome) show 🌐 button to preview in webview; images (gwenview/gimp/krita) show 🖼️ button to preview in image viewer
-- **Projects section**: Unified project switcher with two modes toggled by 🕐 button:
-  - **Recent mode** (default): Shows pinned + recent projects (up to 10) with drag-drop reordering. Pinned projects shown with underline. ↺ button resets pinned order. Backfills from available projects if some are missing/renamed.
-  - **Alphabetical mode**: Shows all projects in rows of 10, sorted alphabetically. Full rows stretch to fill width; last incomplete row is left-aligned.
+- **Projects section**: Unified project switcher with three modes (Recent/Main/Folder buttons):
+  - **Recent mode** (default): Shows pinned + recent main projects (up to 10) with drag-drop reordering. Pinned projects shown with underline. ↺ button resets pinned order.
+  - **Main Projects mode**: Shows all projects from the projects/ folder in rows of 10, sorted alphabetically.
+  - **Folder Projects mode**: Shows recently used `.projectflow` configs from folders (up to 10). Stored in settings to avoid filesystem scanning.
 - **Panel headers**: Grey headers at top of each panel (#5a5a5a)
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
 - **Item buttons**: Individual launchers with application icons. Drag to reorder within category (saves to config).
