@@ -559,8 +559,8 @@ class ProjectFlowApp(QMainWindow):
                 "swap_launcher_viewer": False,
             }
 
-        # Store swap_columns for easy access
-        self.swap_columns = self.settings.get("swap_launcher_viewer", False)
+        # Layout: Viewer column is always first (left)
+        self.swap_columns = True
 
     def _migrate_settings(self):
         """Migrate old settings keys to new names"""
@@ -933,15 +933,6 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
-
-        # Swap Columns
-        swap_label = QLabel("Layout:")
-        swap_label.setStyleSheet(label_style)
-        self._settings_swap_columns = QCheckBox("Swap launcher and viewer columns")
-        self._settings_swap_columns.setChecked(self.settings.get("swap_launcher_viewer", False))
-        self._settings_swap_columns.setStyleSheet(f"color: {self.t('fg_primary')};")
-        self._settings_swap_columns.setToolTip("Show viewer column on the left and launchers in the middle")
-        layout.addRow(swap_label, self._settings_swap_columns)
 
         # Joplin Token
         joplin_label = QLabel("Joplin Token:")
@@ -2459,10 +2450,6 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["notes_folder"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
-
-            # Save swap columns setting and update instance variable
-            self.settings["swap_launcher_viewer"] = self._settings_swap_columns.isChecked()
-            self.swap_columns = self.settings["swap_launcher_viewer"]
 
             joplin_token = self._settings_joplin.text().strip()
             if joplin_token:
@@ -4362,12 +4349,11 @@ StartupNotify=true
                     """
 
                     # Edit button
-                    edit_btn = QPushButton("Save" if self.edit_mode else "Edit")
-                    edit_btn.setMaximumWidth(50)
+                    edit_btn = QPushButton("💾 Save" if self.edit_mode else "✏️ Shortcuts")
                     edit_btn.setMinimumHeight(self.d('header_btn_height'))
                     edit_btn.setCheckable(True)
                     edit_btn.setChecked(self.edit_mode)
-                    edit_btn.setToolTip("Save and exit edit mode" if self.edit_mode else "Edit shortcuts")
+                    edit_btn.setToolTip("Save and exit edit mode" if self.edit_mode else "Edit shortcuts and launchers")
                     edit_btn.setStyleSheet(green_btn_style)
                     edit_btn.clicked.connect(self.toggle_edit_mode)
                     header_layout.addWidget(edit_btn)
@@ -4391,29 +4377,11 @@ StartupNotify=true
                         refresh_btn.clicked.connect(self.refresh_projects)
                         header_layout.addWidget(refresh_btn)
 
-                    # Header label
-                    header = QLabel(self.COLUMN_HEADERS[col_idx])
-                    header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    header.setMinimumHeight(self.d('header_label_height'))
-                    header.setStyleSheet(f"""
-                        font-weight: bold;
-                        font-size: 14px;
-                        margin: 0px;
-                        padding: {self.d('header_label_padding')}px;
-                        background-color: {self.t('bg_panel')};
-                        color: {self.t('fg_on_dark')};
-                        border-radius: 3px;
-                    """)
-                    header_layout.addWidget(header, 1)
+                    # Add stretch to push buttons left (no header label)
+                    header_layout.addStretch()
 
                     column_layout.addLayout(header_layout)
                     column_layout.setContentsMargins(0, 4, 0, 0)  # left, top, right, bottom
-                else:
-                    header = QLabel(self.COLUMN_HEADERS[col_idx])
-                    header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    header.setMinimumHeight(self.d('header_label_height'))
-                    header.setStyleSheet(header_style)
-                    column_layout.addWidget(header)
 
             # Process each category within this column
             for category_dict in column_categories:
@@ -4915,49 +4883,76 @@ StartupNotify=true
                 self.column2_layout = QVBoxLayout()
                 self.column2_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
 
-                # Add header with toggle button
+                # Create viewer tab buttons (replacing header label)
                 header_layout = QHBoxLayout()
                 header_layout.setContentsMargins(0, 0, 0, 0)
-                header_layout.setSpacing(3)  # Match column 1 header spacing
+                header_layout.setSpacing(3)
 
-                # Mode toggle button (on the left) - shows current mode, tooltip shows next
-                current_mode_text = {"pdf": "PDF", "webview": "Web", "image": "Image", "help": "Help", "console": "Console"}
-                next_mode_text = {"pdf": "Web", "webview": "Image", "image": "Help", "help": "Console", "console": "PDF"}
-                self.column2_toggle_btn = QPushButton(current_mode_text.get(self.column2_mode, "PDF"))
-                self.column2_toggle_btn.setMaximumWidth(70)
-                self.column2_toggle_btn.setMinimumHeight(self.d('header_btn_height'))
-                self.column2_toggle_btn.setToolTip(f"Click for {next_mode_text.get(self.column2_mode, 'Web')} viewer")
-                self.column2_toggle_btn.setStyleSheet(f"""
+                # Tab button definitions: (mode, label, tooltip)
+                tab_buttons = [
+                    ("folder", "Folder", "Folder browser"),
+                    ("webview", "Web", "Web viewer"),
+                    ("pdf", "PDF", "PDF viewer"),
+                    ("image", "Image", "Image viewer"),
+                    ("examples", "Examples", "Handler examples"),
+                    ("console", "Console", "Embedded console"),
+                ]
+
+                # Normal tab button style
+                tab_btn_style = f"""
                     QPushButton {{
                         background-color: {self.t('bg_green_1')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
                         border-radius: 3px;
-                        padding: 5px;
+                        padding: 5px 8px;
+                        font-size: 11px;
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_green_2')};
                         color: {self.t('fg_on_dark')};
                     }}
-                """)
-                self.column2_toggle_btn.clicked.connect(self.toggle_column2_mode)
-                header_layout.addWidget(self.column2_toggle_btn)
+                """
 
-                # Header label (on the right)
-                header_text = {"pdf": "PDF Viewer", "webview": "Web View", "image": "Image Viewer", "help": "Help", "console": "Console"}
-                self.column2_header = QLabel(header_text.get(self.column2_mode, "PDF Viewer"))
-                self.column2_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.column2_header.setMinimumHeight(self.d('header_label_height'))
-                self.column2_header.setStyleSheet(f"""
-                    font-weight: bold;
-                    font-size: 14px;
-                    margin: 0px;
-                    padding: {self.d('header_label_padding')}px;
-                    background-color: {self.t('bg_panel')};
-                    color: {self.t('fg_on_dark')};
-                    border-radius: 3px;
-                """)
-                header_layout.addWidget(self.column2_header, 1)
+                # Active tab button style
+                active_tab_style = f"""
+                    QPushButton {{
+                        background-color: {self.t('bg_green_3')};
+                        color: {self.t('fg_on_dark')};
+                        font-weight: bold;
+                        border-radius: 3px;
+                        padding: 5px 8px;
+                        font-size: 11px;
+                        border: 2px solid {self.t('fg_on_dark')};
+                    }}
+                    QPushButton:hover {{
+                        background-color: {self.t('bg_green_3')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """
+
+                # Store tab buttons for styling updates
+                self.viewer_tab_buttons = {}
+
+                for mode, label, tooltip in tab_buttons:
+                    btn = QPushButton(label)
+                    btn.setMinimumHeight(self.d('header_btn_height'))
+                    btn.setToolTip(tooltip)
+
+                    # Set style based on whether this is the active mode
+                    if mode == self.column2_mode:
+                        btn.setStyleSheet(active_tab_style)
+                    else:
+                        btn.setStyleSheet(tab_btn_style)
+
+                    # Connect click handler
+                    btn.clicked.connect(lambda checked=False, m=mode: self.switch_to_viewer_mode(m))
+
+                    header_layout.addWidget(btn)
+                    self.viewer_tab_buttons[mode] = btn
+
+                # Add stretch to push buttons left
+                header_layout.addStretch()
 
                 self.column2_layout.addLayout(header_layout)
 
@@ -5257,22 +5252,7 @@ StartupNotify=true
         notepad_layout = QVBoxLayout()
         notepad_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
 
-        # Add notepad header
-        notepad_header = QLabel("Notes")
-        notepad_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        notepad_header.setMinimumHeight(self.d('header_label_height'))
-        notepad_header.setStyleSheet(f"""
-            font-weight: bold;
-            font-size: 14px;
-            margin: 0px;
-            padding: {self.d('header_label_padding')}px;
-            background-color: {self.t('bg_panel')};
-            color: {self.t('fg_on_dark')};
-            border-radius: 3px;
-        """)
-        notepad_layout.addWidget(notepad_header)
-
-        # Create formatting toolbar
+        # Create formatting toolbar (serves as header)
         self.create_notepad_toolbar(notepad_layout)
 
         # Create notepad text area with sanitized paste
@@ -6564,6 +6544,17 @@ StartupNotify=true
 
     def toggle_column2_mode(self):
         """Toggle between viewers: default -> examples -> help -> remaining viewers"""
+        # Get dynamic cycle order based on default viewer
+        cycle = self.get_viewer_cycle_order()
+        current_idx = cycle.index(self.column2_mode) if self.column2_mode in cycle else -1
+        next_idx = (current_idx + 1) % len(cycle)
+        next_mode = cycle[next_idx]
+
+        # Use the direct switch method
+        self.switch_to_viewer_mode(next_mode)
+
+    def switch_to_viewer_mode(self, mode):
+        """Switch directly to a specific viewer mode"""
         # Hide all containers
         self.pdf_container.hide()
         self.webview_container.hide()
@@ -6572,13 +6563,6 @@ StartupNotify=true
         self.examples_container.hide()
         self.console_container.hide()
         self.folder_container.hide()
-
-        # Get dynamic cycle order based on default viewer
-        cycle = self.get_viewer_cycle_order()
-        current_idx = cycle.index(self.column2_mode) if self.column2_mode in cycle else -1
-        next_idx = (current_idx + 1) % len(cycle)
-        next_mode = cycle[next_idx]
-        next_next_mode = cycle[(next_idx + 1) % len(cycle)]
 
         # Mode display info
         mode_info = {
@@ -6591,24 +6575,65 @@ StartupNotify=true
             "folder": ("Folder", "Folder Browser", self.folder_container),
         }
 
-        self.column2_mode = next_mode
-        btn_text, header_text, container = mode_info[next_mode]
-        next_btn_text = mode_info[next_next_mode][0]
-
-        self.column2_toggle_btn.setText(btn_text)
-        self.column2_toggle_btn.setToolTip(f"Click for {next_btn_text}")
-        self.column2_header.setText(header_text)
+        self.column2_mode = mode
+        btn_text, header_text, container = mode_info[mode]
         container.show()
 
         # Load content for viewers that need it
-        if next_mode == "help":
+        if mode == "help":
             self.load_help_content()
-        elif next_mode == "examples":
+        elif mode == "examples":
             self.load_examples_content()
-        elif next_mode == "folder":
+        elif mode == "folder":
             self.populate_folder_browser(self.folder_current_path)
 
+        # Update tab button styling
+        self.update_viewer_tab_styling()
+
         self.save_notes()  # Save mode preference
+
+    def update_viewer_tab_styling(self):
+        """Update viewer tab buttons to highlight the active mode"""
+        if not hasattr(self, 'viewer_tab_buttons'):
+            return
+
+        # Normal and active button styles
+        normal_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_green_1')};
+                color: {self.t('fg_on_dark')};
+                font-weight: bold;
+                border-radius: 3px;
+                padding: 5px 8px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_green_2')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        active_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_green_3')};
+                color: {self.t('fg_on_dark')};
+                font-weight: bold;
+                border-radius: 3px;
+                padding: 5px 8px;
+                font-size: 11px;
+                border: 2px solid {self.t('fg_on_dark')};
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_green_3')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        for mode, btn in self.viewer_tab_buttons.items():
+            if mode == self.column2_mode:
+                btn.setStyleSheet(active_style)
+            else:
+                btn.setStyleSheet(normal_style)
 
     def create_webview_toolbar(self, parent_layout):
         """Create a toolbar for the webview"""
@@ -6746,53 +6771,6 @@ StartupNotify=true
         # Save the current URL
         self.webview_url = url.toString()
         self.save_notes()
-
-    def switch_to_viewer_mode(self, mode):
-        """Switch directly to a specific viewer mode"""
-        # Hide all containers
-        self.pdf_container.hide()
-        self.webview_container.hide()
-        self.image_container.hide()
-        self.help_container.hide()
-        self.examples_container.hide()
-        self.console_container.hide()
-        self.folder_container.hide()
-
-        # Mode display info
-        mode_info = {
-            "pdf": ("PDF", "PDF Viewer", self.pdf_container),
-            "webview": ("Web", "Web View", self.webview_container),
-            "image": ("Image", "Image Viewer", self.image_container),
-            "help": ("Help", "Help", self.help_container),
-            "examples": ("Examples", "Handler Examples", self.examples_container),
-            "console": ("Console", "Console", self.console_container),
-            "folder": ("Folder", "Folder Browser", self.folder_container),
-        }
-
-        if mode not in mode_info:
-            return
-
-        self.column2_mode = mode
-        btn_text, header_text, container = mode_info[mode]
-
-        # Get next mode for tooltip
-        cycle = self.get_viewer_cycle_order()
-        current_idx = cycle.index(mode) if mode in cycle else 0
-        next_mode = cycle[(current_idx + 1) % len(cycle)]
-        next_btn_text = mode_info[next_mode][0]
-
-        self.column2_toggle_btn.setText(btn_text)
-        self.column2_toggle_btn.setToolTip(f"Click for {next_btn_text}")
-        self.column2_header.setText(header_text)
-        container.show()
-
-        # Load content for viewers that need it
-        if mode == "help":
-            self.load_help_content()
-        elif mode == "examples":
-            self.load_examples_content()
-        elif mode == "folder":
-            self.populate_folder_browser(self.folder_current_path)
 
     def preview_in_webview(self, url):
         """Preview a URL in the webview panel"""

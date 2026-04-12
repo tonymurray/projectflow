@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ProjectFlow (formerly "Folder Opener") is a PyQt6-based KDE Plasma application that provides a graphical launcher for quickly opening projects, files, and folders in various applications. It uses JSON configuration files to define categorized shortcuts. The app displays a three-panel layout: Shortcuts (left), Viewer (center), and Notepad (right).
+ProjectFlow (formerly "Folder Opener") is a PyQt6-based KDE Plasma application that provides a graphical launcher for quickly opening projects, files, and folders in various applications. It uses JSON configuration files to define categorized shortcuts. The app displays a three-panel layout: Viewer (left), Shortcuts (center), and Notepad (right).
 
 ## Running the Application
 
@@ -69,7 +69,6 @@ User preferences are stored in `.projectflow_settings.json`:
 - `pdfviewer`: Path to an external PDF viewer application (e.g., `"~/Programs/notesviewer/notesviewer.py"`). When set, adds an "External" button to the PDF toolbar that opens the current PDF in this viewer. Omit this setting to hide the button.
 - `open_note_external`: External markdown editor command (e.g., `"zettlr"`, `"code"`, `"kate"`). When set, adds a 📝 button to the notepad toolbar that opens the current note's markdown file in this editor.
 - `enable_baloo_tags`: Enable/disable Baloo tag querying for tagged files (default: `true`). Set to `false` on non-KDE systems.
-- `swap_launcher_viewer`: Swap the positions of launcher and viewer columns (default: `false`). When `true`, layout becomes Viewer | Launchers | Notepad instead of Launchers | Viewer | Notepad.
 - `terminal`: External terminal application (default: auto-detected based on desktop environment). Used by terminal-related handlers and the Console viewer's "External" button. Leave empty for auto-detection.
 - `editor`: Default code/text editor (default: auto-detected based on desktop environment). Used by `directorydev` handler. Leave empty for auto-detection. Auto-detection: KDE→kate, GNOME→gedit, XFCE→mousepad, etc.
 - `file_manager`: Default file manager (default: auto-detected based on desktop environment). Used by `directorydev` and `dolphin_tabs` handlers. Leave empty for auto-detection. Auto-detection: KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.
@@ -345,9 +344,10 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 
 ## UI Features
 
-- **Three-panel layout**: Shortcuts (left) | Viewer (center) | Notepad (right)
-- **Shortcuts panel**: Single column of categorized launchers with "Open All" buttons per category
-- **Central viewer**: Toggles between PDF viewer, web browser, image viewer, help, examples, console, and folder browser (cycles PDF → Web → Image → Help → Examples → Console → Folder). Each viewer has an "External" button to open in a standalone application.
+- **Three-panel layout**: Viewer (left) | Shortcuts (center) | Notepad (right)
+- **Viewer panel**: Tab buttons at top to switch between viewers (Folder, Web, PDF, Image, Examples, Console). Active viewer is highlighted. Each viewer has its own toolbar with an "External" button to open in a standalone application.
+- **Shortcuts panel**: Single column of categorized launchers with "Open All" buttons per category. Edit/Refresh buttons at top (no header label).
+- **Notepad panel**: Formatting toolbar at top (no header label). Auto-saving notes with markdown formatting.
 - **Folder browser**: Navigate the filesystem, detect project folders with `.projectflow` configs, and create new projects. Folders with existing `.projectflow` show [P] badge and can be opened directly.
 - **Examples viewer**: Displays launch handler documentation from EXAMPLES.html. Uses theme color placeholders (e.g., `{fg_primary}`) that are replaced at runtime. Reload button refreshes content; External button opens the file for editing.
 - **Embedded console**: IPython/qtconsole for quick Python and shell commands (`!ls`, `!git status`). Limitations: no interactive programs (nano, vim) - use External button for full terminal.
@@ -361,7 +361,6 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
   - **Recent mode** (default): Shows pinned + recent main projects (up to 10) with drag-drop reordering. Pinned projects shown with underline. ↺ button resets pinned order.
   - **Main Projects mode**: Shows all projects from the projects/ folder in rows of 10, sorted alphabetically.
   - **Folder Projects mode**: Shows recently used `.projectflow` configs from folders (up to 10). Stored in settings to avoid filesystem scanning.
-- **Panel headers**: Grey headers at top of each panel (#5a5a5a)
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
 - **Item buttons**: Individual launchers with application icons. Drag to reorder within category (saves to config).
 - **Edit mode**: Toggle to enable editing - shows "Add Entry" buttons per category and "Add Category" button at bottom
