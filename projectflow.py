@@ -4449,8 +4449,6 @@ StartupNotify=true
                         advanced_btn.setStyleSheet(green_btn_style)
                         advanced_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
                         header_layout.addWidget(advanced_btn)
-                    else:
-
                     # Add stretch to push buttons left (no header label)
                     header_layout.addStretch()
 
