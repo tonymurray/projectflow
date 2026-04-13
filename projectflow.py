@@ -6831,12 +6831,15 @@ StartupNotify=true
         if os.path.isfile(expanded_path):
             expanded_path = os.path.dirname(expanded_path)
 
-        # Switch to folder mode directly
+        # Set the path BEFORE switching modes so switch_to_viewer_mode uses the correct path
+        self.folder_current_path = expanded_path
+
+        # Switch to folder mode (this will call populate_folder_browser with folder_current_path)
         if self.column2_mode != "folder":
             self.switch_to_viewer_mode("folder")
-
-        # Navigate to the folder
-        self.populate_folder_browser(expanded_path)
+        else:
+            # Already in folder mode, just navigate to the new path
+            self.populate_folder_browser(expanded_path)
 
     def open_terminal_at(self, path):
         """Open a terminal at the specified path"""
