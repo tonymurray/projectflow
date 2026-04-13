@@ -6823,14 +6823,12 @@ StartupNotify=true
 
     def preview_in_folder_browser(self, path):
         """Preview a folder in the folder browser panel"""
-        print(f"DEBUG: preview_in_folder_browser called with path: {path}")
         # Expand path and get directory if it's a file
         expanded_path = os.path.expanduser(path)
         if os.path.isfile(expanded_path):
             expanded_path = os.path.dirname(expanded_path)
 
         # Always set the path first (even if folder_browser doesn't exist yet)
-        print(f"DEBUG: Setting folder_current_path to: {expanded_path}")
         self.folder_current_path = expanded_path
 
         # Check if folder browser widget exists before trying to display
@@ -7506,8 +7504,8 @@ StartupNotify=true
 
     def folder_open_external(self):
         """Open current folder in file manager"""
-        print(f"DEBUG: folder_open_external called with path: {self.folder_current_path}")
-        subprocess.Popen(["xdg-open", self.folder_current_path], start_new_session=True)
+        file_manager = self.get_configured_file_manager()
+        subprocess.Popen([file_manager, self.folder_current_path], start_new_session=True)
 
     def folder_make_project(self):
         """Create a .projectflow config and projectflow.md notes file for the current folder"""
