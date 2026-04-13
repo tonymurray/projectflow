@@ -2,7 +2,7 @@
 """
 ProjectFlow - Quick Launcher for Projects and Files
 KDE Plasma application with configuration file support
-Edit config files and click Refresh to reload!
+Edit config files and save to reload!
 """
 
 import sys
@@ -4450,14 +4450,6 @@ StartupNotify=true
                         advanced_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
                         header_layout.addWidget(advanced_btn)
                     else:
-                        # Refresh button
-                        refresh_btn = QPushButton("↻")
-                        refresh_btn.setMaximumWidth(50)
-                        refresh_btn.setMinimumHeight(self.d('header_btn_height'))
-                        refresh_btn.setToolTip("Refresh")
-                        refresh_btn.setStyleSheet(green_btn_style)
-                        refresh_btn.clicked.connect(self.refresh_projects)
-                        header_layout.addWidget(refresh_btn)
 
                     # Add stretch to push buttons left (no header label)
                     header_layout.addStretch()
