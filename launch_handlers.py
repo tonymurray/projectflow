@@ -130,17 +130,17 @@ LAUNCH_HANDLERS = {
 
     # Note: rsync_backup is now a complex handler with safety checks (see COMPLEX_HANDLERS)
 
-    # Firefox: Open in a new window
+    # Firefox: Open in a new tab
     "firefox": {
-        "command": ["firefox", "--new-window", "{path}"],
-        "description": "Open URL in a new Firefox window",
+        "command": ["firefox", "--new-tab", "{path}"],
+        "description": "Open URL in a new Firefox tab",
         "example": "https://wikipedia.org"
     },
 
-    # Chrome: Open via Flatpak in a new window
+    # Chrome: Open via Flatpak in a new tab
     "chrome": {
         "command": ["flatpak", "run", "--command=/app/bin/chrome",
-                    "com.google.Chrome", "--new-window", "{path}"],
+                    "com.google.Chrome", "--new-tab", "{path}"],
         "description": "Open URL in Chrome via Flatpak",
         "example": "https://wikipedia.org"
     },
