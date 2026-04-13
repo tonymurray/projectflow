@@ -490,7 +490,7 @@ class ClickableSearchTitle(QWidget):
 
 
 class FolderBrowserDelegate(QStyledItemDelegate):
-    """Custom delegate to render file items with a card-like border appearance"""
+    """Custom delegate to render folder items with a card-like border appearance"""
 
     def __init__(self, app_ref, parent=None):
         super().__init__(parent)
@@ -499,7 +499,7 @@ class FolderBrowserDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         item_type = index.data(Qt.ItemDataRole.UserRole + 1)
 
-        if item_type != "file":
+        if item_type != "dir":
             super().paint(painter, option, index)
             return
 
