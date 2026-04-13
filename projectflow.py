@@ -6823,16 +6823,17 @@ StartupNotify=true
 
     def preview_in_folder_browser(self, path):
         """Preview a folder in the folder browser panel"""
-        if not hasattr(self, 'folder_browser') or not self.folder_browser:
-            return
-
         # Expand path and get directory if it's a file
         expanded_path = os.path.expanduser(path)
         if os.path.isfile(expanded_path):
             expanded_path = os.path.dirname(expanded_path)
 
-        # Set the path BEFORE switching modes so switch_to_viewer_mode uses the correct path
+        # Always set the path first (even if folder_browser doesn't exist yet)
         self.folder_current_path = expanded_path
+
+        # Check if folder browser widget exists before trying to display
+        if not hasattr(self, 'folder_browser') or not self.folder_browser:
+            return
 
         # Switch to folder mode (this will call populate_folder_browser with folder_current_path)
         if self.column2_mode != "folder":
