@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox, QMessageBox, QScrollArea, QFrame, QTextEdit, QToolBar,
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
-    QPlainTextEdit, QStackedWidget, QCompleter, QMenu
+    QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, pyqtSignal, QStringListModel, QEvent
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
@@ -487,6 +487,60 @@ class ClickableSearchTitle(QWidget):
                 background-color: {self.t('bg_category')};
             }}
         """)
+
+
+class FolderBrowserDelegate(QStyledItemDelegate):
+    """Custom delegate to render file items with a card-like border appearance"""
+
+    def __init__(self, app_ref, parent=None):
+        super().__init__(parent)
+        self.app = app_ref
+
+    def paint(self, painter, option, index):
+        item_type = index.data(Qt.ItemDataRole.UserRole + 1)
+
+        if item_type != "file":
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        if is_selected:
+            bg_color = QColor(self.app.t('bg_category'))
+            text_color = QColor(self.app.t('fg_on_dark'))
+            border_color = QColor(self.app.t('bg_category'))
+        elif is_hovered:
+            bg_color = QColor(self.app.t('bg_button_hover'))
+            text_color = QColor(self.app.t('fg_on_dark'))
+            border_color = QColor(self.app.t('bg_navy'))
+        else:
+            bg_color = QColor(self.app.t('bg_button'))
+            text_color = QColor(self.app.t('fg_primary'))
+            border_color = QColor(self.app.t('border'))
+
+        card_rect = option.rect.adjusted(6, 3, -6, -3)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(bg_color)
+        painter.setPen(border_color)
+        painter.drawRoundedRect(card_rect, 3, 3)
+
+        painter.setPen(text_color)
+        font = option.font
+        font.setPointSize(9)
+        painter.setFont(font)
+        display_text = "› " + (index.data(Qt.ItemDataRole.DisplayRole) or "")
+        painter.drawText(card_rect.adjusted(10, 0, -4, 0),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         display_text)
+
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        return QSize(hint.width(), hint.height() + 6)
 
 
 class ProjectFlowApp(QMainWindow):
@@ -5201,6 +5255,9 @@ StartupNotify=true
                         color: {self.t('fg_on_dark')};
                     }}
                 """)
+                self.folder_browser.setMouseTracking(True)
+                self.folder_browser.viewport().setMouseTracking(True)
+                self.folder_browser.setItemDelegate(FolderBrowserDelegate(self))
                 self.folder_browser.itemClicked.connect(self.on_folder_item_clicked)
                 self.folder_browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 self.folder_browser.customContextMenuRequested.connect(self.folder_browser_context_menu)
