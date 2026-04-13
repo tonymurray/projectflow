@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox, QMessageBox, QScrollArea, QFrame, QTextEdit, QToolBar,
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
-    QPlainTextEdit, QStackedWidget, QCompleter
+    QPlainTextEdit, QStackedWidget, QCompleter, QMenu
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, pyqtSignal, QStringListModel, QEvent
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
@@ -2823,6 +2823,8 @@ StartupNotify=true
                 self.config_image_file = config_data.get('image_file', None)
                 # Load default console path if specified
                 self.config_console_path = config_data.get('console_path', None)
+                # Load default folder path if specified
+                self.config_folder_path = config_data.get('folder_path', None)
                 # Load default column2 mode (pdf, webview, or image)
                 self.config_column2_default = config_data.get('column2_default', None)
                 # Load per-config terminal override
@@ -2845,6 +2847,7 @@ StartupNotify=true
                 self.config_webview_url = None
                 self.config_image_file = None
                 self.config_console_path = None
+                self.config_folder_path = None
                 self.config_column2_default = None
                 self.config_terminal = None
                 self.config_notes_file = None
@@ -2877,6 +2880,13 @@ StartupNotify=true
                 self.config_console_path = config_dir
             elif self.config_console_path.startswith("./"):
                 self.config_console_path = os.path.join(config_dir, self.config_console_path[2:])
+
+        # Also resolve folder_path if it's relative
+        if hasattr(self, 'config_folder_path') and self.config_folder_path:
+            if self.config_folder_path == ".":
+                self.config_folder_path = config_dir
+            elif self.config_folder_path.startswith("./"):
+                self.config_folder_path = os.path.join(config_dir, self.config_folder_path[2:])
 
     def get_project_name(self):
         """Get the display name for the current project.
@@ -3644,6 +3654,12 @@ StartupNotify=true
                     return
                 resource_key = "console_path"
                 resource_value = self.console_path
+            elif self.column2_mode == "folder":
+                if not hasattr(self, 'folder_current_path') or not self.folder_current_path:
+                    QMessageBox.information(self, "Set Default", "No folder path set.")
+                    return
+                resource_key = "folder_path"
+                resource_value = self.folder_current_path
             else:
                 return
 
@@ -3670,6 +3686,8 @@ StartupNotify=true
                 self.config_image_file = resource_value
             elif self.column2_mode == "console":
                 self.config_console_path = resource_value
+            elif self.column2_mode == "folder":
+                self.config_folder_path = resource_value
             self.config_column2_default = self.column2_mode
 
             QMessageBox.information(self, "Set Default", f"Set as default {self.column2_mode} viewer.")
@@ -4692,16 +4710,16 @@ StartupNotify=true
                                     }}
                                 """
 
-                                # Add terminal button
-                                term_btn = QPushButton("$_")
-                                term_btn.setMaximumWidth(28)
-                                term_btn.setMinimumHeight(30)
-                                term_btn.setToolTip("Open terminal here")
-                                term_btn.setStyleSheet(terminal_btn_style)
-                                term_btn.clicked.connect(
-                                    lambda checked=False, p=path: self.open_terminal_at(p)
+                                # Add folder browser button
+                                folder_btn = QPushButton("📁")
+                                folder_btn.setMaximumWidth(28)
+                                folder_btn.setMinimumHeight(30)
+                                folder_btn.setToolTip("Open in folder browser")
+                                folder_btn.setStyleSheet(terminal_btn_style)
+                                folder_btn.clicked.connect(
+                                    lambda checked=False, p=path: self.preview_in_folder_browser(p)
                                 )
-                                btn_layout.addWidget(term_btn)
+                                btn_layout.addWidget(folder_btn)
 
                                 # Add layout to group
                                 btn_container = QWidget()
@@ -5183,11 +5201,16 @@ StartupNotify=true
                         color: {self.t('fg_on_dark')};
                     }}
                 """)
-                self.folder_browser.itemDoubleClicked.connect(self.on_folder_item_double_clicked)
+                self.folder_browser.itemClicked.connect(self.on_folder_item_clicked)
+                self.folder_browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                self.folder_browser.customContextMenuRequested.connect(self.folder_browser_context_menu)
                 folder_container_layout.addWidget(self.folder_browser)
 
-                # Initialize folder browser state
-                self.folder_current_path = os.path.expanduser("~")
+                # Initialize folder browser state - use saved path or home directory
+                if hasattr(self, 'config_folder_path') and self.config_folder_path:
+                    self.folder_current_path = self.config_folder_path
+                else:
+                    self.folder_current_path = os.path.expanduser("~")
 
                 # Add all containers to stack layout
                 self.column2_stack_layout.addWidget(self.pdf_container)
@@ -6798,6 +6821,23 @@ StartupNotify=true
         # Load the image
         self.load_image(path)
 
+    def preview_in_folder_browser(self, path):
+        """Preview a folder in the folder browser panel"""
+        if not hasattr(self, 'folder_browser') or not self.folder_browser:
+            return
+
+        # Expand path and get directory if it's a file
+        expanded_path = os.path.expanduser(path)
+        if os.path.isfile(expanded_path):
+            expanded_path = os.path.dirname(expanded_path)
+
+        # Switch to folder mode directly
+        if self.column2_mode != "folder":
+            self.switch_to_viewer_mode("folder")
+
+        # Navigate to the folder
+        self.populate_folder_browser(expanded_path)
+
     def open_terminal_at(self, path):
         """Open a terminal at the specified path"""
         expanded_path = os.path.expanduser(path)
@@ -7185,17 +7225,12 @@ StartupNotify=true
         self.folder_path_label.setToolTip("Current directory")
         toolbar_layout.addWidget(self.folder_path_label, 1)
 
-        # Separator
-        sep2 = QLabel("|")
-        sep2.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep2)
-
-        # Make Project / Open Project button
-        self.folder_project_btn = QPushButton("Make Project")
-        self.folder_project_btn.setStyleSheet(btn_style)
-        self.folder_project_btn.setToolTip("Create a ProjectFlow config for this folder")
-        self.folder_project_btn.clicked.connect(self.folder_handle_project_btn)
-        toolbar_layout.addWidget(self.folder_project_btn)
+        # Pin default button
+        default_btn = QPushButton("📌")
+        default_btn.setStyleSheet(btn_style)
+        default_btn.setToolTip("Set this folder as default for this project")
+        default_btn.clicked.connect(self.set_viewer_as_default)
+        toolbar_layout.addWidget(default_btn)
 
         # External button (open in file manager)
         external_btn = QPushButton("External")
@@ -7217,18 +7252,6 @@ StartupNotify=true
         if path.startswith(home):
             display_path = "~" + path[len(home):]
         self.folder_path_label.setText(display_path)
-
-        # Check if .projectflow exists in this folder
-        projectflow_path = os.path.join(path, ".projectflow")
-        has_projectflow = os.path.exists(projectflow_path)
-
-        # Update project button text
-        if has_projectflow:
-            self.folder_project_btn.setText("Open Project")
-            self.folder_project_btn.setToolTip("Open this folder's ProjectFlow config")
-        else:
-            self.folder_project_btn.setText("Make Project")
-            self.folder_project_btn.setToolTip("Create a ProjectFlow config for this folder")
 
         try:
             entries = os.listdir(path)
@@ -7294,8 +7317,8 @@ StartupNotify=true
         """Refresh current directory listing"""
         self.populate_folder_browser(self.folder_current_path)
 
-    def on_folder_item_double_clicked(self, item, column):
-        """Handle double-click on folder browser item"""
+    def on_folder_item_clicked(self, item, column):
+        """Handle single-click on folder browser item"""
         path = item.data(0, Qt.ItemDataRole.UserRole)
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
 
@@ -7315,17 +7338,169 @@ StartupNotify=true
             # Open file with xdg-open
             subprocess.Popen(["xdg-open", path], start_new_session=True)
 
+    def folder_browser_context_menu(self, position):
+        """Handle right-click context menu in folder browser"""
+        item = self.folder_browser.itemAt(position)
+        if not item:
+            return
+
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+
+        if not path:
+            return
+
+        menu = QMenu(self)
+
+        # Add to Project action
+        add_action = menu.addAction("Add to Project...")
+        add_action.triggered.connect(lambda: self.show_add_to_project_dialog(path))
+
+        # For directories: Make Project or Open Project
+        if item_type == "dir":
+            projectflow_path = os.path.join(path, ".projectflow")
+            if os.path.exists(projectflow_path):
+                project_action = menu.addAction("Open as Project")
+                project_action.triggered.connect(lambda: self.switch_to_config(projectflow_path))
+            else:
+                project_action = menu.addAction("Make Project")
+                project_action.triggered.connect(lambda p=path: self.folder_make_project_at(p))
+
+        menu.addSeparator()
+
+        # Open action
+        open_action = menu.addAction("Open")
+        open_action.triggered.connect(lambda: self.on_folder_item_clicked(item, 0))
+
+        # Open in Terminal (for directories only)
+        if item_type == "dir":
+            terminal_action = menu.addAction("Open in Terminal")
+            terminal_action.triggered.connect(lambda: subprocess.Popen(
+                self._get_terminal_workdir_command(path), start_new_session=True))
+
+        menu.exec(self.folder_browser.mapToGlobal(position))
+
+    def show_add_to_project_dialog(self, file_path):
+        """Show dialog to select which project to add the file/folder to"""
+        # Get list of project files
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects = []
+
+        if os.path.isdir(projects_dir):
+            for f in os.listdir(projects_dir):
+                if f.endswith('.json'):
+                    projects.append(f[:-5])  # Remove .json extension
+
+        if not projects:
+            QMessageBox.warning(self, "Add to Project", f"No project files found in {projects_dir}")
+            return
+
+        projects.sort(key=str.lower)
+
+        # Create dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add to Project")
+        dialog.setMinimumWidth(300)
+        layout = QVBoxLayout(dialog)
+
+        # Label
+        filename = os.path.basename(file_path)
+        label = QLabel(f"Add '{filename}' to which project?")
+        layout.addWidget(label)
+
+        # Project selector
+        combo = QComboBox()
+        combo.addItems(projects)
+
+        # Try to pre-select current project
+        if self.current_config_file:
+            current_name = os.path.basename(self.current_config_file)
+            if current_name.endswith('.json'):
+                current_name = current_name[:-5]
+            if current_name in projects:
+                combo.setCurrentText(current_name)
+
+        layout.addWidget(combo)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_project = combo.currentText()
+            project_path = os.path.join(projects_dir, f"{selected_project}.json")
+            self.add_resource_to_project(file_path, project_path)
+
+    def add_resource_to_project(self, file_path, project_path):
+        """Add a file or folder to a project's 'Added Resources' category"""
+        try:
+            with open(project_path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read config: {e}")
+            return
+
+        # Ensure columns exist
+        if 'columns' not in data:
+            data['columns'] = [[]]
+        if not data['columns']:
+            data['columns'] = [[]]
+
+        column1 = data['columns'][0]
+
+        # Find or create "Added Resources" category
+        added_resources = None
+        for category_dict in column1:
+            if isinstance(category_dict, dict) and "Added Resources" in category_dict:
+                added_resources = category_dict["Added Resources"]
+                break
+
+        if added_resources is None:
+            # Create the category at the end of column 1
+            added_resources = []
+            column1.append({"Added Resources": added_resources})
+
+        # Check for duplicates
+        existing_paths = [item[1] for item in added_resources if len(item) > 1]
+        if file_path in existing_paths:
+            QMessageBox.information(self, "Add to Project", "This item is already in the project.")
+            return
+
+        # Determine display name and handler
+        display_name = os.path.basename(file_path)
+
+        if os.path.isdir(file_path):
+            app = "file_manager"
+        else:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg'):
+                app = "gwenview"
+            else:
+                app = "default"
+
+        # Add the entry
+        added_resources.append([display_name, file_path, app])
+
+        # Save the config
+        try:
+            with open(project_path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save config: {e}")
+            return
+
+        project_name = os.path.basename(project_path).replace('.json', '')
+        QMessageBox.information(self, "Add to Project", f"Added '{display_name}' to {project_name}")
+
+        # Refresh if we added to the current project
+        if project_path == self.current_config_file:
+            self.refresh_projects()
+
     def folder_open_external(self):
         """Open current folder in file manager"""
         subprocess.Popen(["xdg-open", self.folder_current_path], start_new_session=True)
-
-    def folder_handle_project_btn(self):
-        """Handle Make Project / Open Project button click"""
-        projectflow_path = os.path.join(self.folder_current_path, ".projectflow")
-        if os.path.exists(projectflow_path):
-            self.folder_open_project()
-        else:
-            self.folder_make_project()
 
     def folder_make_project(self):
         """Create a .projectflow config and projectflow.md notes file for the current folder"""
@@ -7349,6 +7524,38 @@ StartupNotify=true
 
         # Refresh the folder browser to show updated state
         self.populate_folder_browser(folder_path)
+
+        # Ask if user wants to open the project
+        reply = QMessageBox.question(
+            self,
+            "Project Created",
+            f"Created ProjectFlow config for '{folder_name}'.\n\nOpen the project now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.switch_to_config(projectflow_path)
+
+    def folder_make_project_at(self, folder_path):
+        """Create a .projectflow config at the specified folder path"""
+        folder_name = os.path.basename(folder_path)
+
+        # Create config content
+        config = self.create_folder_project_config(folder_path)
+
+        # Write .projectflow file
+        projectflow_path = os.path.join(folder_path, ".projectflow")
+        try:
+            with open(projectflow_path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create .projectflow: {str(e)}")
+            return
+
+        # Create projectflow.md notes file
+        self.create_project_notes_file(folder_path)
+
+        # Refresh the folder browser to show updated state
+        self.populate_folder_browser(self.folder_current_path)
 
         # Ask if user wants to open the project
         reply = QMessageBox.question(
@@ -7487,12 +7694,6 @@ Project created: {date_str}
                 f.write(content)
         except Exception as e:
             print(f"Warning: Could not create notes file: {e}")
-
-    def folder_open_project(self):
-        """Open the .projectflow config for the current folder"""
-        projectflow_path = os.path.join(self.folder_current_path, ".projectflow")
-        if os.path.exists(projectflow_path):
-            self.switch_to_config(projectflow_path)
 
     def load_help_content(self):
         """Load and display README.md content"""
