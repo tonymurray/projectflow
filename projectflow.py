@@ -18,9 +18,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox, QMessageBox, QScrollArea, QFrame, QTextEdit, QToolBar,
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
-    QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle
+    QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider
 )
-from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, pyqtSignal, QStringListModel, QEvent
+from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
 import re
 import urllib.request
@@ -527,12 +527,22 @@ class FolderBrowserDelegate(QStyledItemDelegate):
         painter.setPen(border_color)
         painter.drawRoundedRect(card_rect, 3, 3)
 
+        # Draw icon if present
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        text_left = 10
+        if icon and not icon.isNull():
+            icon_size = 16
+            icon_x = card_rect.left() + 8
+            icon_y = card_rect.center().y() - icon_size // 2
+            icon.paint(painter, QRect(icon_x, icon_y, icon_size, icon_size))
+            text_left = 8 + icon_size + 4
+
         painter.setPen(text_color)
         font = option.font
         font.setPointSize(9)
         painter.setFont(font)
-        display_text = "› " + (index.data(Qt.ItemDataRole.DisplayRole) or "")
-        painter.drawText(card_rect.adjusted(10, 0, -4, 0),
+        display_text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        painter.drawText(card_rect.adjusted(text_left, 0, -4, 0),
                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                          display_text)
 
@@ -7340,6 +7350,8 @@ StartupNotify=true
         dirs.sort(key=str.lower)
         files.sort(key=str.lower)
 
+        icon_provider = QFileIconProvider()
+
         # Add directories first
         for d in dirs:
             full_path = os.path.join(path, d)
@@ -7352,6 +7364,7 @@ StartupNotify=true
             else:
                 item.setText(0, f"{d}/")
 
+            item.setIcon(0, icon_provider.icon(QFileInfo(full_path)))
             item.setData(0, Qt.ItemDataRole.UserRole, full_path)
             item.setData(0, Qt.ItemDataRole.UserRole + 1, "dir")
             self.folder_browser.addTopLevelItem(item)
@@ -7360,6 +7373,7 @@ StartupNotify=true
         for f in files:
             full_path = os.path.join(path, f)
             item = QTreeWidgetItem([f])
+            item.setIcon(0, icon_provider.icon(QFileInfo(full_path)))
             item.setData(0, Qt.ItemDataRole.UserRole, full_path)
             item.setData(0, Qt.ItemDataRole.UserRole + 1, "file")
             self.folder_browser.addTopLevelItem(item)
