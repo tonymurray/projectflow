@@ -4431,7 +4431,7 @@ StartupNotify=true
                     """
 
                     # Edit button
-                    edit_btn = QPushButton("💾 Save" if self.edit_mode else "✏️ Shortcuts")
+                    edit_btn = QPushButton("💾 Save" if self.edit_mode else "Launchers  ✏️")
                     edit_btn.setMinimumHeight(self.d('header_btn_height'))
                     edit_btn.setCheckable(True)
                     edit_btn.setChecked(self.edit_mode)
