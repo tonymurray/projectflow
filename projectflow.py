@@ -7385,6 +7385,9 @@ StartupNotify=true
         files.sort(key=str.lower)
 
         icon_provider = QFileIconProvider()
+        folder_icon = QIcon.fromTheme("folder")
+        if folder_icon.isNull():
+            folder_icon = icon_provider.icon(QFileIconProvider.IconType.Folder)
 
         # Add directories first
         for d in dirs:
@@ -7398,7 +7401,7 @@ StartupNotify=true
             else:
                 item.setText(0, f"{d}/")
 
-            item.setIcon(0, icon_provider.icon(QFileInfo(full_path)))
+            item.setIcon(0, folder_icon)
             item.setData(0, Qt.ItemDataRole.UserRole, full_path)
             item.setData(0, Qt.ItemDataRole.UserRole + 1, "dir")
             self.folder_browser.addTopLevelItem(item)
