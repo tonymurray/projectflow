@@ -4608,6 +4608,22 @@ StartupNotify=true
                             # Set tooltip showing the command and path (with drag hint)
                             btn.setToolTip(f"[{app}] {path}\n(Drag to reorder)")
 
+                            # Shared style for small icon buttons beside launchers
+                            icon_btn_style = f"""
+                                QPushButton {{
+                                    background-color: {self.t('bg_button')};
+                                    color: {self.t('fg_primary')};
+                                    border: 1px solid {self.t('border')};
+                                    border-radius: 3px;
+                                    font-size: 14px;
+                                }}
+                                QPushButton:hover {{
+                                    background-color: {self.t('bg_navy')};
+                                    color: {self.t('fg_on_dark')};
+                                    border: 1px solid {self.t('bg_navy_hover')};
+                                }}
+                            """
+
                             # Check for directorydev handler - special button layout
                             if app == "directorydev":
                                 # Create horizontal layout for main button + 4 action icons
@@ -4748,28 +4764,12 @@ StartupNotify=true
                                 btn_layout.setSpacing(2)
                                 btn_layout.addWidget(btn, 1)
 
-                                # Terminal preview button style
-                                terminal_btn_style = f"""
-                                    QPushButton {{
-                                        background-color: {self.t('bg_button')};
-                                        color: {self.t('fg_primary')};
-                                        border: 1px solid {self.t('border')};
-                                        border-radius: 3px;
-                                        font-size: 14px;
-                                    }}
-                                    QPushButton:hover {{
-                                        background-color: {self.t('bg_navy')};
-                                        color: {self.t('fg_on_dark')};
-                                        border: 1px solid {self.t('bg_navy_hover')};
-                                    }}
-                                """
-
                                 # Add folder browser button
                                 folder_btn = QPushButton("📁")
                                 folder_btn.setMaximumWidth(28)
                                 folder_btn.setMinimumHeight(30)
                                 folder_btn.setToolTip("Open in folder browser")
-                                folder_btn.setStyleSheet(terminal_btn_style)
+                                folder_btn.setStyleSheet(icon_btn_style)
                                 folder_btn.clicked.connect(
                                     lambda checked=False, p=path: self.preview_in_folder_browser(p)
                                 )
@@ -4781,8 +4781,29 @@ StartupNotify=true
                                 drop_zone_layout.addWidget(btn_container)
                                 category_drop_zone.add_item(btn_container, idx)
                             else:
-                                drop_zone_layout.addWidget(btn)
-                                category_drop_zone.add_item(btn, idx)
+                                if self._is_local_path(path):
+                                    btn_layout = QHBoxLayout()
+                                    btn_layout.setContentsMargins(0, 0, 0, 0)
+                                    btn_layout.setSpacing(2)
+                                    btn_layout.addWidget(btn, 1)
+
+                                    folder_btn = QPushButton("📁")
+                                    folder_btn.setMaximumWidth(28)
+                                    folder_btn.setMinimumHeight(30)
+                                    folder_btn.setToolTip("Open in folder browser")
+                                    folder_btn.setStyleSheet(icon_btn_style)
+                                    folder_btn.clicked.connect(
+                                        lambda checked=False, p=path: self.preview_in_folder_browser(p)
+                                    )
+                                    btn_layout.addWidget(folder_btn)
+
+                                    btn_container = QWidget()
+                                    btn_container.setLayout(btn_layout)
+                                    drop_zone_layout.addWidget(btn_container)
+                                    category_drop_zone.add_item(btn_container, idx)
+                                else:
+                                    drop_zone_layout.addWidget(btn)
+                                    category_drop_zone.add_item(btn, idx)
 
                     # Add the drop zone to group layout (in view mode)
                     if not self.edit_mode and category_drop_zone:
@@ -6877,6 +6898,29 @@ StartupNotify=true
 
         # Load the image
         self.load_image(path)
+
+    def _is_local_path(self, path):
+        """Return True if path looks like a local file/folder (not remote/URL/command)"""
+        if not path:
+            return False
+        # Exclude anything with a URI scheme (http, https, vscode-remote, ssh, ftp, etc.)
+        if '://' in path:
+            return False
+        # Exclude --flag= style arguments (e.g. --folder-uri=...)
+        if path.startswith('--'):
+            return False
+        # Exclude shell compound commands
+        if any(op in path for op in ('&&', '||', ';')):
+            return False
+        # Exclude SSH-style user@host targets (@ before first slash)
+        first_segment = path.split('/')[0]
+        if '@' in first_segment:
+            return False
+        # Accept clear local path prefixes
+        if path.startswith(('/', '~/', '~', './', '.')):
+            return True
+        # Accept if the expanded path actually exists on disk
+        return os.path.exists(os.path.expanduser(path))
 
     def preview_in_folder_browser(self, path):
         """Preview a folder in the folder browser panel"""
