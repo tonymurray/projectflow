@@ -4765,7 +4765,12 @@ StartupNotify=true
                                 btn_layout.addWidget(btn, 1)
 
                                 # Add folder browser button
-                                folder_btn = QPushButton("📁")
+                                folder_btn = QPushButton()
+                                _fi = QIcon.fromTheme("folder")
+                                if _fi.isNull():
+                                    _fi = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+                                folder_btn.setIcon(_fi)
+                                folder_btn.setIconSize(QSize(16, 16))
                                 folder_btn.setMaximumWidth(28)
                                 folder_btn.setMinimumHeight(30)
                                 folder_btn.setToolTip("Open in folder browser")
@@ -4787,7 +4792,12 @@ StartupNotify=true
                                     btn_layout.setSpacing(2)
                                     btn_layout.addWidget(btn, 1)
 
-                                    folder_btn = QPushButton("📁")
+                                    folder_btn = QPushButton()
+                                    _fi = QIcon.fromTheme("folder")
+                                    if _fi.isNull():
+                                        _fi = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+                                    folder_btn.setIcon(_fi)
+                                    folder_btn.setIconSize(QSize(16, 16))
                                     folder_btn.setMaximumWidth(28)
                                     folder_btn.setMinimumHeight(30)
                                     folder_btn.setToolTip("Open in folder browser")
