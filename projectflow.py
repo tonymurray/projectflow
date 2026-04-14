@@ -7385,9 +7385,12 @@ StartupNotify=true
         files.sort(key=str.lower)
 
         icon_provider = QFileIconProvider()
+        # Try theme icon names in order, then fall back to platform style icon
         folder_icon = QIcon.fromTheme("folder")
         if folder_icon.isNull():
-            folder_icon = icon_provider.icon(QFileIconProvider.IconType.Folder)
+            folder_icon = QIcon.fromTheme("inode-directory")
+        if folder_icon.isNull():
+            folder_icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
 
         # Add directories first
         for d in dirs:
