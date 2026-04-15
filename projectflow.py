@@ -4305,6 +4305,29 @@ StartupNotify=true
         new_window_btn.setToolTip("Open in new window")
         btn_container_layout.addWidget(new_window_btn)
 
+        if self._can_open_in_new_desktop():
+            new_desktop_btn = QPushButton("⧉")
+            new_desktop_btn.setFixedWidth(26)
+            new_desktop_btn.setMinimumHeight(26)
+            new_desktop_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {arrow_bg};
+                    color: {text_color};
+                    border: 1px solid {border_color};
+                    border-left: none;
+                    border-radius: 2px;
+                    padding: 0px;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_config_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
+            new_desktop_btn.clicked.connect(lambda checked=False, path=config_path: self.open_config_in_new_desktop(path))
+            new_desktop_btn.setToolTip("Open in new virtual desktop")
+            btn_container_layout.addWidget(new_desktop_btn)
+
         return btn_container
 
     def handle_config_drop(self, dragged_path, drop_index):
@@ -5537,6 +5560,41 @@ StartupNotify=true
         """Launch a new instance of ProjectFlow with the specified config"""
         script_path = os.path.join(self.script_dir, "projectflow.py")
         subprocess.Popen([script_path, config_path], start_new_session=True)
+
+    def _can_open_in_new_desktop(self):
+        """Return True if the current DE supports opening in a new virtual desktop."""
+        if self.detect_desktop_environment() == 'kde':
+            return shutil.which('qdbus') is not None
+        return False
+
+    def open_config_in_new_desktop(self, config_path):
+        """Launch a new ProjectFlow instance in a freshly created virtual desktop (KDE only)."""
+        try:
+            result = subprocess.run(
+                ['qdbus', 'org.kde.KWin', '/VirtualDesktopManager',
+                 'org.kde.KWin.VirtualDesktopManager.count'],
+                capture_output=True, text=True, timeout=3
+            )
+            count = int(result.stdout.strip())
+            project_name = os.path.splitext(os.path.basename(config_path))[0]
+
+            subprocess.run(
+                ['qdbus', 'org.kde.KWin', '/VirtualDesktopManager',
+                 'org.kde.KWin.VirtualDesktopManager.createDesktop',
+                 str(count), f'ProjectFlow: {project_name}'],
+                timeout=3
+            )
+            subprocess.run(
+                ['qdbus', 'org.kde.KWin', '/KWin',
+                 'org.kde.KWin.setCurrentDesktop', str(count + 1)],
+                timeout=3
+            )
+
+            script_path = os.path.join(self.script_dir, "projectflow.py")
+            subprocess.Popen([script_path, config_path], start_new_session=True)
+
+        except Exception as e:
+            QMessageBox.warning(self, "New Desktop", f"Could not create virtual desktop:\n{str(e)}")
 
     def edit_config(self):
         """Open the current config file in Kate for editing"""
