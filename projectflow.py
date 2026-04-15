@@ -2945,12 +2945,14 @@ StartupNotify=true
             elif self.config_console_path.startswith("./"):
                 self.config_console_path = os.path.join(config_dir, self.config_console_path[2:])
 
-        # Also resolve folder_path if it's relative
+        # Also resolve folder_path if it's relative; default to config dir if not set
         if hasattr(self, 'config_folder_path') and self.config_folder_path:
             if self.config_folder_path == ".":
                 self.config_folder_path = config_dir
             elif self.config_folder_path.startswith("./"):
                 self.config_folder_path = os.path.join(config_dir, self.config_folder_path[2:])
+        else:
+            self.config_folder_path = config_dir
 
     def get_project_name(self):
         """Get the display name for the current project.
@@ -3357,7 +3359,7 @@ StartupNotify=true
 
             # Use config-specified column2 default mode if set
             if hasattr(self, 'config_column2_default') and self.config_column2_default:
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console"):
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console", "folder"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -7702,8 +7704,8 @@ StartupNotify=true
             "project_name": folder_name,
             "column_headers": [f"{folder_name} Project"],
             "columns": [[]],
-            "column2_default": "console",
-            "console_path": ".",
+            "column2_default": "folder",
+            "folder_path": ".",
             "notes_file": "./projectflow.md"
         }
 
