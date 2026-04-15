@@ -7489,7 +7489,7 @@ StartupNotify=true
                 project_action.triggered.connect(lambda: self.switch_to_config(projectflow_path))
             else:
                 project_action = menu.addAction("Make Project")
-                project_action.triggered.connect(lambda p=path: self.folder_make_project_at(p))
+                project_action.triggered.connect(lambda checked, p=path: self.folder_make_project_at(p))
 
         menu.addSeparator()
 
