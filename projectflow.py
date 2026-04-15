@@ -998,6 +998,14 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
 
+        # Browser Links
+        browser_label = QLabel("Browser Links:")
+        browser_label.setStyleSheet(label_style)
+        self._settings_browser_new_tab = QCheckBox("Open links in new tab (uncheck for new window)")
+        self._settings_browser_new_tab.setChecked(self.settings.get('browser_new_tab', True))
+        self._settings_browser_new_tab.setStyleSheet(f"color: {self.t('fg_primary')};")
+        layout.addRow(browser_label, self._settings_browser_new_tab)
+
         # Joplin Token
         joplin_label = QLabel("Joplin Token:")
         joplin_label.setStyleSheet(label_style)
@@ -1184,6 +1192,20 @@ class ProjectFlowApp(QMainWindow):
         global_terminal = self.get_configured_terminal()
         self._proj_terminal.setToolTip(f"Override global terminal for this project (empty = use global: {global_terminal})")
         form_layout.addRow(terminal_label, self._proj_terminal)
+
+        # Browser Links (per-project override)
+        browser_label = QLabel("Browser Links:")
+        browser_label.setStyleSheet(label_style)
+        self._proj_browser_new_tab = QComboBox()
+        self._proj_browser_new_tab.addItems(["(use global setting)", "New tab", "New window"])
+        per_config_browser = getattr(self, 'config_browser_new_tab', None)
+        if per_config_browser is True:
+            self._proj_browser_new_tab.setCurrentText("New tab")
+        elif per_config_browser is False:
+            self._proj_browser_new_tab.setCurrentText("New window")
+        self._proj_browser_new_tab.setStyleSheet(input_style)
+        self._proj_browser_new_tab.setToolTip("Override global browser link behaviour for this project")
+        form_layout.addRow(browser_label, self._proj_browser_new_tab)
 
         main_layout.addLayout(form_layout)
 
@@ -2465,6 +2487,14 @@ class ProjectFlowApp(QMainWindow):
             self.config_console_path = self._proj_console_path.text().strip() or None
             self.config_terminal = self._proj_terminal.currentText().strip() or None
 
+            browser_text = self._proj_browser_new_tab.currentText()
+            if browser_text == "New tab":
+                self.config_browser_new_tab = True
+            elif browser_text == "New window":
+                self.config_browser_new_tab = False
+            else:
+                self.config_browser_new_tab = None
+
             # Save config to JSON (columns already updated by tree editing)
             self._save_project_config()
 
@@ -2514,6 +2544,7 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["notes_folder"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
+            self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
 
             joplin_token = self._settings_joplin.text().strip()
             if joplin_token:
@@ -2593,6 +2624,11 @@ class ProjectFlowApp(QMainWindow):
                 config_data["terminal"] = self.config_terminal
             elif "terminal" in config_data:
                 del config_data["terminal"]
+
+            if self.config_browser_new_tab is not None:
+                config_data["browser_new_tab"] = self.config_browser_new_tab
+            elif "browser_new_tab" in config_data:
+                del config_data["browser_new_tab"]
 
             # Update column headers and columns (single column only)
             config_data["column_headers"] = self.COLUMN_HEADERS
@@ -2897,6 +2933,8 @@ StartupNotify=true
                 self.config_notes_file = config_data.get('notes_file', None)
                 # Load project name if specified (for display in title bar)
                 self.config_project_name = config_data.get('project_name', None)
+                # Load per-project browser new-tab override
+                self.config_browser_new_tab = config_data.get('browser_new_tab', None)
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -2914,6 +2952,7 @@ StartupNotify=true
                 self.config_folder_path = None
                 self.config_column2_default = None
                 self.config_terminal = None
+                self.config_browser_new_tab = None
                 self.config_notes_file = None
                 self.config_project_name = None
         except Exception as e:
@@ -3445,6 +3484,25 @@ StartupNotify=true
         elif 'lxde' in desktop:
             return 'lxde'
         return 'unknown'
+
+    def detect_default_browser(self):
+        """Detect the system default browser. Returns a friendly name like 'firefox'."""
+        try:
+            result = subprocess.run(
+                ['xdg-settings', 'get', 'default-web-browser'],
+                capture_output=True, text=True, timeout=2
+            )
+            desktop = result.stdout.strip().lower()
+            for name in ('firefox', 'chromium', 'chrome', 'epiphany', 'opera', 'brave', 'vivaldi', 'konqueror'):
+                if name in desktop:
+                    return name
+        except Exception:
+            pass
+        if shutil.which('firefox'):
+            return 'firefox'
+        if shutil.which('chromium'):
+            return 'chromium'
+        return 'browser'
 
     def detect_default_terminal(self):
         """Detect appropriate terminal based on desktop environment."""
@@ -5116,6 +5174,16 @@ StartupNotify=true
 
                 pdf_container_layout.addWidget(self.pdf_scroll)
 
+                pdfviewer_setting = self.settings.get('pdfviewer', '')
+                if pdfviewer_setting:
+                    pdf_ext_name = os.path.splitext(os.path.basename(pdfviewer_setting))[0].capitalize()
+                    pdf_footer_label = f"Open in {pdf_ext_name}"
+                else:
+                    pdf_footer_label = "Open PDF"
+                pdf_container_layout.addWidget(
+                    self._make_viewer_footer(pdf_footer_label, "Open PDF in external viewer", self.open_pdf_in_external_viewer)
+                )
+
                 # Webview container
                 self.webview_container = QWidget()
                 webview_container_layout = QVBoxLayout(self.webview_container)
@@ -5137,6 +5205,11 @@ StartupNotify=true
                     except AttributeError:
                         pass  # ForceDarkMode not available in this Qt version
                 webview_container_layout.addWidget(self.webview, 1)  # stretch to fill space
+
+                browser_name = self.detect_default_browser().capitalize()
+                webview_container_layout.addWidget(
+                    self._make_viewer_footer(f"Open in {browser_name}", "Open URL in external browser", self.open_webview_in_external_browser)
+                )
 
                 # Image viewer container
                 self.image_container = QWidget()
@@ -5165,6 +5238,10 @@ StartupNotify=true
 
                 image_container_layout.addWidget(self.image_scroll)
 
+                image_container_layout.addWidget(
+                    self._make_viewer_footer("Open in Gwenview", "Open image in Gwenview", self.open_image_in_external_viewer)
+                )
+
                 # Help viewer container
                 self.help_container = QWidget()
                 help_container_layout = QVBoxLayout(self.help_container)
@@ -5187,6 +5264,11 @@ StartupNotify=true
                 """)
                 help_container_layout.addWidget(self.help_browser)
 
+                help_editor = (self.settings.get("open_note_external") or "kate").capitalize()
+                help_container_layout.addWidget(
+                    self._make_viewer_footer(f"Open in {help_editor}", "Open README in editor", self.open_help_in_external_editor)
+                )
+
                 # Examples viewer container
                 self.examples_container = QWidget()
                 examples_container_layout = QVBoxLayout(self.examples_container)
@@ -5204,6 +5286,11 @@ StartupNotify=true
                     }}
                 """)
                 examples_container_layout.addWidget(self.examples_browser, 1)  # stretch factor
+
+                examples_editor = (self.settings.get("open_note_external") or "kate").capitalize()
+                examples_container_layout.addWidget(
+                    self._make_viewer_footer(f"Open in {examples_editor}", "Open EXAMPLES.html in editor", self.open_examples_in_external_editor)
+                )
 
                 # Console container (qtconsole if available)
                 self.console_container = QWidget()
@@ -5280,6 +5367,11 @@ StartupNotify=true
                     """)
                     console_container_layout.addWidget(console_label)
 
+                terminal_name = os.path.basename(self.get_configured_terminal()).capitalize()
+                console_container_layout.addWidget(
+                    self._make_viewer_footer(f"Open in {terminal_name}", "Open in external terminal", self.console_open_external)
+                )
+
                 # Folder browser container
                 self.folder_container = QWidget()
                 folder_container_layout = QVBoxLayout(self.folder_container)
@@ -5318,6 +5410,11 @@ StartupNotify=true
                 self.folder_browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 self.folder_browser.customContextMenuRequested.connect(self.folder_browser_context_menu)
                 folder_container_layout.addWidget(self.folder_browser)
+
+                fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
+                folder_container_layout.addWidget(
+                    self._make_viewer_footer(f"Open in {fm_name}", "Open in file manager", self.folder_open_external)
+                )
 
                 # Initialize folder browser state - use saved path or home directory
                 if hasattr(self, 'config_folder_path') and self.config_folder_path:
@@ -5566,6 +5663,14 @@ StartupNotify=true
         if self.detect_desktop_environment() == 'kde':
             return shutil.which('qdbus') is not None
         return False
+
+    def _get_browser_new_tab(self):
+        """Return True to open browser links in new tab, False for new window.
+        Per-config value takes precedence over global setting."""
+        per_config = getattr(self, 'config_browser_new_tab', None)
+        if per_config is not None:
+            return per_config
+        return self.settings.get('browser_new_tab', True)
 
     def open_config_in_new_desktop(self, config_path):
         """Launch a new ProjectFlow instance in a freshly created virtual desktop (KDE only)."""
@@ -6472,18 +6577,6 @@ StartupNotify=true
         fit_btn.clicked.connect(self.pdf_fit_width)
         toolbar_layout.addWidget(fit_btn)
 
-        # External viewer button (only if pdfviewer setting is configured)
-        if self.settings.get("pdfviewer"):
-            sep3 = QLabel("|")
-            sep3.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-            toolbar_layout.addWidget(sep3)
-
-            external_btn = QPushButton("View")
-            external_btn.setStyleSheet(btn_style)
-            external_btn.setToolTip("Open in external PDF viewer")
-            external_btn.clicked.connect(self.open_pdf_in_external_viewer)
-            toolbar_layout.addWidget(external_btn)
-
         # Set as default button
         sep_default = QLabel("|")
         sep_default.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
@@ -6677,24 +6770,59 @@ StartupNotify=true
         except Exception as e:
             print(f"Error fitting PDF to width: {e}")
 
-    def open_pdf_in_external_viewer(self):
-        """Open the current PDF in an external viewer application"""
-        pdfviewer = self.settings.get("pdfviewer")
-        if not pdfviewer or not self.pdf_path:
-            return
+    def _make_viewer_footer(self, label, tooltip, callback):
+        """Create a thin footer strip with a single right-aligned action button."""
+        footer = QWidget()
+        footer.setStyleSheet(f"background-color: {self.t('bg_secondary')}; border-top: 1px solid {self.t('border')};")
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.addStretch()
+        btn = QPushButton(label)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 3px 10px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        btn.setToolTip(tooltip)
+        btn.clicked.connect(callback)
+        layout.addWidget(btn)
+        return footer
 
-        # Expand paths
-        viewer_path = os.path.expanduser(pdfviewer)
-        pdf_path = os.path.expanduser(self.pdf_path)
+    def open_webview_in_external_browser(self):
+        """Open the current webview URL in the system default browser."""
+        url = self.webview_url or (self.webview.url().toString() if self.webview else None)
+        if url and url not in ('about:blank', ''):
+            subprocess.Popen(['xdg-open', url], start_new_session=True)
+        else:
+            QMessageBox.information(self, "No URL", "No URL loaded in the web viewer.")
+
+    def open_pdf_in_external_viewer(self):
+        """Open the current PDF in an external viewer application."""
+        if not self.pdf_path:
+            QMessageBox.information(self, "No PDF", "No PDF loaded.")
+            return
 
         # Skip if PDF is a URL (external viewer expects local files)
         if self.pdf_path.startswith(('http://', 'https://')):
             self.status_label.setText("Cannot open URL-based PDF in external viewer")
             return
 
+        pdfviewer = self.settings.get("pdfviewer", "")
         try:
-            subprocess.Popen([viewer_path, pdf_path], start_new_session=True)
-            self.status_label.setText(f"Opened in external viewer")
+            if pdfviewer:
+                subprocess.Popen([os.path.expanduser(pdfviewer), os.path.expanduser(self.pdf_path)], start_new_session=True)
+            else:
+                subprocess.Popen(['xdg-open', os.path.expanduser(self.pdf_path)], start_new_session=True)
+            self.status_label.setText("Opened in external viewer")
         except Exception as e:
             print(f"Error opening PDF in external viewer: {e}")
             self.status_label.setText(f"Error: {e}")
@@ -7086,17 +7214,6 @@ StartupNotify=true
         fit_btn.clicked.connect(self.image_fit_width)
         toolbar_layout.addWidget(fit_btn)
 
-        # Separator and external button
-        sep2 = QLabel("|")
-        sep2.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep2)
-
-        external_btn = QPushButton("External")
-        external_btn.setStyleSheet(btn_style)
-        external_btn.setToolTip("Open in external image viewer (gwenview)")
-        external_btn.clicked.connect(self.open_image_in_external_viewer)
-        toolbar_layout.addWidget(external_btn)
-
         # Set as default button
         sep_default = QLabel("|")
         sep_default.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
@@ -7153,18 +7270,6 @@ StartupNotify=true
         reload_btn.clicked.connect(self.load_help_content)
         toolbar_layout.addWidget(reload_btn)
 
-        # Separator
-        sep = QLabel("|")
-        sep.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep)
-
-        # External button
-        external_btn = QPushButton("External")
-        external_btn.setStyleSheet(btn_style)
-        external_btn.setToolTip("Open README.md in Kate")
-        external_btn.clicked.connect(self.open_help_in_external_editor)
-        toolbar_layout.addWidget(external_btn)
-
         toolbar_layout.addStretch()
         parent_layout.addWidget(toolbar_widget)
 
@@ -7207,18 +7312,6 @@ StartupNotify=true
         reload_btn.setToolTip("Reload examples content")
         reload_btn.clicked.connect(self.load_examples_content)
         toolbar_layout.addWidget(reload_btn)
-
-        # Separator
-        sep = QLabel("|")
-        sep.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep)
-
-        # External button
-        external_btn = QPushButton("External")
-        external_btn.setStyleSheet(btn_style)
-        external_btn.setToolTip("Open EXAMPLES.html in editor")
-        external_btn.clicked.connect(self.open_examples_in_external_editor)
-        toolbar_layout.addWidget(external_btn)
 
         toolbar_layout.addStretch()
         parent_layout.addWidget(toolbar_widget)
@@ -7286,13 +7379,6 @@ StartupNotify=true
         open_btn.setToolTip("Navigate to a directory")
         open_btn.clicked.connect(self.console_open_directory)
         toolbar_layout.addWidget(open_btn)
-
-        # External terminal button
-        external_btn = QPushButton("External")
-        external_btn.setStyleSheet(btn_style)
-        external_btn.setToolTip("Open in Konsole (for interactive programs)")
-        external_btn.clicked.connect(self.console_open_external)
-        toolbar_layout.addWidget(external_btn)
 
         # Separator
         sep1 = QLabel("|")
@@ -7406,13 +7492,6 @@ StartupNotify=true
         default_btn.setToolTip("Set this folder as default for this project")
         default_btn.clicked.connect(self.set_viewer_as_default)
         toolbar_layout.addWidget(default_btn)
-
-        # External button (open in file manager)
-        external_btn = QPushButton("External")
-        external_btn.setStyleSheet(btn_style)
-        external_btn.setToolTip("Open in file manager")
-        external_btn.clicked.connect(self.folder_open_external)
-        toolbar_layout.addWidget(external_btn)
 
         parent_layout.addWidget(toolbar_widget)
 
@@ -8318,6 +8397,9 @@ Project created: {date_str}
             # 4. Check simple handlers from launch_handlers.py
             if app in self.launch_handlers:
                 handler = self.launch_handlers[app]
+                if app in ('firefox', 'chrome') and not self._get_browser_new_tab():
+                    handler = dict(handler)
+                    handler['command'] = [arg.replace('--new-tab', '--new-window') for arg in handler['command']]
                 cmd = self._build_handler_command(handler, expanded_path)
                 subprocess.Popen(cmd, start_new_session=True)
                 desc = handler.get("description", app)
