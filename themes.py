@@ -98,7 +98,7 @@ THEMES = {
         # Borders
         "border": "#bdc3c7",
         "border_dark": "#999999",
-        "border_light": "#cccccc",
+        "border_light": "#f4f4f4",
 
         # Status colors
         "status_success": "#27ae60",

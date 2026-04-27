@@ -18,9 +18,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox, QMessageBox, QScrollArea, QFrame, QTextEdit, QToolBar,
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
-    QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider
+    QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
+    QSplitter
 )
-from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo
+from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
 import re
 import urllib.request
@@ -2840,6 +2841,13 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving settings: {e}")
 
+    def _save_splitter_state(self):
+        """Persist column splitter positions to settings."""
+        if hasattr(self, 'columns_splitter'):
+            state = self.columns_splitter.saveState()
+            self.settings["splitter_state"] = bytes(state.toHex()).decode()
+            self.save_settings()
+
     def get_config_file_to_use(self):
         """Determine which config file to use based on settings"""
         # Priority:
@@ -4074,6 +4082,13 @@ StartupNotify=true
         self.folder_projects_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
         header_row.addWidget(self.folder_projects_btn)
 
+        # Archive toggle button
+        self.archive_projects_btn = QPushButton("Archive")
+        self.archive_projects_btn.setToolTip("Show archived projects")
+        self.archive_projects_btn.setStyleSheet(toggle_btn_style)
+        self.archive_projects_btn.clicked.connect(lambda: self.switch_projects_mode('archive'))
+        header_row.addWidget(self.archive_projects_btn)
+
         parent_layout.addLayout(header_row)
 
         # Container for project buttons (content changes based on mode)
@@ -4093,7 +4108,7 @@ StartupNotify=true
         self.populate_projects()
 
     def switch_projects_mode(self, mode):
-        """Switch to a specific project mode (recent, alphabetical, or folder)"""
+        """Switch to a specific project mode (recent, alphabetical, folder, or archive)"""
         self.projects_mode = mode
 
         # Update header label and button visibility
@@ -4103,18 +4118,28 @@ StartupNotify=true
             self.recent_projects_btn.setVisible(False)
             self.main_projects_btn.setVisible(True)
             self.folder_projects_btn.setVisible(True)
+            self.archive_projects_btn.setVisible(True)
         elif mode == 'alphabetical':
             self.projects_header_label.setText("Main Projects")
             self.reset_btn.setVisible(False)
             self.recent_projects_btn.setVisible(True)
             self.main_projects_btn.setVisible(False)
             self.folder_projects_btn.setVisible(True)
+            self.archive_projects_btn.setVisible(True)
         elif mode == 'folder':
             self.projects_header_label.setText("Folder Projects")
             self.reset_btn.setVisible(False)
             self.recent_projects_btn.setVisible(True)
             self.main_projects_btn.setVisible(True)
             self.folder_projects_btn.setVisible(False)
+            self.archive_projects_btn.setVisible(True)
+        elif mode == 'archive':
+            self.projects_header_label.setText("Archived Projects")
+            self.reset_btn.setVisible(False)
+            self.recent_projects_btn.setVisible(True)
+            self.main_projects_btn.setVisible(True)
+            self.folder_projects_btn.setVisible(True)
+            self.archive_projects_btn.setVisible(False)
 
         self.populate_projects()
 
@@ -4137,6 +4162,8 @@ StartupNotify=true
             self._populate_alphabetical_projects()
         elif self.projects_mode == 'folder':
             self._populate_folder_projects()
+        elif self.projects_mode == 'archive':
+            self._populate_archived_projects()
 
     def _populate_folder_projects(self):
         """Populate with folder projects (.projectflow configs)"""
@@ -4268,6 +4295,251 @@ StartupNotify=true
 
         self.projects_layout.addLayout(grid)
 
+    def _populate_archived_projects(self):
+        """Populate with archived projects (main + folder)"""
+        # Archived main projects: files in projects/.archive/
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        archive_dir = os.path.join(configs_dir, ".archive")
+        archived_main = []
+        if os.path.exists(archive_dir):
+            for f in sorted(os.listdir(archive_dir)):
+                if f.endswith('.json'):
+                    archived_main.append(os.path.join(archive_dir, f))
+
+        # Archived folder projects: settings list
+        archived_folder = self.settings.get("archived_folder_projects", [])
+        archived_folder = [p for p in archived_folder if os.path.exists(p)]
+        if archived_folder != self.settings.get("archived_folder_projects", []):
+            self.settings["archived_folder_projects"] = archived_folder
+            self.save_settings()
+
+        all_archived = archived_main + archived_folder
+
+        if not all_archived:
+            label = QLabel("No archived projects.")
+            label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 20px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.projects_layout.addWidget(label)
+            return
+
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(5)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+
+        for config_path in all_archived:
+            btn_container = self._create_archived_button(config_path)
+            buttons_layout.addWidget(btn_container)
+
+        buttons_layout.addStretch()
+        self.projects_layout.addLayout(buttons_layout)
+
+    def _create_archived_button(self, config_path):
+        """Create a button for an archived project with Restore action"""
+        raw_name = self.get_display_name_for_config_path(config_path)
+        display_name = raw_name.replace("_config", "").replace("_", " ").replace("-", " ").title()
+
+        btn_container = QWidget()
+        btn_container_layout = QHBoxLayout(btn_container)
+        btn_container_layout.setContentsMargins(0, 0, 0, 0)
+        btn_container_layout.setSpacing(1)
+
+        btn = QPushButton(display_name)
+        btn.setMinimumHeight(26)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_muted')};
+                border: 1px solid {self.t('border')};
+                border-radius: 2px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        btn.setToolTip(f"Archived: {config_path}\nClick to open (right-click to restore or delete)")
+        btn.clicked.connect(lambda checked=False, path=config_path: self.switch_to_config(path))
+        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        btn.customContextMenuRequested.connect(lambda pos, p=config_path: self._project_context_menu(btn, pos, p, archived=True))
+        btn_container_layout.addWidget(btn)
+
+        # Restore button
+        restore_btn = QPushButton("↩")
+        restore_btn.setFixedWidth(26)
+        restore_btn.setMinimumHeight(26)
+        restore_btn.setToolTip("Restore project")
+        restore_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_muted')};
+                border: 1px solid {self.t('border')};
+                border-left: none;
+                border-radius: 2px;
+                padding: 0px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_config_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        restore_btn.clicked.connect(lambda checked=False, path=config_path: self.restore_project(path))
+        btn_container_layout.addWidget(restore_btn)
+
+        return btn_container
+
+    def _project_context_menu(self, btn, pos, config_path, archived=False):
+        """Show right-click context menu for a project button"""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+            }}
+            QMenu::item:selected {{
+                background-color: {self.t('bg_config_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+
+        if archived:
+            restore_action = menu.addAction("Restore project")
+            restore_action.triggered.connect(lambda: self.restore_project(config_path))
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete permanently")
+            delete_action.triggered.connect(lambda: self._delete_project_permanently(config_path))
+        else:
+            archive_action = menu.addAction("Archive project")
+            archive_action.triggered.connect(lambda: self.archive_project(config_path))
+
+        menu.exec(btn.mapToGlobal(pos))
+
+    def archive_project(self, config_path):
+        """Archive a project (hide from normal views)"""
+        is_folder_project = os.path.basename(config_path) == '.projectflow'
+
+        if is_folder_project:
+            folder_projects = self.settings.get("folder_projects", [])
+            archived = self.settings.get("archived_folder_projects", [])
+            if config_path in folder_projects:
+                folder_projects.remove(config_path)
+            if config_path not in archived:
+                archived.insert(0, config_path)
+            self.settings["folder_projects"] = folder_projects
+            self.settings["archived_folder_projects"] = archived
+        else:
+            archive_dir = os.path.join(os.path.dirname(config_path), ".archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            dest = os.path.join(archive_dir, os.path.basename(config_path))
+            if os.path.exists(dest):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Archive Conflict",
+                    f"An archived project named '{os.path.basename(config_path)}' already exists.")
+                return
+            shutil.move(config_path, dest)
+            self._remove_from_project_lists(config_path)
+            if self.current_config_file == config_path:
+                self._switch_away_from_archived(dest)
+
+        self.save_settings()
+        self.refresh_projects()
+
+    def restore_project(self, config_path):
+        """Restore an archived project back to normal visibility"""
+        is_folder_project = os.path.basename(config_path) == '.projectflow'
+
+        if is_folder_project:
+            archived = self.settings.get("archived_folder_projects", [])
+            folder_projects = self.settings.get("folder_projects", [])
+            if config_path in archived:
+                archived.remove(config_path)
+            if config_path not in folder_projects:
+                folder_projects.insert(0, config_path)
+            self.settings["archived_folder_projects"] = archived
+            self.settings["folder_projects"] = folder_projects
+        else:
+            # Move from .archive/ back to projects/
+            projects_dir = os.path.dirname(os.path.dirname(config_path))
+            dest = os.path.join(projects_dir, os.path.basename(config_path))
+            if os.path.exists(dest):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Restore Conflict",
+                    f"A project named '{os.path.basename(config_path)}' already exists in the projects folder.")
+                return
+            if not os.path.exists(config_path):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "File Not Found",
+                    f"The archived file no longer exists:\n{config_path}")
+                self.refresh_projects()
+                return
+            shutil.move(config_path, dest)
+
+        self.save_settings()
+        # Switch to archive view so user sees updated state
+        self.refresh_projects()
+
+    def _delete_project_permanently(self, config_path):
+        """Permanently delete an archived project file after confirmation"""
+        from PyQt6.QtWidgets import QMessageBox
+        name = os.path.basename(config_path)
+        reply = QMessageBox.question(
+            self, "Delete Permanently",
+            f"Permanently delete '{name}'? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        is_folder_project = os.path.basename(config_path) == '.projectflow'
+        if is_folder_project:
+            archived = self.settings.get("archived_folder_projects", [])
+            if config_path in archived:
+                archived.remove(config_path)
+            self.settings["archived_folder_projects"] = archived
+            self.save_settings()
+        else:
+            try:
+                os.remove(config_path)
+            except OSError as e:
+                QMessageBox.warning(self, "Delete Failed", str(e))
+                return
+
+        self.refresh_projects()
+
+    def _remove_from_project_lists(self, config_path):
+        """Remove a project path from recent/pinned/default settings"""
+        for key in ("recent_projects", "pinned_projects"):
+            lst = self.settings.get(key, [])
+            if config_path in lst:
+                lst.remove(config_path)
+                self.settings[key] = lst
+        if self.settings.get("last_used_project") == config_path:
+            self.settings["last_used_project"] = ""
+        if self.settings.get("default_project") == config_path:
+            self.settings["default_project"] = ""
+
+    def _switch_away_from_archived(self, archived_path):
+        """Switch to another project when the current one is being archived"""
+        # Try recent projects first
+        for p in self.settings.get("recent_projects", []):
+            if os.path.exists(p) and p != self.current_config_file:
+                self.switch_to_config(p)
+                return
+        # Fall back to any project in projects/
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        if os.path.exists(configs_dir):
+            for f in sorted(os.listdir(configs_dir)):
+                if f.endswith('.json'):
+                    full_path = os.path.join(configs_dir, f)
+                    if os.path.exists(full_path):
+                        self.switch_to_config(full_path)
+                        return
+
     def _create_config_button(self, config_path, is_pinned, draggable=False):
         """Create a config button with new window button"""
         # Get display name from config (reads project_name if set)
@@ -4335,6 +4607,8 @@ StartupNotify=true
         else:
             tooltip = f"Switch to {display_name}"
         btn.setToolTip(tooltip)
+        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        btn.customContextMenuRequested.connect(lambda pos, p=config_path: self._project_context_menu(btn, pos, p, archived=False))
         btn_container_layout.addWidget(btn)
 
         # New window button
@@ -4466,10 +4740,6 @@ StartupNotify=true
 
     def build_main_content(self, parent_layout):
         """Build the main content area with project columns"""
-        # Create horizontal layout for columns
-        columns_layout = QHBoxLayout()
-        columns_layout.setSpacing(15)
-
         # Layout: Launchers (COLUMN_1) | Viewer | Notepad
         # Always show all three panels
         all_columns = [self.COLUMN_1]
@@ -5471,16 +5741,6 @@ StartupNotify=true
                 if self.image_path:
                     self.load_image(self.image_path)
 
-        # Add launcher and viewer columns in configurable order
-        if self.swap_columns:
-            # Viewer | Launcher order
-            columns_layout.addLayout(self.column2_layout, 1)
-            columns_layout.addLayout(launcher_layout, 1)
-        else:
-            # Default: Launcher | Viewer order
-            columns_layout.addLayout(launcher_layout, 1)
-            columns_layout.addLayout(self.column2_layout, 1)
-
         # Add notepad panel (always shown)
         notepad_layout = QVBoxLayout()
         notepad_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
@@ -5580,10 +5840,53 @@ StartupNotify=true
 
         notepad_layout.addLayout(archive_bar)
 
-        # Notepad gets stretch factor of 1 (so with 2 columns above, it's 33% width)
-        columns_layout.addLayout(notepad_layout, 1)
+        # Wrap each column layout in a QWidget (QSplitter requires QWidget children)
+        launcher_widget = QWidget()
+        launcher_widget.setLayout(launcher_layout)
 
-        parent_layout.addLayout(columns_layout)
+        column2_widget = QWidget()
+        column2_widget.setLayout(self.column2_layout)
+
+        notepad_widget = QWidget()
+        notepad_widget.setLayout(notepad_layout)
+
+        # Build splitter
+        self.columns_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.columns_splitter.setHandleWidth(6)
+        self.columns_splitter.setChildrenCollapsible(False)
+        self.columns_splitter.setStyleSheet(f"""
+            QSplitter::handle {{
+                background-color: {self.t('bg_secondary')};
+                border-radius: 2px;
+                margin: 0px 2px;
+            }}
+            QSplitter::handle:hover {{
+                background-color: {self.t('border_light')};
+            }}
+        """)
+
+        if self.swap_columns:
+            self.columns_splitter.addWidget(column2_widget)
+            self.columns_splitter.addWidget(launcher_widget)
+        else:
+            self.columns_splitter.addWidget(launcher_widget)
+            self.columns_splitter.addWidget(column2_widget)
+        self.columns_splitter.addWidget(notepad_widget)
+
+        # Set minimum widths so columns can't be collapsed to nothing
+        for i in range(self.columns_splitter.count()):
+            self.columns_splitter.widget(i).setMinimumWidth(150)
+
+        # Restore saved splitter state, or default to equal thirds
+        saved_state = self.settings.get("splitter_state")
+        if saved_state:
+            self.columns_splitter.restoreState(QByteArray.fromHex(saved_state.encode()))
+        else:
+            self.columns_splitter.setSizes([1, 1, 1])
+
+        self.columns_splitter.splitterMoved.connect(self._save_splitter_state)
+
+        parent_layout.addWidget(self.columns_splitter, 1)  # stretch=1 so it fills available vertical space
 
         # Add spacer before Projects section
         spacer = QWidget()

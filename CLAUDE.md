@@ -62,6 +62,7 @@ User preferences are stored in `.projectflow_settings.json`:
 - `last_used_project`: Most recently loaded project file
 - `recent_projects`: List of up to 10 recently used main projects (for quick-access bar)
 - `folder_projects`: List of up to 20 recently used `.projectflow` configs from folders (shown in separate "Folder Projects" section)
+- `archived_folder_projects`: List of `.projectflow` paths that have been archived (hidden from Folder Projects; restored by moving back to `folder_projects`)
 - `pinned_projects`: List of projects pinned to the front of the quick-access bar (drag to reorder/pin, ↺ to reset)
 - `theme`: Color theme - `"light"`, `"dark"`, or `"system"` (default: `"system"` - follows desktop preference)
 - `joplin_token`: Joplin Web Clipper API token (enables manual sync button in notepad toolbar)
@@ -359,10 +360,16 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
     - `QProcess + QTextEdit` - Simple but no colors, no terminal features
   - Current approach: qtconsole + External button provides best balance of features and reliability
 - **Preview buttons**: Web links (firefox/chrome) show 🌐 button to preview in webview; images (gwenview/gimp/krita) show 🖼️ button to preview in image viewer
-- **Projects section**: Unified project switcher with three modes (Recent/Main/Folder buttons):
+- **Projects section**: Unified project switcher with four modes (Recent/Main/Folder/Archive buttons):
   - **Recent mode** (default): Shows pinned + recent main projects (up to 10) with drag-drop reordering. Pinned projects shown with underline. ↺ button resets pinned order.
   - **Main Projects mode**: Shows all projects from the projects/ folder in rows of 10, sorted alphabetically.
   - **Folder Projects mode**: Shows recently used `.projectflow` configs from folders (up to 10). Stored in settings to avoid filesystem scanning.
+  - **Archive mode**: Shows archived projects (greyed out). Each has a ↩ restore button. Right-click for restore or permanent delete.
+- **Project archiving**: Right-click any project button to archive it. Archived projects are hidden from normal views.
+  - Main projects (`projects/*.json`) are moved to `projects/.archive/` on archive; moved back on restore.
+  - Folder projects (`.projectflow`) are never moved — archiving removes them from `folder_projects` and adds to `archived_folder_projects` in settings.
+  - Archiving the currently open project auto-switches to another available project.
+  - Archived folder projects remain openable at any time (the file never moves); archiving only hides them from the list.
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
 - **Item buttons**: Individual launchers with application icons. Drag to reorder within category (saves to config).
 - **Edit mode**: Toggle to enable editing - shows "Add Entry" buttons per category and "Add Category" button at bottom
