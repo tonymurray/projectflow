@@ -4200,6 +4200,41 @@ StartupNotify=true
 
         self.projects_layout.addLayout(buttons_layout)
 
+    def _append_folder_projects_row(self):
+        """Append a folder projects row to self.projects_layout (used by recent and main views)"""
+        folder_projects = self.settings.get("folder_projects", [])
+        folder_projects = [p for p in folder_projects if os.path.exists(p)]
+        if not folder_projects:
+            return
+
+        # Thin separator row with "Folder" label
+        sep_row = QHBoxLayout()
+        sep_row.setContentsMargins(0, 2, 0, 0)
+        sep_row.setSpacing(6)
+        sep_line_left = QFrame()
+        sep_line_left.setFrameShape(QFrame.Shape.HLine)
+        sep_line_left.setFixedHeight(1)
+        sep_line_left.setStyleSheet(f"background-color: {self.t('border')};")
+        sep_label = QLabel("Folder")
+        sep_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 10px;")
+        sep_line_right = QFrame()
+        sep_line_right.setFrameShape(QFrame.Shape.HLine)
+        sep_line_right.setFixedHeight(1)
+        sep_line_right.setStyleSheet(f"background-color: {self.t('border')};")
+        sep_row.addWidget(sep_line_left, 1)
+        sep_row.addWidget(sep_label)
+        sep_row.addWidget(sep_line_right, 1)
+        self.projects_layout.addLayout(sep_row)
+
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(5)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        for config_path in folder_projects[:10]:
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            buttons_layout.addWidget(btn_container)
+        buttons_layout.addStretch()
+        self.projects_layout.addLayout(buttons_layout)
+
     def _populate_recent_projects(self):
         """Populate with recent/pinned projects (drag-drop enabled)"""
         recent_projects = self.settings.get("recent_projects", [])
@@ -4258,6 +4293,7 @@ StartupNotify=true
             buttons_layout.addStretch()
 
         self.projects_layout.addLayout(buttons_layout)
+        self._append_folder_projects_row()
 
     def _populate_alphabetical_projects(self):
         """Populate with all projects alphabetically in a grid of 10 columns"""
@@ -4294,6 +4330,7 @@ StartupNotify=true
             grid.setColumnStretch(col, 1)
 
         self.projects_layout.addLayout(grid)
+        self._append_folder_projects_row()
 
     def _populate_archived_projects(self):
         """Populate with archived projects (main + folder)"""
