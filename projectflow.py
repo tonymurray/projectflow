@@ -4197,22 +4197,48 @@ StartupNotify=true
         if not folder_projects:
             return
 
+        show = getattr(self, '_folder_row_visible', True)
+
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(5)
         buttons_layout.setContentsMargins(0, 2, 0, 0)
-        for config_path in folder_projects[:10]:
-            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
-            buttons_layout.addWidget(btn_container)
+
+        if show:
+            for config_path in folder_projects[:10]:
+                btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+                buttons_layout.addWidget(btn_container)
+
         buttons_layout.addStretch()
 
-        # Folder toggle button at end of this row
+        # Folder toggle button — always visible; faded when row is hidden
         folder_btn = QPushButton("Folder")
-        folder_btn.setToolTip("Show only folder projects")
-        folder_btn.setStyleSheet(self._toggle_btn_style)
-        folder_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
+        folder_btn.setToolTip("Show/hide folder projects")
+        if show:
+            folder_btn.setStyleSheet(self._toggle_btn_style)
+        else:
+            folder_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_secondary')};
+                    color: {self.t('border')};
+                    border: 1px solid {self.t('border')};
+                    border-radius: 3px;
+                    font-size: 11px;
+                    padding: 3px 8px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
+        folder_btn.clicked.connect(self._toggle_folder_row)
         buttons_layout.addWidget(folder_btn)
 
         self.projects_layout.addLayout(buttons_layout)
+
+    def _toggle_folder_row(self):
+        """Toggle visibility of the folder projects row"""
+        self._folder_row_visible = not getattr(self, '_folder_row_visible', True)
+        self.populate_projects()
 
     def _populate_recent_projects(self):
         """Populate with recent/pinned projects (drag-drop enabled)"""
