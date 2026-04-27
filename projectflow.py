@@ -4045,7 +4045,7 @@ StartupNotify=true
         header_row.addWidget(self.reset_btn)
 
         # Style for toggle buttons
-        toggle_btn_style = f"""
+        self._toggle_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_muted')};
@@ -4059,6 +4059,7 @@ StartupNotify=true
                 color: {self.t('fg_on_dark')};
             }}
         """
+        toggle_btn_style = self._toggle_btn_style
 
         # Recent Projects toggle button
         self.recent_projects_btn = QPushButton("Recent")
@@ -4074,13 +4075,6 @@ StartupNotify=true
         self.main_projects_btn.setStyleSheet(toggle_btn_style)
         self.main_projects_btn.clicked.connect(lambda: self.switch_projects_mode('alphabetical'))
         header_row.addWidget(self.main_projects_btn)
-
-        # Folder Projects toggle button
-        self.folder_projects_btn = QPushButton("Folder")
-        self.folder_projects_btn.setToolTip("Show .projectflow configs from folders")
-        self.folder_projects_btn.setStyleSheet(toggle_btn_style)
-        self.folder_projects_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
-        header_row.addWidget(self.folder_projects_btn)
 
         # Archive toggle button
         self.archive_projects_btn = QPushButton("Archive")
@@ -4117,28 +4111,24 @@ StartupNotify=true
             self.reset_btn.setVisible(len(self.settings.get("pinned_projects", [])) > 0)
             self.recent_projects_btn.setVisible(False)
             self.main_projects_btn.setVisible(True)
-            self.folder_projects_btn.setVisible(True)
             self.archive_projects_btn.setVisible(True)
         elif mode == 'alphabetical':
             self.projects_header_label.setText("Main Projects")
             self.reset_btn.setVisible(False)
             self.recent_projects_btn.setVisible(True)
             self.main_projects_btn.setVisible(False)
-            self.folder_projects_btn.setVisible(True)
             self.archive_projects_btn.setVisible(True)
         elif mode == 'folder':
             self.projects_header_label.setText("Folder Projects")
             self.reset_btn.setVisible(False)
             self.recent_projects_btn.setVisible(True)
             self.main_projects_btn.setVisible(True)
-            self.folder_projects_btn.setVisible(False)
             self.archive_projects_btn.setVisible(True)
         elif mode == 'archive':
             self.projects_header_label.setText("Archived Projects")
             self.reset_btn.setVisible(False)
             self.recent_projects_btn.setVisible(True)
             self.main_projects_btn.setVisible(True)
-            self.folder_projects_btn.setVisible(True)
             self.archive_projects_btn.setVisible(False)
 
         self.populate_projects()
@@ -4207,32 +4197,21 @@ StartupNotify=true
         if not folder_projects:
             return
 
-        # Thin separator row with "Folder" label
-        sep_row = QHBoxLayout()
-        sep_row.setContentsMargins(0, 2, 0, 0)
-        sep_row.setSpacing(6)
-        sep_line_left = QFrame()
-        sep_line_left.setFrameShape(QFrame.Shape.HLine)
-        sep_line_left.setFixedHeight(1)
-        sep_line_left.setStyleSheet(f"background-color: {self.t('border')};")
-        sep_label = QLabel("Folder")
-        sep_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 10px;")
-        sep_line_right = QFrame()
-        sep_line_right.setFrameShape(QFrame.Shape.HLine)
-        sep_line_right.setFixedHeight(1)
-        sep_line_right.setStyleSheet(f"background-color: {self.t('border')};")
-        sep_row.addWidget(sep_line_left, 1)
-        sep_row.addWidget(sep_label)
-        sep_row.addWidget(sep_line_right, 1)
-        self.projects_layout.addLayout(sep_row)
-
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(5)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setContentsMargins(0, 2, 0, 0)
         for config_path in folder_projects[:10]:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
             buttons_layout.addWidget(btn_container)
         buttons_layout.addStretch()
+
+        # Folder toggle button at end of this row
+        folder_btn = QPushButton("Folder")
+        folder_btn.setToolTip("Show only folder projects")
+        folder_btn.setStyleSheet(self._toggle_btn_style)
+        folder_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
+        buttons_layout.addWidget(folder_btn)
+
         self.projects_layout.addLayout(buttons_layout)
 
     def _populate_recent_projects(self):
