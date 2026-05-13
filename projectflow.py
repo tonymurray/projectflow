@@ -570,6 +570,9 @@ class ProjectFlowApp(QMainWindow):
         # Load settings (like which config to use)
         self.load_settings()
 
+        # MIGRATION (temporary): rename archive files to {name}-archive.md format
+        self._migrate_archive_filenames()
+
         # Initialize theme and dimensions (after settings loaded)
         self.init_theme()
         self.init_dimensions()
@@ -3151,16 +3154,58 @@ StartupNotify=true
         """Get the archive file path for current config's notes"""
         archive_folder = self.get_archive_folder()
 
-        # For project-local notes, use the same filename as the notes file
+        # For project-local notes, derive name from the notes filename
         if hasattr(self, 'config_notes_file') and self.config_notes_file:
             notes_path = self.get_notes_file_path()
-            notes_filename = os.path.basename(notes_path)
-            return os.path.join(archive_folder, notes_filename)
+            stem = os.path.splitext(os.path.basename(notes_path))[0]
+            new_path = os.path.join(archive_folder, f"{stem}-archive.md")
+            # MIGRATION (temporary): rename old same-name archive file if present
+            old_path = os.path.join(archive_folder, f"{stem}.md")
+            if os.path.exists(old_path) and not os.path.exists(new_path):
+                try:
+                    os.rename(old_path, new_path)
+                except OSError:
+                    pass
+            return new_path
 
         # Default: use same naming convention as notes files
         config_name = os.path.basename(self.current_config_file)
         config_name = os.path.splitext(config_name)[0]
-        return os.path.join(archive_folder, f"{config_name.replace('_', '-')}.md")
+        stem = config_name.replace('_', '-')
+        new_path = os.path.join(archive_folder, f"{stem}-archive.md")
+        # MIGRATION (temporary): rename old same-name archive file if present
+        old_path = os.path.join(archive_folder, f"{stem}.md")
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            try:
+                os.rename(old_path, new_path)
+            except OSError:
+                pass
+        return new_path
+
+    def _migrate_archive_filenames(self):
+        """MIGRATION (temporary): rename {name}.md → {name}-archive.md in the global notes .archive folder.
+        Safe to remove once all installs have run this at least once."""
+        notes_folder = self.settings.get("notes_folder", "")
+        if not notes_folder:
+            notes_folder = os.path.join(self.script_dir, "notes")
+        else:
+            notes_folder = os.path.expanduser(notes_folder)
+        archive_dir = os.path.join(notes_folder, ".archive")
+        if not os.path.isdir(archive_dir):
+            return
+        for filename in os.listdir(archive_dir):
+            if not filename.endswith(".md"):
+                continue
+            if filename.endswith("-archive.md"):
+                continue  # already migrated
+            stem = filename[:-3]  # strip .md
+            old_path = os.path.join(archive_dir, filename)
+            new_path = os.path.join(archive_dir, f"{stem}-archive.md")
+            if not os.path.exists(new_path):
+                try:
+                    os.rename(old_path, new_path)
+                except OSError as e:
+                    print(f"Archive migration: could not rename {old_path}: {e}")
 
     def archive_notes(self):
         """Archive current notes to the archive file with a dated separator"""
