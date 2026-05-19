@@ -4921,10 +4921,10 @@ StartupNotify=true
 
                     if self.edit_mode:
                         # Advanced button - opens Project Items tab in settings
-                        advanced_btn = QPushButton("Advanced")
-                        advanced_btn.setMaximumWidth(85)
+                        advanced_btn = QPushButton("Project Details")
+                        advanced_btn.setMaximumWidth(100)
                         advanced_btn.setMinimumHeight(self.d('header_btn_height'))
-                        advanced_btn.setToolTip("Open advanced project editor")
+                        advanced_btn.setToolTip("Open project details editor")
                         advanced_btn.setStyleSheet(green_btn_style)
                         advanced_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
                         header_layout.addWidget(advanced_btn)
