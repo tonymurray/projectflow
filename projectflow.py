@@ -4317,9 +4317,9 @@ StartupNotify=true
         recent_projects = self.settings.get("recent_projects", [])
         pinned_projects = self.settings.get("pinned_projects", [])
 
-        # Filter to only existing files
-        recent_projects = [c for c in recent_projects if os.path.exists(c)]
-        pinned_projects = [c for c in pinned_projects if os.path.exists(c)]
+        # Filter to only existing non-archived files
+        recent_projects = [c for c in recent_projects if os.path.exists(c) and '/.archive/' not in c]
+        pinned_projects = [c for c in pinned_projects if os.path.exists(c) and '/.archive/' not in c]
 
         # Show/hide reset button based on pinned projects
         self.reset_btn.setVisible(len(pinned_projects) > 0)
@@ -4334,7 +4334,7 @@ StartupNotify=true
             if os.path.exists(configs_dir):
                 available = []
                 for f in os.listdir(configs_dir):
-                    if f.endswith('.json'):
+                    if f.endswith('.json') and not f.startswith('.'):
                         full_path = os.path.join(configs_dir, f)
                         available.append((full_path, os.path.getmtime(full_path)))
                 available.sort(key=lambda x: x[1], reverse=True)
@@ -4590,10 +4590,14 @@ StartupNotify=true
                     f"The archived file no longer exists:\n{config_path}")
                 self.refresh_projects()
                 return
-            shutil.move(config_path, dest)
+            try:
+                shutil.move(config_path, dest)
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Restore Failed", f"Could not move file:\n{e}")
+                return
 
         self.save_settings()
-        # Switch to archive view so user sees updated state
         self.refresh_projects()
 
     def _delete_project_permanently(self, config_path):
@@ -6490,10 +6494,14 @@ StartupNotify=true
 
     def quick_add_launcher(self):
         """Open the add-item dialog targeting the first category"""
-        if not self.COLUMN_1:
+        first_category = None
+        for cat_dict in self.COLUMN_1:
+            if cat_dict:
+                first_category = list(cat_dict.keys())[0]
+                break
+        if not first_category:
             QMessageBox.information(self, "Quick Add", "No categories found. Add a category first via Edit mode.")
             return
-        first_category = list(self.COLUMN_1[0].keys())[0]
         self._show_item_edit_dialog(0, first_category, None)
 
     def toggle_edit_mode(self):
