@@ -998,6 +998,23 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
 
+        # Default Application (for quick-add dialog)
+        default_app_label = QLabel("Default Application:")
+        default_app_label.setStyleSheet(label_style)
+        self._settings_default_app = QComboBox()
+        self._settings_default_app.setEditable(True)
+        app_keys = sorted(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else []
+        self._settings_default_app.addItems([""] + app_keys)
+        current_default_app = self.settings.get("default_app", "")
+        idx = self._settings_default_app.findText(current_default_app)
+        if idx >= 0:
+            self._settings_default_app.setCurrentIndex(idx)
+        else:
+            self._settings_default_app.setCurrentText(current_default_app)
+        self._settings_default_app.setStyleSheet(input_style)
+        self._settings_default_app.setToolTip("Default application pre-selected when adding a new launcher (empty = first alphabetically)")
+        layout.addRow(default_app_label, self._settings_default_app)
+
         # Browser Links
         browser_label = QLabel("Browser Links:")
         browser_label.setStyleSheet(label_style)
@@ -1499,7 +1516,10 @@ class ProjectFlowApp(QMainWindow):
         app_keys = sorted(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else []
         app_combo.addItems(app_keys)
 
-        current_app = item_data.get("app", "") if item_data else ""
+        if item_data:
+            current_app = item_data.get("app", "")
+        else:
+            current_app = self.settings.get("default_app", "")
         if current_app:
             idx = app_combo.findText(current_app)
             if idx >= 0:
@@ -2545,6 +2565,12 @@ class ProjectFlowApp(QMainWindow):
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
+
+            default_app = self._settings_default_app.currentText().strip()
+            if default_app:
+                self.settings["default_app"] = default_app
+            elif "default_app" in self.settings:
+                del self.settings["default_app"]
 
             joplin_token = self._settings_joplin.text().strip()
             if joplin_token:
