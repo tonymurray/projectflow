@@ -5496,14 +5496,14 @@ StartupNotify=true
                 header_layout.setContentsMargins(0, 0, 0, 0)
                 header_layout.setSpacing(3)
 
-                # Tab button definitions: (mode, label, tooltip)
+                # Tab button definitions: (mode, label, tooltip, icon_names)
                 tab_buttons = [
-                    ("folder", "Folder", "Folder browser"),
-                    ("webview", "Web", "Web viewer"),
-                    ("pdf", "PDF", "PDF viewer"),
-                    ("image", "Image", "Image viewer"),
-                    ("examples", "Examples", "Handler examples"),
-                    ("console", "Console", "Embedded console"),
+                    ("folder",   "Folder",   "Folder browser",     ["system-file-manager", "folder", "inode-directory"]),
+                    ("webview",  "Web",      "Web viewer",         ["internet-web-browser", "web-browser", "globe", "applications-internet"]),
+                    ("pdf",      "PDF",      "PDF viewer",         ["application-pdf", "evince", "document-viewer", "x-office-document"]),
+                    ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
+                    ("examples", "Examples", "Handler examples",   ["help-contents", "help-browser", "accessories-text-editor"]),
+                    ("console",  "Console",  "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                 ]
 
                 # Normal tab button style
@@ -5542,10 +5542,18 @@ StartupNotify=true
                 # Store tab buttons for styling updates
                 self.viewer_tab_buttons = {}
 
-                for mode, label, tooltip in tab_buttons:
+                for mode, label, tooltip, icon_names in tab_buttons:
                     btn = QPushButton(label)
                     btn.setMinimumHeight(self.d('header_btn_height'))
                     btn.setToolTip(tooltip)
+
+                    # Try themed icons in order, use first available
+                    for icon_name in icon_names:
+                        icon = QIcon.fromTheme(icon_name)
+                        if not icon.isNull():
+                            btn.setIcon(icon)
+                            btn.setIconSize(QSize(16, 16))
+                            break
 
                     # Set style based on whether this is the active mode
                     if mode == self.column2_mode:
