@@ -74,6 +74,7 @@ User preferences are stored in `.projectflow_settings.json`:
 - `terminal`: External terminal application (default: auto-detected based on desktop environment). Used by terminal-related handlers and the Console viewer's "External" button. Leave empty for auto-detection.
 - `editor`: Default code/text editor (default: auto-detected based on desktop environment). Used by `directorydev` handler. Leave empty for auto-detection. Auto-detection: KDE→kate, GNOME→gedit, XFCE→mousepad, etc.
 - `file_manager`: Default file manager (default: auto-detected based on desktop environment). Used by `directorydev` and `dolphin_tabs` handlers. Leave empty for auto-detection. Auto-detection: KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.
+- `default_app`: Default application pre-selected when opening the add-launcher dialog (e.g., `"firefox"`). Empty = first alphabetically.
 
 ### Per-Config Options
 
@@ -371,8 +372,10 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
   - Archiving the currently open project auto-switches to another available project.
   - Archived folder projects remain openable at any time (the file never moves); archiving only hides them from the list.
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
-- **Item buttons**: Individual launchers with application icons. Drag to reorder within category (saves to config).
-- **Edit mode**: Toggle to enable editing - shows "Add Entry" buttons per category and "Add Category" button at bottom
+- **Item buttons**: Individual launchers with application icons. Drag to reorder within category or drag to a different category to move it (saves to config immediately).
+- **Quick-add**: "+ Add" button in the launcher column header opens the add-launcher dialog targeting the first category. No need to enter edit mode. Default application is configurable via `default_app` setting.
+- **Viewer tab buttons**: Folder, Web, PDF, Image, Examples, Console — each shows a system theme icon (falls back to text-only if icon not available on the desktop).
+- **Edit mode**: "✏️ Edit" button toggles edit mode — shows "Add Entry" buttons per category, "Add Category" at bottom, and "Project Details" for the full settings editor.
 - **Title bar search**: Click the project title to enter search mode. Type to filter configs with autocomplete dropdown (case-insensitive substring match). Press Enter to switch to the first/selected match, or click elsewhere to cancel.
 - **Archive buttons**: At bottom-right of notepad. "📥 Archive" saves notes with timestamp and clears notepad. "📜 View" opens archive dialog (greyed out when no archive exists).
 
