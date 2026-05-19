@@ -1013,7 +1013,12 @@ class ProjectFlowApp(QMainWindow):
             self._settings_default_app.setCurrentText(current_default_app)
         self._settings_default_app.setStyleSheet(input_style)
         self._settings_default_app.setToolTip("Default application pre-selected when adding a new launcher (empty = first alphabetically)")
-        layout.addRow(default_app_label, self._settings_default_app)
+        default_app_row = QHBoxLayout()
+        default_app_row.addWidget(self._settings_default_app)
+        hint_label = QLabel("Used when adding new launchers")
+        hint_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
+        default_app_row.addWidget(hint_label)
+        layout.addRow(default_app_label, default_app_row)
 
         # Browser Links
         browser_label = QLabel("Browser Links:")
