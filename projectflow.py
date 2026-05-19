@@ -4900,17 +4900,11 @@ StartupNotify=true
                         }}
                     """
 
-                    # Add button (quick-add launcher, always visible outside edit mode)
-                    if not self.edit_mode:
-                        add_btn = QPushButton("Add")
-                        add_btn.setMinimumHeight(self.d('header_btn_height'))
-                        add_btn.setToolTip("Quick-add a launcher to the first category")
-                        add_btn.setStyleSheet(green_btn_style)
-                        add_btn.clicked.connect(self.quick_add_launcher)
-                        header_layout.addWidget(add_btn)
+                    # Stretch pushes buttons to the right
+                    header_layout.addStretch()
 
-                    # Edit button
-                    edit_btn = QPushButton("💾 Save" if self.edit_mode else "Edit")
+                    # Edit button (✏️ in normal mode, 💾 Save in edit mode)
+                    edit_btn = QPushButton("  💾 Save" if self.edit_mode else "  ✏️  Edit")
                     edit_btn.setMinimumHeight(self.d('header_btn_height'))
                     edit_btn.setCheckable(True)
                     edit_btn.setChecked(self.edit_mode)
@@ -4920,7 +4914,7 @@ StartupNotify=true
                     header_layout.addWidget(edit_btn)
 
                     if self.edit_mode:
-                        # Advanced button - opens Project Items tab in settings
+                        # Project Details button
                         advanced_btn = QPushButton("Project Details")
                         advanced_btn.setMaximumWidth(100)
                         advanced_btn.setMinimumHeight(self.d('header_btn_height'))
@@ -4928,8 +4922,14 @@ StartupNotify=true
                         advanced_btn.setStyleSheet(green_btn_style)
                         advanced_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
                         header_layout.addWidget(advanced_btn)
-                    # Add stretch to push buttons left (no header label)
-                    header_layout.addStretch()
+                    else:
+                        # Add button (quick-add launcher, only in normal mode)
+                        add_btn = QPushButton("  +  Add")
+                        add_btn.setMinimumHeight(self.d('header_btn_height'))
+                        add_btn.setToolTip("Quick-add a launcher to the first category")
+                        add_btn.setStyleSheet(green_btn_style)
+                        add_btn.clicked.connect(self.quick_add_launcher)
+                        header_layout.addWidget(add_btn)
 
                     column_layout.addLayout(header_layout)
                     column_layout.setContentsMargins(0, 4, 0, 0)  # left, top, right, bottom
