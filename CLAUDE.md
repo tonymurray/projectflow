@@ -371,6 +371,7 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
   - Folder projects (`.projectflow`) are never moved — archiving removes them from `folder_projects` and adds to `archived_folder_projects` in settings.
   - Archiving the currently open project auto-switches to another available project.
   - Archived folder projects remain openable at any time (the file never moves); archiving only hides them from the list.
+  - Paths containing `/.archive/` are always filtered out of Recent and Main views, preventing archived projects from appearing even if they entered the recent list.
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
 - **Item buttons**: Individual launchers with application icons. Drag to reorder within category or drag to a different category to move it (saves to config immediately).
 - **Quick-add**: "+ Add" button in the launcher column header opens the add-launcher dialog targeting the first category. No need to enter edit mode. Default application is configurable via `default_app` setting.
