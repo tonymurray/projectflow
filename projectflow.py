@@ -235,15 +235,11 @@ class CategoryDropZone(QWidget):
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
             data = event.mimeData().text()
-            # Only accept drops from same category
             if data.startswith("item|"):
                 parts = data.split("|")
-                if len(parts) == 4:
-                    drag_col = int(parts[1])
-                    drag_cat = parts[2]
-                    if drag_col == self.col_idx and drag_cat == self.category_name:
-                        event.acceptProposedAction()
-                        return
+                if len(parts) == 4 and int(parts[1]) == self.col_idx:
+                    event.acceptProposedAction()
+                    return
         event.ignore()
 
     def dragMoveEvent(self, event):
@@ -251,12 +247,9 @@ class CategoryDropZone(QWidget):
             data = event.mimeData().text()
             if data.startswith("item|"):
                 parts = data.split("|")
-                if len(parts) == 4:
-                    drag_col = int(parts[1])
-                    drag_cat = parts[2]
-                    if drag_col == self.col_idx and drag_cat == self.category_name:
-                        event.acceptProposedAction()
-                        return
+                if len(parts) == 4 and int(parts[1]) == self.col_idx:
+                    event.acceptProposedAction()
+                    return
         event.ignore()
 
     def dropEvent(self, event):
@@ -275,16 +268,19 @@ class CategoryDropZone(QWidget):
         drag_cat = parts[2]
         drag_idx = int(parts[3])
 
-        # Only handle drops within same category
-        if drag_col != self.col_idx or drag_cat != self.category_name:
+        if drag_col != self.col_idx:
             return
 
         drop_pos = event.position().toPoint()
         drop_idx = self._get_drop_index(drop_pos)
 
-        # Handle reorder
-        if drop_idx != drag_idx:
-            self.app.handle_item_reorder(self.col_idx, self.category_name, drag_idx, drop_idx)
+        if drag_cat == self.category_name:
+            # Same-category reorder
+            if drop_idx != drag_idx:
+                self.app.handle_item_reorder(self.col_idx, self.category_name, drag_idx, drop_idx)
+        else:
+            # Cross-category move
+            self.app.handle_item_move_to_category(drag_cat, drag_idx, self.category_name, drop_idx)
 
         event.acceptProposedAction()
 
@@ -4825,6 +4821,40 @@ StartupNotify=true
                         print(f"Error saving reordered config: {e}")
                 break
 
+    def handle_item_move_to_category(self, from_category, item_idx, to_category, drop_idx):
+        """Move an item from one category to another"""
+        try:
+            with open(self.current_config_file, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            column_data = config_data["columns"][0]
+
+            # Remove from source category
+            item = None
+            for category_dict in column_data:
+                if from_category in category_dict:
+                    items = category_dict[from_category]
+                    if 0 <= item_idx < len(items):
+                        item = items.pop(item_idx)
+                    break
+
+            if item is None:
+                return
+
+            # Insert into destination category at drop position
+            for category_dict in column_data:
+                if to_category in category_dict:
+                    dest_items = category_dict[to_category]
+                    drop_idx = max(0, min(drop_idx, len(dest_items)))
+                    dest_items.insert(drop_idx, item)
+                    break
+
+            with open(self.current_config_file, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, indent=2)
+            self.load_config()
+            self.refresh_projects()
+        except Exception as e:
+            print(f"Error moving item between categories: {e}")
+
     def build_main_content(self, parent_layout):
         """Build the main content area with project columns"""
         # Layout: Launchers (COLUMN_1) | Viewer | Notepad
@@ -4870,8 +4900,17 @@ StartupNotify=true
                         }}
                     """
 
+                    # Add button (quick-add launcher, always visible outside edit mode)
+                    if not self.edit_mode:
+                        add_btn = QPushButton("Add")
+                        add_btn.setMinimumHeight(self.d('header_btn_height'))
+                        add_btn.setToolTip("Quick-add a launcher to the first category")
+                        add_btn.setStyleSheet(green_btn_style)
+                        add_btn.clicked.connect(self.quick_add_launcher)
+                        header_layout.addWidget(add_btn)
+
                     # Edit button
-                    edit_btn = QPushButton("💾 Save" if self.edit_mode else "Launchers  ✏️")
+                    edit_btn = QPushButton("💾 Save" if self.edit_mode else "Edit")
                     edit_btn.setMinimumHeight(self.d('header_btn_height'))
                     edit_btn.setCheckable(True)
                     edit_btn.setChecked(self.edit_mode)
@@ -6409,6 +6448,14 @@ StartupNotify=true
             QMessageBox.warning(self, "External Editor", f"Editor not found: {editor}")
         except Exception as e:
             QMessageBox.warning(self, "External Editor", f"Failed to open: {e}")
+
+    def quick_add_launcher(self):
+        """Open the add-item dialog targeting the first category"""
+        if not self.COLUMN_1:
+            QMessageBox.information(self, "Quick Add", "No categories found. Add a category first via Edit mode.")
+            return
+        first_category = list(self.COLUMN_1[0].keys())[0]
+        self._show_item_edit_dialog(0, first_category, None)
 
     def toggle_edit_mode(self):
         """Toggle between view mode and edit mode"""
