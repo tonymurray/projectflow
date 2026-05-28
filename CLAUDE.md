@@ -84,6 +84,7 @@ These options can be set in individual config JSON files:
 - `webview_url`: Default URL to load in web viewer for this config
 - `image_file`: Default image file to load for this config
 - `console_path`: Default directory for the embedded console
+- `folder_path`: Default starting directory for the folder browser. For `.projectflow` configs this defaults to the config's own directory. Set via the 📌 pin button in the folder toolbar, or via Project Details dialog.
 - `column2_default`: Which viewer to show by default - `"pdf"`, `"webview"`, `"image"`, `"help"`, `"examples"`, `"console"`, or `"folder"`
 - `terminal`: Terminal emulator override for this config (e.g., `"gnome-terminal"`, `"alacritty"`). Overrides global terminal setting.
 - `browser_new_tab`: Override global `browser_new_tab` for this project. `true` = new tab, `false` = new window. Omit to inherit global setting.
@@ -352,7 +353,7 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 - **Viewer panel**: Tab buttons at top to switch between viewers (Folder, Web, PDF, Image, Examples, Console). Active viewer is highlighted. Each viewer has its own toolbar with an "External" button to open in a standalone application.
 - **Shortcuts panel**: Single column of categorized launchers with "Open All" buttons per category. Edit/Refresh buttons at top (no header label).
 - **Notepad panel**: Formatting toolbar at top (no header label). Auto-saving notes with markdown formatting.
-- **Folder browser**: Navigate the filesystem, detect project folders with `.projectflow` configs, and create new projects. Folders with existing `.projectflow` show [P] badge and can be opened directly.
+- **Folder browser**: Navigate the filesystem, detect project folders with `.projectflow` configs, and create new projects. Folders with existing `.projectflow` show [P] badge and can be opened directly. Clicking `.html`/`.htm` files opens them in the built-in webview; clicking `.md` files renders them as themed HTML in the webview (using Qt's built-in markdown parser — no external deps). All other files open via `xdg-open`.
 - **Examples viewer**: Displays launch handler documentation from EXAMPLES.html. Uses theme color placeholders (e.g., `{fg_primary}`) that are replaced at runtime. Reload button refreshes content; External button opens the file for editing.
 - **Embedded console**: IPython/qtconsole for quick Python and shell commands (`!ls`, `!git status`). Limitations: no interactive programs (nano, vim) - use External button for full terminal.
   - **Why qtconsole**: Well-established Jupyter project with strong community support. Alternatives considered:

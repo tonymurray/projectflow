@@ -1191,6 +1191,20 @@ class ProjectFlowApp(QMainWindow):
         console_layout.addWidget(console_browse)
         form_layout.addRow(console_label, console_layout)
 
+        # Folder Start Path
+        folder_label = QLabel("Folder Start Path:")
+        folder_label.setStyleSheet(label_style)
+        folder_start_layout = QHBoxLayout()
+        self._proj_folder_path = QLineEdit()
+        self._proj_folder_path.setText(getattr(self, 'config_folder_path', None) or "")
+        self._proj_folder_path.setPlaceholderText("Default folder for browser (leave blank for home)")
+        self._proj_folder_path.setStyleSheet(input_style)
+        folder_start_browse = QPushButton("Browse")
+        folder_start_browse.clicked.connect(lambda: self._browse_folder(self._proj_folder_path))
+        folder_start_layout.addWidget(self._proj_folder_path)
+        folder_start_layout.addWidget(folder_start_browse)
+        form_layout.addRow(folder_label, folder_start_layout)
+
         # Terminal (per-config override)
         terminal_label = QLabel("Terminal:")
         terminal_label.setStyleSheet(label_style)
@@ -2510,6 +2524,7 @@ class ProjectFlowApp(QMainWindow):
             self.config_webview_url = self._proj_webview_url.text().strip() or None
             self.config_image_file = self._proj_image_file.text().strip() or None
             self.config_console_path = self._proj_console_path.text().strip() or None
+            self.config_folder_path = self._proj_folder_path.text().strip() or None
             self.config_terminal = self._proj_terminal.currentText().strip() or None
 
             browser_text = self._proj_browser_new_tab.currentText()
@@ -2650,6 +2665,11 @@ class ProjectFlowApp(QMainWindow):
                 config_data["console_path"] = self.config_console_path
             elif "console_path" in config_data:
                 del config_data["console_path"]
+
+            if self.config_folder_path:
+                config_data["folder_path"] = self.config_folder_path
+            elif "folder_path" in config_data:
+                del config_data["folder_path"]
 
             if self.config_terminal:
                 config_data["terminal"] = self.config_terminal
@@ -8083,8 +8103,58 @@ StartupNotify=true
                 # Navigate into the directory
                 self.populate_folder_browser(path)
         elif item_type == "file":
-            # Open file with xdg-open
-            subprocess.Popen(["xdg-open", path], start_new_session=True)
+            ext = os.path.splitext(path)[1].lower()
+            if ext in ('.html', '.htm'):
+                self._open_file_in_webview(path)
+            elif ext == '.md':
+                self._open_markdown_in_webview(path)
+            else:
+                subprocess.Popen(["xdg-open", path], start_new_session=True)
+
+    def _open_file_in_webview(self, path):
+        """Open a local file in the built-in webview panel"""
+        if not self.webview:
+            return
+        if self.column2_mode != "webview":
+            self.switch_to_viewer_mode("webview")
+        self.webview.setUrl(QUrl.fromLocalFile(path))
+
+    def _open_markdown_in_webview(self, path):
+        """Render a markdown file as themed HTML in the built-in webview panel"""
+        if not self.webview:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            return
+
+        from PyQt6.QtGui import QTextDocument
+        doc = QTextDocument()
+        doc.setMarkdown(content)
+        body_html = doc.toHtml()
+
+        bg = self.t('bg_primary')
+        fg = self.t('fg_primary')
+        border = self.t('border')
+        bg2 = self.t('bg_secondary')
+        fg2 = self.t('fg_secondary')
+        styled = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body {{ background:{bg}; color:{fg}; font-family:sans-serif;
+       max-width:860px; margin:30px auto; padding:0 24px; line-height:1.7; font-size:14px; }}
+h1,h2,h3,h4 {{ border-bottom:1px solid {border}; padding-bottom:4px; margin-top:1.4em; }}
+code {{ background:{bg2}; padding:2px 5px; border-radius:3px; font-size:0.88em; font-family:monospace; }}
+pre  {{ background:{bg2}; padding:12px; border-radius:5px; overflow-x:auto; }}
+pre code {{ background:none; padding:0; }}
+a {{ color:#5b9bd5; }}
+blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; color:{fg2}; }}
+</style></head>
+<body>{body_html}</body></html>"""
+
+        if self.column2_mode != "webview":
+            self.switch_to_viewer_mode("webview")
+        self.webview.setHtml(styled, QUrl.fromLocalFile(path))
 
     def folder_browser_context_menu(self, position):
         """Handle right-click context menu in folder browser"""
