@@ -552,3 +552,75 @@ When maintaining this codebase:
 4. **Config organization**: Keep all configuration files in the `projects/` directory for clarity and to separate code from configuration.
 
 5. **Remove duplicates**: If multiple config files are identical, consolidate to a single source of truth.
+
+---
+
+## Mobile App (Android Companion)
+
+A personal Android companion app lives in `mobile/`. It connects to Nextcloud via WebDAV and mirrors the core ProjectFlow experience on mobile.
+
+### Structure
+
+```
+mobile/
+├── proxy.py              # Local CORS proxy for browser-based testing
+├── webdav-test.html      # Standalone WebDAV test page
+└── app/                  # Capacitor + Svelte app
+    ├── src/
+    │   ├── App.svelte                  # Root: shows Setup or Main
+    │   ├── components/
+    │   │   ├── Setup.svelte            # First-run connection config
+    │   │   ├── Main.svelte             # Project switcher + tab layout
+    │   │   ├── Launchers.svelte        # Filtered launcher list
+    │   │   ├── Notes.svelte            # Markdown viewer/editor
+    │   │   └── Viewers.svelte          # iframe for webview_url
+    │   └── lib/
+    │       ├── store.js                # Svelte stores + async actions
+    │       └── webdav.js               # WebDAV client (PROPFIND/GET/PUT)
+    ├── android/
+    │   └── app/src/main/java/eu/ruadesign/projectflow/
+    │       ├── MainActivity.java       # Registers WebDavPlugin
+    │       └── WebDavPlugin.java       # Custom OkHttp plugin for PROPFIND
+    └── capacitor.config.json
+```
+
+### Key Technical Decisions
+
+- **Custom `WebDavPlugin.java`**: Capacitor's built-in `CapacitorHttp` only accepts standard HTTP methods (GET, POST, PUT, etc.) — it rejects `PROPFIND` with a method enum error. `WebDavPlugin` wraps OkHttp directly, allowing arbitrary methods. Registered in `MainActivity.java`. `webdav.js` detects `Capacitor.isNativePlatform()` and routes through the plugin on Android, falling back to `fetch` in the browser.
+- **CORS in browser testing**: Use `proxy.py` which forwards WebDAV requests to Nextcloud with CORS headers. Run with `python3 proxy.py https://your-nextcloud-url`. Set Server URL in the app to `http://localhost:8765`.
+- **Password not persisted**: `localStorage` stores all config except the password, which must be re-entered each session.
+- **Notes path is separate**: Projects live at one Nextcloud path (e.g. `ProjectFlow`), notes at another (e.g. `Notes/@Project Notes`). Both are configured in the Setup screen.
+
+### Building the APK (NixOS)
+
+```bash
+cd mobile/app
+
+# 1. Build web assets
+npm run build
+
+# 2. Sync to Android project
+npx cap sync android
+
+# 3. Build APK (uses Android Studio's bundled JDK)
+cd android
+JAVA_HOME="/nix/store/$(ls /nix/store | grep android-studio-stable | head -1)/jbr" \
+ANDROID_HOME=~/Android/Sdk \
+ANDROID_SDK_ROOT=~/Android/Sdk \
+./gradlew assembleDebug
+
+# 4. Install via ADB
+~/Android/Sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+APK is at `android/app/build/outputs/apk/debug/app-debug.apk`.
+
+### Setup Screen Configuration
+
+| Field | Example value |
+|---|---|
+| Server URL | `https://your-nextcloud.example.com` |
+| Username | `youruser` |
+| App Password | Generated in Nextcloud → Settings → Security → App passwords |
+| Projects folder | `ProjectFlow` |
+| Notes folder | `Notes/@Project Notes` |
