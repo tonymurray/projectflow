@@ -569,11 +569,12 @@ mobile/
     ├── src/
     │   ├── App.svelte                  # Root: shows Setup or Main
     │   ├── components/
-    │   │   ├── Setup.svelte            # First-run connection config
+    │   │   ├── Setup.svelte            # First-run connection config + QR scanner
     │   │   ├── Main.svelte             # Project switcher + tab layout
     │   │   ├── Launchers.svelte        # Filtered launcher list
     │   │   ├── Notes.svelte            # Markdown viewer/editor
-    │   │   └── Viewers.svelte          # iframe for webview_url
+    │   │   ├── Viewers.svelte          # webview_url launcher (Chrome Custom Tab)
+    │   │   └── QrScanner.svelte        # Camera overlay for Nextcloud QR scan
     │   └── lib/
     │       ├── store.js                # Svelte stores + async actions
     │       └── webdav.js               # WebDAV client (PROPFIND/GET/PUT)
@@ -588,7 +589,9 @@ mobile/
 
 - **Custom `WebDavPlugin.java`**: Capacitor's built-in `CapacitorHttp` only accepts standard HTTP methods (GET, POST, PUT, etc.) — it rejects `PROPFIND` with a method enum error. `WebDavPlugin` wraps OkHttp directly, allowing arbitrary methods. Registered in `MainActivity.java`. `webdav.js` detects `Capacitor.isNativePlatform()` and routes through the plugin on Android, falling back to `fetch` in the browser.
 - **CORS in browser testing**: Use `proxy.py` which forwards WebDAV requests to Nextcloud with CORS headers. Run with `python3 proxy.py https://your-nextcloud-url`. Set Server URL in the app to `http://localhost:8765`.
-- **Password not persisted**: `localStorage` stores all config except the password, which must be re-entered each session.
+- **All config persisted**: Server URL, username, app password, and folder paths are all saved to `localStorage` so the setup screen is only needed once.
+- **QR code setup**: Setup screen has a "Scan QR Code" button that opens the rear camera. Scans Nextcloud's `nc://login/server:...&user:...&password:...` QR code (shown when creating an app password) and auto-fills all three credential fields. Uses `jsqr` pure-JS library via `getUserMedia` — no native plugin needed, just CAMERA permission in `AndroidManifest.xml`.
+- **Viewers tab uses Chrome Custom Tab**: Sites block iframe embedding via `X-Frame-Options`. Instead of trying an iframe, the Viewers tab shows the configured `webview_url` with an "Open in Browser" button that opens a Chrome Custom Tab overlay (`@capacitor/browser`) — full browser experience that stays in-app with a close button to return.
 - **Notes path is separate**: Projects live at one Nextcloud path (e.g. `ProjectFlow`), notes at another (e.g. `Notes/@Project Notes`). Both are configured in the Setup screen.
 
 ### Building the APK (NixOS)
