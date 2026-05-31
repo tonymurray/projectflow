@@ -566,18 +566,21 @@ mobile/
 ├── proxy.py              # Local CORS proxy for browser-based testing
 ├── webdav-test.html      # Standalone WebDAV test page
 └── app/                  # Capacitor + Svelte app
+    ├── resources/
+    │   └── icon.svg                    # Master app icon (SVG); @capacitor/assets generates all mipmap sizes
     ├── src/
-    │   ├── App.svelte                  # Root: shows Setup or Main
+    │   ├── App.svelte                  # Root: shows Setup or Main; defines all CSS theme variables
     │   ├── components/
-    │   │   ├── Setup.svelte            # First-run connection config + QR scanner
-    │   │   ├── Main.svelte             # Project switcher + tab layout
-    │   │   ├── Launchers.svelte        # Filtered launcher list
+    │   │   ├── Setup.svelte            # First-run connection config + QR scanner + path alias
+    │   │   ├── Main.svelte             # Project bar (pinned+recent) + ≡ picker + tab layout
+    │   │   ├── ProjectPicker.svelte    # All-projects alphabetical grid with per-project pin toggle
+    │   │   ├── Launchers.svelte        # Filtered launcher list + Links (viewers) section + NC↗ items
     │   │   ├── Notes.svelte            # Markdown viewer/editor
-    │   │   ├── Viewers.svelte          # webview_url launcher (Chrome Custom Tab)
+    │   │   ├── Viewers.svelte          # Unused (kept for reference; features merged into Launchers)
     │   │   └── QrScanner.svelte        # Camera overlay for Nextcloud QR scan
     │   └── lib/
-    │       ├── store.js                # Svelte stores + async actions
-    │       └── webdav.js               # WebDAV client (PROPFIND/GET/PUT)
+    │       ├── store.js                # Svelte stores + async actions + pinned/recent ordering
+    │       └── webdav.js               # WebDAV client + Nextcloud path resolver
     ├── android/
     │   └── app/src/main/java/eu/ruadesign/projectflow/
     │       ├── MainActivity.java       # Registers WebDavPlugin
@@ -589,41 +592,38 @@ mobile/
 
 - **Custom `WebDavPlugin.java`**: Capacitor's built-in `CapacitorHttp` only accepts standard HTTP methods (GET, POST, PUT, etc.) — it rejects `PROPFIND` with a method enum error. `WebDavPlugin` wraps OkHttp directly, allowing arbitrary methods. Registered in `MainActivity.java`. `webdav.js` detects `Capacitor.isNativePlatform()` and routes through the plugin on Android, falling back to `fetch` in the browser.
 - **CORS in browser testing**: Use `proxy.py` which forwards WebDAV requests to Nextcloud with CORS headers. Run with `python3 proxy.py https://your-nextcloud-url`. Set Server URL in the app to `http://localhost:8765`.
-- **All config persisted**: Server URL, username, app password, and folder paths are all saved to `localStorage` so the setup screen is only needed once.
+- **All config persisted**: Server URL, username, app password, folder paths, and optional path alias are all saved to `localStorage` so the setup screen is only needed once.
 - **QR code setup**: Setup screen has a "Scan QR Code" button that opens the rear camera. Scans Nextcloud's `nc://login/server:...&user:...&password:...` QR code (shown when creating an app password) and auto-fills all three credential fields. Uses `jsqr` pure-JS library via `getUserMedia` — no native plugin needed, just CAMERA permission in `AndroidManifest.xml`.
-- **Viewers tab uses Chrome Custom Tab**: Sites block iframe embedding via `X-Frame-Options`. Instead of trying an iframe, the Viewers tab shows the configured `webview_url` with an "Open in Browser" button that opens a Chrome Custom Tab overlay (`@capacitor/browser`) — full browser experience that stays in-app with a close button to return.
+- **No Viewers tab**: The Viewers tab was removed. The project's `webview_url` appears as a "Links (viewers)" section at the bottom of the Resources tab. External sites that block iframe embedding are not attempted.
+- **Nextcloud path resolution** (`webdav.js: resolveToNextcloudRelPath`): Launcher items whose path contains `/Nextcloud/` (e.g. `~/Nextcloud/Projects/cop/guide.pdf`) are automatically detected as Nextcloud files. An optional path alias in Setup handles symlinked paths (e.g. `~/Projects` → `Projects` on Nextcloud). Detected items show **NC↗** and open the Nextcloud web files UI at the containing folder in the system browser.
+- **Project ordering**: Top bar shows pinned projects first, then recently used (up to 8 total), stored in `localStorage` (`pf_pinned`, `pf_recent`). The `≡` button opens `ProjectPicker.svelte` — an alphabetical grid of all projects with per-item pin/unpin toggle.
+- **App icon**: `resources/icon.svg` is the master source. `deploy_mobile.sh` runs `@capacitor/assets generate --android` on every build to regenerate all mipmap sizes automatically.
+- **Responsive sizing**: `font-size: clamp(16px, 2.2vw, 26px)` on `html` provides fluid scaling. Each component also has `@media (min-width: 550px)` overrides for larger screens (tablets, e-ink readers like Boox) — phones (≤450px) are unaffected.
+- **Theme system**: Full light/dark CSS variable system in `App.svelte`. Dark mode uses high-brightness text (`--t-primary: #ffffff`, `--t-sec: #f0f0f0`) for readability on e-ink screens. Theme persisted to `localStorage` (`pf_theme`). Toggle button (☀️/🌙) in the bottom nav bar.
 - **Notes path is separate**: Projects live at one Nextcloud path (e.g. `ProjectFlow`), notes at another (e.g. `Notes/@Project Notes`). Both are configured in the Setup screen.
 
 ### Building the APK (NixOS)
 
+Use the top-level `deploy_mobile.sh` script — it handles all steps automatically:
+
 ```bash
-cd mobile/app
-
-# 1. Build web assets
-npm run build
-
-# 2. Sync to Android project
-npx cap sync android
-
-# 3. Build APK (uses Android Studio's bundled JDK)
-cd android
-JAVA_HOME="/nix/store/$(ls /nix/store | grep android-studio-stable | head -1)/jbr" \
-ANDROID_HOME=~/Android/Sdk \
-ANDROID_SDK_ROOT=~/Android/Sdk \
-./gradlew assembleDebug
-
-# 4. Install via ADB
-~/Android/Sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
+./deploy_mobile.sh
 ```
 
-APK is at `android/app/build/outputs/apk/debug/app-debug.apk`.
+Steps: check ADB + Java → build web assets (`npm run build`) → regenerate Android icons from `resources/icon.svg` → sync to Android project (`cap sync android`) → build APK (Gradle) → install via ADB.
+
+APK is at `mobile/app/android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ### Setup Screen Configuration
 
-| Field | Example value |
-|---|---|
-| Server URL | `https://your-nextcloud.example.com` |
-| Username | `youruser` |
-| App Password | Generated in Nextcloud → Settings → Security → App passwords |
-| Projects folder | `ProjectFlow` |
-| Notes folder | `Notes/@Project Notes` |
+| Field | Example value | Notes |
+|---|---|---|
+| Server URL | `https://your-nextcloud.example.com` | |
+| Username | `youruser` | |
+| App Password | `xxxx-xxxx-xxxx-xxxx` | Nextcloud → Settings → Security → App passwords |
+| Projects folder | `ProjectFlow` | Folder containing `.json` project files |
+| Notes folder | `Notes/@Project Notes` | Folder containing `.md` notes files |
+| Local path prefix | `~/Projects` | Optional — for symlinks into Nextcloud |
+| Nextcloud path | `Projects` | Optional — NC root-relative path the prefix resolves to |
+
+The local path prefix + Nextcloud path pair handles symlinked directories. For example, if `~/Projects` is a symlink to `~/Nextcloud/Projects`, entering `~/Projects` / `Projects` lets the app detect launcher entries pointing to `~/Projects/cop/guide.pdf` as Nextcloud-accessible.

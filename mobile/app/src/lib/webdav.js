@@ -90,13 +90,35 @@ export async function loadProject(filename) {
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
 export function notesFilename(projectFilename) {
-  return projectFilename.replace(/\.json$/, '.md');
+  return projectFilename.replace(/\.json$/, '.md').replace(/_/g, '-');
+}
+
+export function notesHtmlFilename(projectFilename) {
+  return projectFilename.replace(/\.json$/, '.html').replace(/_/g, '-');
 }
 
 export async function loadNote(filename) {
   const url = `${notesBase()}/${encodeURIComponent(filename)}`;
   const res = await request('GET', url);
   if (res.status === 404) return '';
+  if (!res.ok) throw new Error(`GET ${res.status}`);
+  return await res.text();
+}
+
+export async function loadHtml(filename) {
+  const url = `${notesBase()}/${encodeURIComponent(filename)}`;
+  const res = await request('GET', url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GET ${res.status}`);
+  return await res.text();
+}
+
+// Load a file from the project's own subfolder (e.g. cop/ for cop.json)
+export async function loadFromProjectFolder(projectFilename, docFilename) {
+  const name = projectFilename.replace(/\.json$/, '');
+  const url = `${projectsBase()}/${encodePath(name)}/${encodeURIComponent(docFilename)}`;
+  const res = await request('GET', url);
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GET ${res.status}`);
   return await res.text();
 }
@@ -119,4 +141,55 @@ export async function loadSettings() {
   } catch {
     return null;
   }
+}
+
+// ── Local-path → Nextcloud resolution ─────────────────────────────────────────
+
+/**
+ * Given a local filesystem path from a project config, attempt to resolve it
+ * to a Nextcloud-relative path (relative to the NC root, e.g. "Projects/cop/guide.md").
+ *
+ * Handles two cases:
+ *   1. The path literally contains /Nextcloud/ (e.g. ~/Nextcloud/Projects/cop/guide.md)
+ *   2. An optional configured alias (e.g. ~/Projects → Nextcloud path "Projects")
+ *      for symlinks that don't contain "Nextcloud" in the path.
+ *
+ * Returns null if the path cannot be resolved.
+ */
+export function resolveToNextcloudRelPath(localPath) {
+  if (!localPath || typeof localPath !== 'string') return null;
+  if (/^https?:\/\//.test(localPath)) return null;
+  if (/&&|\|\||;|^cd /.test(localPath)) return null;
+
+  const path = localPath.trim();
+
+  // ~/Nextcloud/...
+  if (path.startsWith('~/Nextcloud/')) {
+    return path.slice('~/Nextcloud/'.length);
+  }
+
+  // /anything/Nextcloud/...
+  const absMatch = path.match(/\/Nextcloud\/(.+)$/);
+  if (absMatch) return absMatch[1];
+
+  // Configured alias for symlinks (e.g. ~/Projects alias → NC path "Projects")
+  if (_config?.localAlias && _config?.nextcloudAlias) {
+    const alias = _config.localAlias.replace(/\/$/, '');
+    if (path === alias || path.startsWith(alias + '/')) {
+      const rest = path.slice(alias.length).replace(/^\//, '');
+      const ncBase = _config.nextcloudAlias.replace(/^\//, '').replace(/\/$/, '');
+      return rest ? `${ncBase}/${rest}` : ncBase;
+    }
+  }
+
+  return null;
+}
+
+// Build a Nextcloud web-UI URL that opens the folder containing the given NC-relative path.
+// e.g. "Projects/cop/guide.pdf" → "{server}/apps/files/?dir=/Projects/cop"
+export function nextcloudWebUrl(relPath) {
+  if (!_config) return null;
+  const parts = relPath.split('/');
+  const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+  return `${_config.server}/apps/files/?dir=/${encodePath(dir)}`;
 }

@@ -70,11 +70,17 @@ step "Building web assets (npm)"
 cd "$APP_DIR"
 npm run build
 
-# ── 5. Sync to Android project ────────────────────────────────────────────────
+# ── 5. Regenerate Android icons from SVG source ───────────────────────────────
+step "Generating Android icons (from resources/icon.svg)"
+npx @capacitor/assets generate --android \
+  --iconBackgroundColor '#12151f' \
+  --iconBackgroundColorDark '#12151f'
+
+# ── 6. Sync to Android project ────────────────────────────────────────────────
 step "Syncing to Android project (cap sync)"
 npx cap sync android
 
-# ── 6. Build APK ─────────────────────────────────────────────────────────────
+# ── 7. Build APK ─────────────────────────────────────────────────────────────
 step "Building APK (Gradle)"
 cd "$APP_DIR/android"
 JAVA_HOME="$JAVA_HOME" \
@@ -82,7 +88,7 @@ ANDROID_HOME="$HOME/Android/Sdk" \
 ANDROID_SDK_ROOT="$HOME/Android/Sdk" \
 ./gradlew assembleDebug
 
-# ── 7. Install ────────────────────────────────────────────────────────────────
+# ── 8. Install ────────────────────────────────────────────────────────────────
 step "Installing APK on $DEVICE_MODEL"
 "$ADB" install -r "$APK"
 
