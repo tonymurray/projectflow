@@ -5944,7 +5944,11 @@ StartupNotify=true
 
                 # Load webview URL if set
                 if self.webview_url:
-                    self.webview.setUrl(QUrl(self.webview_url))
+                    _url_obj = QUrl(self.webview_url)
+                    if _url_obj.isLocalFile() and _url_obj.toLocalFile().endswith('.md'):
+                        self._open_markdown_in_webview(_url_obj.toLocalFile())
+                    else:
+                        self.webview.setUrl(_url_obj)
 
                 # Load image if path is saved
                 if self.image_path:

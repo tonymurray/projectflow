@@ -14,6 +14,10 @@ configs/
 notes
 notes/
 
+# Local/generated files
+course/
+ErrorCrash.txt
+
 # Jupyter/qtconsole runtime config
 .jupyter/
 
