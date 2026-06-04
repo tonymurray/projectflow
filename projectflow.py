@@ -3423,6 +3423,7 @@ StartupNotify=true
         # Initialize webview state variables
         self.webview = None
         self.webview_url = None
+        self.webview_md_path = None
         self.webview_url_bar = None
         self.column2_mode = "pdf"  # "pdf", "webview", or "image"
         # Initialize image state variables
@@ -4162,7 +4163,7 @@ StartupNotify=true
         header_row.addWidget(self.recent_projects_btn)
 
         # Main Projects toggle button
-        self.main_projects_btn = QPushButton("Main")
+        self.main_projects_btn = QPushButton("All projects")
         self.main_projects_btn.setToolTip("Show all projects from projects/ folder")
         self.main_projects_btn.setStyleSheet(toggle_btn_style)
         self.main_projects_btn.clicked.connect(lambda: self.switch_projects_mode('alphabetical'))
@@ -5532,7 +5533,7 @@ StartupNotify=true
                     ("pdf",      "PDF",      "PDF viewer",         ["application-pdf", "evince", "document-viewer", "x-office-document"]),
                     ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
                     ("examples", "Examples", "Handler examples",   ["help-contents", "help-browser", "accessories-text-editor"]),
-                    ("console",  "Console",  "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
+                    ("console",  "",         "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                 ]
 
                 # Normal tab button style
@@ -5568,6 +5569,23 @@ StartupNotify=true
                     }}
                 """
 
+                # Console tab — icon-only, always has a subtle border
+                console_tab_btn_style = f"""
+                    QPushButton {{
+                        background-color: {self.t('bg_green_1')};
+                        color: {self.t('fg_on_dark')};
+                        font-weight: bold;
+                        border-radius: 3px;
+                        padding: 5px 8px;
+                        font-size: 11px;
+                        border: 1px solid {self.t('fg_on_dark')};
+                    }}
+                    QPushButton:hover {{
+                        background-color: {self.t('bg_green_2')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """
+
                 # Store tab buttons for styling updates
                 self.viewer_tab_buttons = {}
 
@@ -5587,6 +5605,8 @@ StartupNotify=true
                     # Set style based on whether this is the active mode
                     if mode == self.column2_mode:
                         btn.setStyleSheet(active_tab_style)
+                    elif mode == 'console':
+                        btn.setStyleSheet(console_tab_btn_style)
                     else:
                         btn.setStyleSheet(tab_btn_style)
 
@@ -7432,9 +7452,27 @@ StartupNotify=true
             }}
         """
 
+        console_normal_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_green_1')};
+                color: {self.t('fg_on_dark')};
+                font-weight: bold;
+                border-radius: 3px;
+                padding: 5px 8px;
+                font-size: 11px;
+                border: 1px solid {self.t('fg_on_dark')};
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_green_2')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
         for mode, btn in self.viewer_tab_buttons.items():
             if mode == self.column2_mode:
                 btn.setStyleSheet(active_style)
+            elif mode == 'console':
+                btn.setStyleSheet(console_normal_style)
             else:
                 btn.setStyleSheet(normal_style)
 
@@ -7548,13 +7586,17 @@ StartupNotify=true
             self.webview.forward()
 
     def webview_refresh(self):
-        """Refresh current page"""
-        if self.webview:
+        if not self.webview:
+            return
+        if getattr(self, 'webview_md_path', None):
+            self._open_markdown_in_webview(self.webview_md_path)
+        else:
             self.webview.reload()
 
     def webview_home(self):
         """Navigate to home URL from config"""
         if self.webview and hasattr(self, 'config_webview_url') and self.config_webview_url:
+            self.webview_md_path = None
             self.webview.setUrl(QUrl(self.config_webview_url))
 
     def webview_navigate(self):
@@ -7562,9 +7604,9 @@ StartupNotify=true
         if self.webview and self.webview_url_bar:
             url = self.webview_url_bar.text().strip()
             if url:
-                # Add https:// if no protocol specified
                 if not url.startswith(('http://', 'https://', 'file://')):
                     url = 'https://' + url
+                self.webview_md_path = None
                 self.webview.setUrl(QUrl(url))
 
     def on_webview_url_changed(self, url):
@@ -8129,10 +8171,13 @@ StartupNotify=true
         except OSError:
             return
 
+        import re
         from PyQt6.QtGui import QTextDocument
         doc = QTextDocument()
         doc.setMarkdown(content)
-        body_html = doc.toHtml()
+        full_html = doc.toHtml()
+        body_match = re.search(r'<body[^>]*>(.*)</body>', full_html, re.DOTALL | re.IGNORECASE)
+        body_html = body_match.group(1).strip() if body_match else full_html
 
         bg = self.t('bg_primary')
         fg = self.t('fg_primary')
@@ -8154,6 +8199,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         if self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
+        self.webview_md_path = path
         self.webview.setHtml(styled, QUrl.fromLocalFile(path))
 
     def folder_browser_context_menu(self, position):
