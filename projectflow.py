@@ -28,7 +28,7 @@ import urllib.request
 import urllib.error
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
 from PyQt6.QtCore import QUrl
 from themes import get_theme, detect_system_theme, THEMES, get_dimensions
 
@@ -556,6 +556,15 @@ class ProjectFlowApp(QMainWindow):
         self.config = {}
         self.config_file_arg = config_file_arg  # Store CLI argument
         self.edit_mode = False  # Track whether we're in edit mode
+        # Create the webview here, before init_ui() ever runs, so the default
+        # WebEngine profile is initialised while the app name is still the stable
+        # "ProjectFlow" — not the per-project "ProjectFlow-{name}" set in init_ui().
+        # This gives a fixed cookie-storage path across all sessions.
+        self.webview = QWebEngineView()
+        self.webview.page().profile().setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+        )
+        self.webview.urlChanged.connect(self.on_webview_url_changed)
 
         # Get the directory where this script is located
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3420,8 +3429,7 @@ StartupNotify=true
         self.pdf_path = None
         self.pdf_label = None
         self.pdf_scroll = None
-        # Initialize webview state variables
-        self.webview = None
+        # Initialize webview state variables (self.webview itself lives in __init__)
         self.webview_url = None
         self.webview_md_path = None
         self.webview_url_bar = None
@@ -4018,6 +4026,14 @@ StartupNotify=true
             app.setApplicationDisplayName(f"{display_name} - ProjectFlow")
 
         self.setGeometry(100, 100, 1000, 600)
+
+        # Detach webview before the central widget is replaced so it isn't
+        # deleted — the same QWebEngineView (and its profile/cookies) is
+        # re-used for the lifetime of the app.
+        # setParent() already hides the widget; addWidget() in build_main_content
+        # will re-parent and show it again as part of the new layout.
+        if self.webview is not None:
+            self.webview.setParent(self)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -5671,18 +5687,15 @@ StartupNotify=true
                 # Create webview toolbar
                 self.create_webview_toolbar(webview_container_layout)
 
-                # Create webview
-                self.webview = QWebEngineView()
-                self.webview.urlChanged.connect(self.on_webview_url_changed)
-                # Enable dark mode for web content if using dark theme
-                # ForceDarkMode requires Qt 6.3+, so wrap in try/except
+                # Webview is created once in __init__; just re-add it to the new layout.
+                # Dark mode may change between project loads — always (re)apply.
                 if self.current_theme == "dark":
                     try:
                         self.webview.settings().setAttribute(
                             QWebEngineSettings.WebAttribute.ForceDarkMode, True
                         )
                     except AttributeError:
-                        pass  # ForceDarkMode not available in this Qt version
+                        pass  # ForceDarkMode requires Qt 6.3+
                 webview_container_layout.addWidget(self.webview, 1)  # stretch to fill space
 
                 browser_name = self.detect_default_browser().capitalize()
