@@ -11,3 +11,4 @@ Nextcloud WebDAV (PROPFIND). Two options to consider:
 Requires mapping `folder_path` (local desktop path e.g. `~/Nextcloud/Projects/cop`)
 to a Nextcloud WebDAV path. Either strip a configurable prefix or add a `mobile_path`
 field to the project JSON.
+Test website logins
