@@ -229,11 +229,15 @@ def handle_npm(path, expanded_path):
     project_path = os.path.expanduser(parts[0])
     npm_cmd = parts[1] if len(parts) > 1 else "start"
 
-    # Map common commands to their npm equivalents
+    # Prepend node_modules/.bin so npm's sh sub-process finds local binaries
+    # (needed on NixOS where sh may not inherit npm's PATH additions)
+    node_bin = os.path.join(project_path, 'node_modules', '.bin')
+    path_prefix = f'PATH="{node_bin}:$PATH" '
+
     if npm_cmd in ("start", "test", "install"):
-        shell_cmd = f'cd {shlex.quote(project_path)} && npm {npm_cmd}'
+        shell_cmd = f'cd {shlex.quote(project_path)} && {path_prefix}npm {npm_cmd}'
     else:
-        shell_cmd = f'cd {shlex.quote(project_path)} && npm run {npm_cmd}'
+        shell_cmd = f'cd {shlex.quote(project_path)} && {path_prefix}npm run {npm_cmd}'
 
     cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
     subprocess.Popen(cmd, start_new_session=True)
@@ -290,10 +294,12 @@ def handle_directorydev_action(expanded_path, action):
     elif action in ("code", "editor"):
         subprocess.Popen([_get_editor(), project_path], start_new_session=True)
     elif action == "npm":
+        node_bin = os.path.join(project_path, 'node_modules', '.bin')
+        path_prefix = f'PATH="{node_bin}:$PATH" '
         if npm_cmd in ("start", "test", "install"):
-            shell_cmd = f'cd {shlex.quote(project_path)} && npm {npm_cmd}'
+            shell_cmd = f'cd {shlex.quote(project_path)} && {path_prefix}npm {npm_cmd}'
         else:
-            shell_cmd = f'cd {shlex.quote(project_path)} && npm run {npm_cmd}'
+            shell_cmd = f'cd {shlex.quote(project_path)} && {path_prefix}npm run {npm_cmd}'
         cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
         subprocess.Popen(cmd, start_new_session=True)
 

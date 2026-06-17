@@ -9503,6 +9503,17 @@ Project created: {date_str}
                 if _rest.lower().startswith('cd ') and not re.search(r'&&|\|\||;', _rest):
                     _dir = os.path.expanduser(_rest[3:].strip())
                     cmd = self._get_terminal_workdir_command(_dir)
+                elif re.match(r'^cd\s+\S+\s*&&', _rest, re.IGNORECASE):
+                    # "cd <dir> && cmd" — cd must run outside the subshell so
+                    # the interactive bash that follows starts in the right directory.
+                    _cd_match = re.match(r'^cd\s+(\S+)\s*&&\s*(.+)$', _rest.strip(), re.IGNORECASE)
+                    if _cd_match:
+                        _dir = os.path.expanduser(_cd_match.group(1))
+                        _subcmd = _cd_match.group(2).strip()
+                        shell_cmd = f'cd {shlex.quote(_dir)} && (trap "exit 0" INT; {_subcmd}); exec bash'
+                    else:
+                        shell_cmd = f'(trap "exit 0" INT; {_rest}); exec bash'
+                    cmd = self._get_terminal_command(shell_cmd, hold=False)
                 else:
                     _expanded_rest = os.path.expanduser(_rest)
                     if os.path.isdir(_expanded_rest):
