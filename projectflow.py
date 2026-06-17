@@ -9494,8 +9494,8 @@ Project created: {date_str}
             if app == "alias":
                 _alias_name, _, _rest = path.partition(' ')
                 _rest = _rest.strip()
-                # "cd <dir>" → open terminal at that directory
-                if _rest.lower().startswith('cd '):
+                # "cd <dir>" (no chained commands) → open terminal at that directory
+                if _rest.lower().startswith('cd ') and not re.search(r'&&|\|\||;', _rest):
                     _dir = os.path.expanduser(_rest[3:].strip())
                     cmd = self._get_terminal_workdir_command(_dir)
                 else:
