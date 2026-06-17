@@ -3307,14 +3307,18 @@ StartupNotify=true
         seen_names = set()
         projects_scanned = 0
 
-        for fname in sorted(os.listdir(projects_dir)):
-            if not fname.endswith('.json'):
-                continue
-            if fname == 'aliases.json':
-                continue
-            fpath = os.path.join(projects_dir, fname)
-            if '.archive' in fpath:
-                continue
+        archive_dir = os.path.join(projects_dir, '.archive')
+        scan_files = [
+            os.path.join(projects_dir, f) for f in sorted(os.listdir(projects_dir))
+            if f.endswith('.json') and f != 'aliases.json'
+        ]
+        if os.path.isdir(archive_dir):
+            scan_files += [
+                os.path.join(archive_dir, f) for f in sorted(os.listdir(archive_dir))
+                if f.endswith('.json')
+            ]
+
+        for fpath in scan_files:
             try:
                 with open(fpath, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
@@ -3389,18 +3393,22 @@ StartupNotify=true
         alias_to_project = {}
         aliases_by_project = {}
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
-        for fname in sorted(os.listdir(projects_dir)):
-            if not fname.endswith('.json'):
-                continue
-            if fname == 'aliases.json':
-                continue
-            fpath = os.path.join(projects_dir, fname)
-            if '.archive' in fpath:
-                continue
+        archive_dir = os.path.join(projects_dir, '.archive')
+        regen_files = [
+            os.path.join(projects_dir, f) for f in sorted(os.listdir(projects_dir))
+            if f.endswith('.json') and f != 'aliases.json'
+        ]
+        if os.path.isdir(archive_dir):
+            regen_files += [
+                os.path.join(archive_dir, f) for f in sorted(os.listdir(archive_dir))
+                if f.endswith('.json')
+            ]
+
+        for fpath in regen_files:
             try:
                 with open(fpath, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
-                project_name = cfg.get('project_name', os.path.splitext(fname)[0])
+                project_name = cfg.get('project_name', os.path.splitext(os.path.basename(fpath))[0])
                 found = []
                 for column in cfg.get('columns', []):
                     for category in column:
