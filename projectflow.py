@@ -4142,7 +4142,7 @@ function filterAliases(q) {{
             terminal = self.detect_default_terminal()
         return terminal
 
-    def _get_terminal_command(self, shell_cmd, hold=False):
+    def _get_terminal_command(self, shell_cmd, hold=False, interactive=False):
         """Build terminal command based on configured terminal emulator"""
         terminal = self.get_configured_terminal()
 
@@ -4183,7 +4183,8 @@ function filterAliases(q) {{
 
         # Add the shell command
         if needs_shell:
-            terminal_cmd.extend(["bash", "-c", shell_cmd])
+            bash_flags = ["-i", "-c"] if interactive else ["-c"]
+            terminal_cmd.extend(["bash"] + bash_flags + [shell_cmd])
         else:
             terminal_cmd.append(shell_cmd)
 
@@ -7415,7 +7416,11 @@ function filterAliases(q) {{
             with open(self.current_config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
         except Exception as e:
-            print(f"Error saving config: {e}")
+            QMessageBox.warning(
+                self,
+                "Save Error",
+                f"Could not save config:\n{self.current_config_file}\n\n{e}"
+            )
 
     def paste_plain_text(self):
         """Paste clipboard content as plain text (Ctrl+Shift+V)"""
@@ -9506,7 +9511,7 @@ Project created: {date_str}
                         # Run command then drop to interactive shell so the user
                         # gets a prompt rather than a frozen/blank terminal window.
                         shell_cmd = f'(trap "exit 0" INT; {_rest}); exec bash'
-                        cmd = self._get_terminal_command(shell_cmd, hold=False)
+                        cmd = self._get_terminal_command(shell_cmd, hold=False, interactive=True)
                 subprocess.Popen(cmd, start_new_session=True)
                 self.status_label.setText(f"✓ Alias '{_alias_name}': {_rest}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
