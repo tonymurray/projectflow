@@ -9511,7 +9511,7 @@ Project created: {date_str}
                         # Run command then drop to interactive shell so the user
                         # gets a prompt rather than a frozen/blank terminal window.
                         shell_cmd = f'(trap "exit 0" INT; {_rest}); exec bash'
-                        cmd = self._get_terminal_command(shell_cmd, hold=False, interactive=True)
+                        cmd = self._get_terminal_command(shell_cmd, hold=False)
                 subprocess.Popen(cmd, start_new_session=True)
                 self.status_label.setText(f"✓ Alias '{_alias_name}': {_rest}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
