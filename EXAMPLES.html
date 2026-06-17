@@ -129,6 +129,38 @@
 
 <div class="card">
     <div class="card-header">
+        <span class="handler-name">Shell Alias</span>
+        <span class="handler-key">alias</span>
+    </div>
+    <div class="description">
+        Runs a command in a terminal (or opens a terminal at a directory) AND exports a
+        bash alias to <code>projects/projectflow_aliases</code>. Source that file from
+        <code>~/.bashrc</code> to use the same shortcuts in any terminal session.<br><br>
+        <strong>Path format:</strong> <code>alias_name command_or_path</code> — the first
+        word becomes the bash alias identifier; everything after is the command or directory.
+    </div>
+    <div class="example-label">Examples:</div>
+    <div class="example-code">["Git Status",      "gs git status",               "alias"]
+["Rebuild NixOS",  "rebuilднix sudo nixos-rebuild switch", "alias"]
+["Music Folder",   "music ~/Music",               "alias"]
+["Dev Server",     "dev npm run dev",              "alias"]</div>
+    <div class="description" style="margin-top:8px">
+        <strong>Generated aliases file lines:</strong><br>
+        <code>alias gs='git status'</code><br>
+        <code>alias music='cd ~/Music'</code><br><br>
+        Use <strong>Settings → Scan All Projects for Aliases</strong> to rebuild the file
+        from all projects at once.<br><br>
+        <strong>To activate in your shell, add to <code>~/.bashrc</code>:</strong><br>
+        <br>
+        <div class="example-code">if [ -f ~/path/to/projects/projectflow_aliases ];  then  
+source ~/path/to/projects/projectflow_aliases
+fi</div>
+    </div>
+    <span class="type-badge type-complex">Complex</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
         <span class="handler-name">Directory Dev</span>
         <span class="handler-key">directorydev</span>
     </div>
@@ -328,6 +360,8 @@
     -> cd ~/project && npm run dev</div>
     <span class="type-badge type-builtin">Built-in</span>
 </div>
+
+
 
 <h2>Simple Handlers</h2>
 <p class="intro">Defined in launch_handlers.py. These execute specific commands with the path as an argument.</p>

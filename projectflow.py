@@ -566,6 +566,14 @@ class ProjectFlowApp(QMainWindow):
         )
         self.webview.urlChanged.connect(self.on_webview_url_changed)
 
+        # Debounce timer for alias file writes — prevents a write per keystroke
+        # when the user types in the inline path/app fields.
+        self._pending_alias_write = None
+        self._alias_write_timer = QTimer()
+        self._alias_write_timer.setSingleShot(True)
+        self._alias_write_timer.setInterval(800)
+        self._alias_write_timer.timeout.connect(self._flush_pending_alias_write)
+
         # Get the directory where this script is located
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -1086,6 +1094,20 @@ class ProjectFlowApp(QMainWindow):
 
         actions_layout.addStretch()
         layout.addRow(actions_label, actions_layout)
+
+        # Aliases section
+        aliases_label = QLabel("Aliases:")
+        aliases_label.setStyleSheet(label_style)
+        aliases_layout = QHBoxLayout()
+
+        scan_aliases_btn = QPushButton("🔍 Scan All Projects for Aliases")
+        scan_aliases_btn.setStyleSheet(action_btn_style)
+        scan_aliases_btn.setToolTip("Scan all project files for alias launchers and update projectflow_aliases")
+        scan_aliases_btn.clicked.connect(lambda: self._do_alias_scan())
+        aliases_layout.addWidget(scan_aliases_btn)
+
+        aliases_layout.addStretch()
+        layout.addRow(aliases_label, aliases_layout)
 
         return widget
 
@@ -1620,6 +1642,15 @@ class ProjectFlowApp(QMainWindow):
 
                 # Save config to file
                 self.save_config_to_json()
+
+                # Write alias to projectflow_aliases if this is an alias launcher.
+                # force=True so edits always overwrite the previous entry.
+                if new_app == "alias":
+                    alias_name, _, alias_cmd = new_path.partition(' ')
+                    self._write_alias_to_file(alias_name.strip(), alias_cmd.strip(), force=True)
+                    if hasattr(self, 'status_label'):
+                        self.status_label.setText(f"✓ Alias '{alias_name.strip()}' saved — re-source aliases file to activate")
+                        self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
 
                 # Update UI appropriately
                 if inline_widget is not None:
@@ -3166,6 +3197,166 @@ StartupNotify=true
         # Use configured folder, or default to 'notes' subdirectory
         folder = self.settings.get("notes_folder", os.path.join(self.script_dir, "notes"))
         return os.path.expanduser(folder)
+
+    # ------------------------------------------------------------------
+    # Shell alias helpers
+    # ------------------------------------------------------------------
+
+    def get_aliases_file_path(self):
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        return os.path.join(projects_dir, "projectflow_aliases")
+
+    def _validate_alias(self, name, command):
+        """Return (valid: bool, reason: str). Checks identifier, danger patterns, bash syntax."""
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            return False, "invalid identifier"
+        danger_patterns = [
+            r'rm\s+-[rRf]*f[rR]?\s+[/~$]',   # rm -rf /  rm -rf ~  rm -rf $HOME
+            r'dd\s+if=\s*/dev/',               # dd if=/dev/...
+            r'\bmkfs\b',                       # format filesystem
+            r':\(\)\s*\{',                     # fork bomb
+        ]
+        for pattern in danger_patterns:
+            if re.search(pattern, command):
+                return False, "dangerous command"
+        try:
+            result = subprocess.run(
+                ['bash', '-n', '-c', f"alias {name}='{command}'"],
+                capture_output=True, timeout=3
+            )
+            if result.returncode != 0:
+                return False, "invalid syntax"
+        except Exception:
+            pass  # If bash check fails, allow through
+        return True, ""
+
+    def _resolve_alias_command(self, command):
+        """If command is a bare directory path, prefix with 'cd' for the bash alias."""
+        expanded = os.path.expanduser(command)
+        if os.path.isdir(expanded) and not command.strip().startswith('cd '):
+            return f"cd {command.strip()}"
+        return command.strip()
+
+    def _flush_pending_alias_write(self):
+        """Called by the debounce timer after the user stops typing."""
+        if self._pending_alias_write:
+            name, command = self._pending_alias_write
+            self._pending_alias_write = None
+            self._write_alias_to_file(name, command, force=True)
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(f"✓ Alias '{name}' saved — re-source aliases file to activate")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+
+    def _write_alias_to_file(self, name, command, force=False):
+        """Add or update one alias in the projectflow_aliases file.
+
+        force=True: replace any existing entry in-place (used on manual save/edit).
+        force=False: skip if the exact alias already exists (used during bulk scan).
+        """
+        if not name or not command:
+            return
+        command = self._resolve_alias_command(command)
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            return  # Not a valid bash identifier — skip silently
+        aliases_file = self.get_aliases_file_path()
+        header = (
+            "# ProjectFlow Aliases\n"
+            "# Auto-generated — edit via ProjectFlow, not by hand.\n"
+            "# To activate in your shell, add to ~/.bashrc:\n"
+            f"#   source {aliases_file}\n"
+            "\n"
+        )
+        content = open(aliases_file).read() if os.path.exists(aliases_file) else header
+
+        valid, reason = self._validate_alias(name, command)
+        new_line = (f"alias {name}='{command}'"
+                    if valid else f"# alias {name}='{command}'  # {reason.upper()}")
+
+        # Match any existing definition of this alias name (commented or active).
+        # Use [ \t]* instead of \s* to avoid consuming blank lines above the entry.
+        pattern = re.compile(
+            r'^[ \t]*#?[ \t]*alias[ \t]+' + re.escape(name) + r'[ \t]*=.*$', re.MULTILINE
+        )
+        existing = pattern.search(content)
+        if existing:
+            if not force and existing.group().strip() == new_line.strip():
+                return  # Exact duplicate during scan — skip
+            content = pattern.sub(new_line, content, count=1)
+        else:
+            content = content.rstrip('\n') + '\n' + new_line + '\n'
+
+        with open(aliases_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    def _scan_all_project_aliases(self):
+        """Rebuild projectflow_aliases from scratch from all project JSON files.
+        Returns (alias_count, projects_scanned) counts."""
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        aliases_file = self.get_aliases_file_path()
+        header = (
+            "# ProjectFlow Aliases\n"
+            "# Auto-generated — edit via ProjectFlow, not by hand.\n"
+            "# To activate in your shell, add to ~/.bashrc:\n"
+            f"#   source {aliases_file}\n\n"
+        )
+
+        lines = []
+        seen_names = set()
+        projects_scanned = 0
+
+        for fname in sorted(os.listdir(projects_dir)):
+            if not fname.endswith('.json'):
+                continue
+            fpath = os.path.join(projects_dir, fname)
+            if '.archive' in fpath:
+                continue
+            try:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                projects_scanned += 1
+                for column in cfg.get('columns', []):
+                    for category in column:
+                        if not isinstance(category, dict):
+                            continue
+                        for items in category.values():
+                            for item in items:
+                                if isinstance(item, list) and len(item) >= 3 and item[2] == 'alias':
+                                    path_field = str(item[1])
+                                    alias_name, _, alias_cmd = path_field.partition(' ')
+                                    alias_name = alias_name.strip()
+                                    alias_cmd = alias_cmd.strip()
+                                    if alias_name and alias_cmd and alias_name not in seen_names:
+                                        seen_names.add(alias_name)
+                                        alias_cmd = self._resolve_alias_command(alias_cmd)
+                                        valid, reason = self._validate_alias(alias_name, alias_cmd)
+                                        if valid:
+                                            lines.append(f"alias {alias_name}='{alias_cmd}'")
+                                        else:
+                                            lines.append(f"# alias {alias_name}='{alias_cmd}'  # {reason.upper()}")
+            except Exception:
+                continue
+
+        content = header + '\n'.join(lines) + ('\n' if lines else '')
+        with open(aliases_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        return len(lines), projects_scanned
+
+    def _do_alias_scan(self):
+        """Rebuild the aliases file and show a result dialog."""
+        alias_count, projects = self._scan_all_project_aliases()
+        aliases_file = self.get_aliases_file_path()
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Alias Scan Complete")
+        msg.setText(
+            f"Rebuilt aliases file from {projects} project(s).\n\n"
+            f"Total aliases: {alias_count}\n\n"
+            f"File: {aliases_file}\n\n"
+            "Re-source the file in your terminal to activate changes."
+        )
+        msg.exec()
+
+    # ------------------------------------------------------------------
 
     def get_notes_file_path(self):
         """Get the markdown file path for current config's notes.
@@ -5143,15 +5334,26 @@ StartupNotify=true
                             group_layout.addSpacing(5)
                         else:
                             # VIEW MODE: Show normal button
-                            # Get app icon if available
+                            # Get app icon if available — either emoji text or SVG file
                             app_icon = ""
+                            svg_icon_path = None
                             if app in self.APP_INFO:
-                                app_icon = self.APP_INFO[app]["icon"] + " "
+                                icon_val = self.APP_INFO[app]["icon"]
+                                # Detect file-path icons (SVG/PNG stored relative to script_dir)
+                                if icon_val.endswith(('.svg', '.png', '.jpg')):
+                                    candidate = os.path.join(self.script_dir, icon_val)
+                                    if os.path.isfile(candidate):
+                                        svg_icon_path = candidate
+                                else:
+                                    app_icon = icon_val + " "
 
                             # Use DraggableItemButton for drag-and-drop reordering
                             btn = DraggableItemButton(f"{app_icon}{display_name}", col_idx, category_name, idx)
                             btn.setMinimumHeight(30)
                             btn.setStyleSheet(self.get_item_button_style())
+                            if svg_icon_path:
+                                btn.setIcon(QIcon(svg_icon_path))
+                                btn.setIconSize(QSize(16, 16))
                             btn.clicked.connect(
                                 lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
                             )
@@ -5241,11 +5443,29 @@ StartupNotify=true
                                 btn_layout.setSpacing(2)
                                 btn_layout.addWidget(btn, 1)
 
-                                # Add small preview button
-                                preview_btn = QPushButton("🌐")
+                                # Local files need file:// URIs; web URLs load directly
+                                _exp_path = os.path.expanduser(path)
+                                _exp_lower = _exp_path.lower()
+                                if _exp_lower.endswith('.md') and self._is_local_path(path):
+                                    preview_btn = QPushButton("📄")
+                                    preview_btn.setToolTip("Preview as rendered markdown")
+                                    preview_btn.clicked.connect(
+                                        lambda checked=False, md=_exp_path: self._open_markdown_in_webview(md)
+                                    )
+                                elif _exp_lower.endswith(('.html', '.htm')) and self._is_local_path(path):
+                                    preview_btn = QPushButton("🌐")
+                                    preview_btn.setToolTip("Preview in built-in web viewer")
+                                    preview_btn.clicked.connect(
+                                        lambda checked=False, p=_exp_path: self._open_file_in_webview(p)
+                                    )
+                                else:
+                                    preview_btn = QPushButton("🌐")
+                                    preview_btn.setToolTip("Preview in webview")
+                                    preview_btn.clicked.connect(
+                                        lambda checked=False, url=path: self.preview_in_webview(url)
+                                    )
                                 preview_btn.setMaximumWidth(28)
                                 preview_btn.setMinimumHeight(30)
-                                preview_btn.setToolTip("Preview in webview")
                                 preview_btn.setStyleSheet(f"""
                                     QPushButton {{
                                         background-color: {self.t('bg_button')};
@@ -5259,9 +5479,6 @@ StartupNotify=true
                                         color: {self.t('fg_on_dark')};
                                     }}
                                 """)
-                                preview_btn.clicked.connect(
-                                    lambda checked=False, url=path: self.preview_in_webview(url)
-                                )
                                 btn_layout.addWidget(preview_btn)
 
                                 # Add layout to group
@@ -5302,6 +5519,50 @@ StartupNotify=true
                                 btn_layout.addWidget(preview_btn)
 
                                 # Add layout to group
+                                btn_container = QWidget()
+                                btn_container.setLayout(btn_layout)
+                                drop_zone_layout.addWidget(btn_container)
+                                category_drop_zone.add_item(btn_container, idx)
+
+                            # Check if this is a local HTML file - add built-in web viewer preview button
+                            elif os.path.expanduser(path).lower().endswith(('.html', '.htm')) and self._is_local_path(path):
+                                btn_layout = QHBoxLayout()
+                                btn_layout.setContentsMargins(0, 0, 0, 0)
+                                btn_layout.setSpacing(2)
+                                btn_layout.addWidget(btn, 1)
+
+                                preview_btn = QPushButton("🌐")
+                                preview_btn.setMaximumWidth(28)
+                                preview_btn.setMinimumHeight(30)
+                                preview_btn.setToolTip("Preview in built-in web viewer")
+                                preview_btn.setStyleSheet(icon_btn_style)
+                                preview_btn.clicked.connect(
+                                    lambda checked=False, p=os.path.expanduser(path): self._open_file_in_webview(p)
+                                )
+                                btn_layout.addWidget(preview_btn)
+
+                                btn_container = QWidget()
+                                btn_container.setLayout(btn_layout)
+                                drop_zone_layout.addWidget(btn_container)
+                                category_drop_zone.add_item(btn_container, idx)
+
+                            # Check if this is a local .md file - add rendered markdown preview button
+                            elif os.path.expanduser(path).lower().endswith('.md') and self._is_local_path(path):
+                                btn_layout = QHBoxLayout()
+                                btn_layout.setContentsMargins(0, 0, 0, 0)
+                                btn_layout.setSpacing(2)
+                                btn_layout.addWidget(btn, 1)
+
+                                preview_btn = QPushButton("📄")
+                                preview_btn.setMaximumWidth(28)
+                                preview_btn.setMinimumHeight(30)
+                                preview_btn.setToolTip("Preview as rendered markdown")
+                                preview_btn.setStyleSheet(icon_btn_style)
+                                preview_btn.clicked.connect(
+                                    lambda checked=False, md=os.path.expanduser(path): self._open_markdown_in_webview(md)
+                                )
+                                btn_layout.addWidget(preview_btn)
+
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
@@ -6749,6 +7010,14 @@ StartupNotify=true
 
         # Auto-save to JSON file
         self.save_config_to_json()
+
+        # Schedule alias file update after the user stops typing (debounced).
+        # Writing on every keystroke would create a spurious alias entry per partial name.
+        if new_app.strip() == "alias" and ' ' in new_path.strip():
+            _alias_name, _, _alias_cmd = new_path.partition(' ')
+            if _alias_name.strip() and _alias_cmd.strip():
+                self._pending_alias_write = (_alias_name.strip(), _alias_cmd.strip())
+                self._alias_write_timer.start()  # restart countdown on each keystroke
 
     def move_item_up(self, col_idx, category_name, item_idx):
         """Move an item up in the list"""
@@ -8965,6 +9234,29 @@ Project created: {date_str}
                     cmd = self._get_terminal_workdir_command(workdir)
                     subprocess.Popen(cmd, start_new_session=True)
                     self.status_label.setText(f"✓ Opened terminal ({terminal_name}): {path}")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                return
+
+            # 1c. Alias handler — path = "alias_name command_or_directory"
+            # The alias name (first word) is stripped; only the command/path is executed.
+            if app == "alias":
+                _alias_name, _, _rest = path.partition(' ')
+                _rest = _rest.strip()
+                # "cd <dir>" → open terminal at that directory
+                if _rest.lower().startswith('cd '):
+                    _dir = os.path.expanduser(_rest[3:].strip())
+                    cmd = self._get_terminal_workdir_command(_dir)
+                else:
+                    _expanded_rest = os.path.expanduser(_rest)
+                    if os.path.isdir(_expanded_rest):
+                        cmd = self._get_terminal_workdir_command(_expanded_rest)
+                    else:
+                        # Run command then drop to interactive shell so the user
+                        # gets a prompt rather than a frozen/blank terminal window.
+                        shell_cmd = f'(trap "exit 0" INT; {_rest}); exec bash'
+                        cmd = self._get_terminal_command(shell_cmd, hold=False)
+                subprocess.Popen(cmd, start_new_session=True)
+                self.status_label.setText(f"✓ Alias '{_alias_name}': {_rest}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
                 return
 

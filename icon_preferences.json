@@ -1,4 +1,8 @@
 {
+  "alias": {
+    "icon": "utilities/alias.svg",
+    "name": "Shell Alias"
+  },
   "browser": {
     "icon": "\ud83c\udf10",
     "name": "Default Browser"
