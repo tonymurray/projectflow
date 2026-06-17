@@ -3288,6 +3288,9 @@ StartupNotify=true
         with open(aliases_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
+        if force:
+            self._regenerate_aliases_project()
+
     def _scan_all_project_aliases(self):
         """Rebuild projectflow_aliases from scratch from all project JSON files.
         Returns (alias_count, projects_scanned) counts."""
@@ -3306,6 +3309,8 @@ StartupNotify=true
 
         for fname in sorted(os.listdir(projects_dir)):
             if not fname.endswith('.json'):
+                continue
+            if fname == 'aliases.json':
                 continue
             fpath = os.path.join(projects_dir, fname)
             if '.archive' in fpath:
@@ -3340,6 +3345,7 @@ StartupNotify=true
         with open(aliases_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
+        self._regenerate_aliases_project()
         return len(lines), projects_scanned
 
     def _do_alias_scan(self):
@@ -3355,6 +3361,229 @@ StartupNotify=true
             "Re-source the file in your terminal to activate changes."
         )
         msg.exec()
+
+    # ------------------------------------------------------------------
+    # Aliases project helpers
+    # ------------------------------------------------------------------
+
+    def _parse_aliases_file(self):
+        """Parse projectflow_aliases and return {alias_name: command} dict."""
+        aliases_file = self.get_aliases_file_path()
+        result = {}
+        if not os.path.exists(aliases_file):
+            return result
+        with open(aliases_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                m = re.match(r"^alias\s+(\w+)='(.*)'$", line.strip())
+                if m:
+                    result[m.group(1)] = m.group(2)
+        return result
+
+    def _regenerate_aliases_project(self):
+        """Rebuild aliases.json and aliases.html from current data."""
+        all_aliases = self._parse_aliases_file()
+        if not all_aliases:
+            return
+
+        # Scan project JSONs to map alias_name → project_name
+        alias_to_project = {}
+        aliases_by_project = {}
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        for fname in sorted(os.listdir(projects_dir)):
+            if not fname.endswith('.json'):
+                continue
+            if fname == 'aliases.json':
+                continue
+            fpath = os.path.join(projects_dir, fname)
+            if '.archive' in fpath:
+                continue
+            try:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                project_name = cfg.get('project_name', os.path.splitext(fname)[0])
+                found = []
+                for column in cfg.get('columns', []):
+                    for category in column:
+                        if not isinstance(category, dict):
+                            continue
+                        for items in category.values():
+                            for item in items:
+                                if isinstance(item, list) and len(item) >= 3 and item[2] == 'alias':
+                                    aname = str(item[1]).split()[0]
+                                    if aname in all_aliases and aname not in alias_to_project:
+                                        found.append(aname)
+                                        alias_to_project[aname] = project_name
+                if found:
+                    aliases_by_project[project_name] = found
+            except Exception:
+                continue
+
+        self._build_aliases_html(aliases_by_project, alias_to_project, all_aliases)
+        self._build_aliases_config(all_aliases)
+
+    def _build_aliases_html(self, aliases_by_project, alias_to_project, all_aliases):
+        """Write notes/aliases.html — self-contained with inline CSS/JS."""
+        notes_folder = self.get_notes_folder()
+        os.makedirs(notes_folder, exist_ok=True)
+        html_path = os.path.join(notes_folder, "aliases.html")
+
+        def card(aname, cmd, proj=""):
+            proj_badge = f'<span class="alias-project">{proj}</span>' if proj else ""
+            return (
+                f'<div class="alias-card" data-alias="{aname}" '
+                f'data-project="{proj}" data-command="{cmd}">'
+                f'<span class="alias-name">{aname}</span>'
+                f'{proj_badge}'
+                f'<span class="alias-command">{cmd}</span>'
+                f'</div>'
+            )
+
+        by_project_html = ""
+        for proj_name in sorted(aliases_by_project.keys()):
+            cards = "".join(
+                card(a, all_aliases.get(a, ""))
+                for a in sorted(aliases_by_project[proj_name])
+            )
+            by_project_html += (
+                f'<div class="project-section">'
+                f'<h2 class="project-header">{proj_name}</h2>'
+                f'<div class="project-aliases">{cards}</div>'
+                f'</div>'
+            )
+
+        # Aliases not in any project JSON (parsed from file only)
+        unassigned = [a for a in sorted(all_aliases) if a not in alias_to_project]
+        if unassigned:
+            cards = "".join(card(a, all_aliases[a]) for a in unassigned)
+            by_project_html += (
+                f'<div class="project-section">'
+                f'<h2 class="project-header">Other</h2>'
+                f'<div class="project-aliases">{cards}</div>'
+                f'</div>'
+            )
+
+        alpha_html = "".join(
+            card(a, all_aliases[a], alias_to_project.get(a, ""))
+            for a in sorted(all_aliases.keys())
+        )
+
+        count = len(all_aliases)
+        plural = "es" if count != 1 else ""
+
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ProjectFlow Aliases</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: system-ui, sans-serif; padding: 12px 16px; font-size: 14px;
+       background: #f5f7fa; color: #222; }}
+.toolbar {{ background: #fff; border: 1px solid #dde2ea; border-radius: 6px;
+            padding: 10px 12px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; }}
+#search {{ flex: 1; border: 1px solid #cdd3dd; border-radius: 4px; padding: 6px 10px;
+           font-size: 13px; background: #f9fafb; color: #222; }}
+.tab-btn {{ padding: 5px 14px; border: 1px solid #b0bac9; border-radius: 4px;
+             cursor: pointer; background: #eef1f6; color: #444; font-size: 13px; }}
+.tab-btn.active {{ background: #3498db; color: #fff; border-color: #2980b9; }}
+.count {{ font-size: 12px; color: #888; white-space: nowrap; }}
+.project-header {{ font-size: 12px; font-weight: 700; color: #3498db;
+                   text-transform: uppercase; letter-spacing: .06em;
+                   padding: 10px 0 4px; border-bottom: 1px solid #dde2ea; margin-bottom: 6px; }}
+.project-section:first-child .project-header {{ padding-top: 0; }}
+.alias-card {{ display: flex; align-items: baseline; gap: 10px; padding: 4px 8px;
+               border-radius: 4px; margin-bottom: 2px; }}
+.alias-card:hover {{ background: #eef1f6; }}
+.alias-name {{ font-family: monospace; font-size: 13px; font-weight: 600;
+               color: #1a5276; min-width: 140px; flex-shrink: 0; }}
+.alias-project {{ font-size: 11px; color: #aaa; min-width: 100px; flex-shrink: 0; }}
+.alias-command {{ font-family: monospace; font-size: 12px; color: #555; word-break: break-all; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background: #0f1218; color: #dde; }}
+  .toolbar {{ background: #1a2030; border-color: #2d3748; }}
+  #search {{ background: #111827; border-color: #2d3748; color: #dde; }}
+  .tab-btn {{ background: #1e2a3c; border-color: #2d3748; color: #aab; }}
+  .tab-btn.active {{ background: #2563eb; color: #fff; border-color: #1d4ed8; }}
+  .project-header {{ color: #5dade2; border-color: #2d3748; }}
+  .alias-card:hover {{ background: #1a2030; }}
+  .alias-name {{ color: #7ec8e3; }}
+  .alias-project {{ color: #555; }}
+  .alias-command {{ color: #8899aa; }}
+  .count {{ color: #666; }}
+}}
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <input type="text" id="search" placeholder="Search aliases…" oninput="filterAliases(this.value)">
+  <button class="tab-btn active" id="btn-project" onclick="showView('project')">Projects</button>
+  <button class="tab-btn" id="btn-alpha" onclick="showView('alpha')">A-Z</button>
+  <span class="count">{count} alias{plural}</span>
+</div>
+<div id="view-project">{by_project_html}</div>
+<div id="view-alpha" style="display:none">{alpha_html}</div>
+<script>
+function showView(v) {{
+  document.getElementById('view-project').style.display = v==='project' ? '' : 'none';
+  document.getElementById('view-alpha').style.display = v==='alpha' ? '' : 'none';
+  document.getElementById('btn-project').className = 'tab-btn' + (v==='project' ? ' active' : '');
+  document.getElementById('btn-alpha').className = 'tab-btn' + (v==='alpha' ? ' active' : '');
+  filterAliases(document.getElementById('search').value);
+}}
+function filterAliases(q) {{
+  q = q.toLowerCase();
+  document.querySelectorAll('.alias-card').forEach(function(el) {{
+    var match = !q || el.dataset.alias.includes(q)
+                   || el.dataset.command.includes(q)
+                   || el.dataset.project.toLowerCase().includes(q);
+    el.style.display = match ? '' : 'none';
+  }});
+  document.querySelectorAll('.project-section').forEach(function(sec) {{
+    var vis = Array.from(sec.querySelectorAll('.alias-card')).some(function(c) {{
+      return c.style.display !== 'none';
+    }});
+    sec.style.display = vis ? '' : 'none';
+  }});
+}}
+</script>
+</body>
+</html>"""
+
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html)
+        return html_path
+
+    def _build_aliases_config(self, all_aliases):
+        """Write projects/aliases.json from the given alias dict."""
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        config_path = os.path.join(projects_dir, "aliases.json")
+        notes_folder = self.get_notes_folder()
+        html_path = os.path.join(notes_folder, "aliases.html")
+
+        items = [
+            [aname, f"{aname} {cmd}", "alias"]
+            for aname, cmd in sorted(all_aliases.items())
+        ]
+
+        config = {
+            "project_name": "Aliases",
+            "column_headers": ["Aliases"],
+            "column2_default": "webview",
+            "webview_url": f"file://{html_path}",
+            "columns": [[{"All Aliases": items}]]
+        }
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+        return config_path
+
+    def open_aliases_project(self):
+        """Regenerate alias files and switch to the aliases project."""
+        self._regenerate_aliases_project()
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        aliases_config = os.path.join(projects_dir, "aliases.json")
+        if os.path.exists(aliases_config):
+            self.switch_to_config(aliases_config)
 
     # ------------------------------------------------------------------
 
@@ -6415,6 +6644,19 @@ StartupNotify=true
             }}
         """
 
+        # Aliases button — shown when projectflow_aliases has entries
+        _aliases_file = self.get_aliases_file_path()
+        _has_aliases = os.path.exists(_aliases_file) and any(
+            line.startswith('alias ') for line in open(_aliases_file, encoding='utf-8')
+        )
+        if _has_aliases:
+            aliases_btn = QPushButton("⌨️ Aliases")
+            aliases_btn.setMinimumHeight(30)
+            aliases_btn.setStyleSheet(footer_btn_style)
+            aliases_btn.setToolTip("Open Aliases project")
+            aliases_btn.clicked.connect(self.open_aliases_project)
+            footer_layout.addWidget(aliases_btn)
+
         # New Project button
         new_project_btn = QPushButton("📄 New Project")
         new_project_btn.setMinimumHeight(30)
@@ -6422,6 +6664,8 @@ StartupNotify=true
         new_project_btn.setToolTip("Create a new project from template")
         new_project_btn.clicked.connect(self.new_project)
         footer_layout.addWidget(new_project_btn)
+
+        footer_layout.addSpacing(16)
 
         # Theme toggle button (icon only, before Settings)
         theme_icon = "🌙" if self.current_theme == "light" else "☀️"
