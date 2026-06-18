@@ -3221,7 +3221,7 @@ StartupNotify=true
                 return False, "dangerous command"
         try:
             result = subprocess.run(
-                ['bash', '-n', '-c', f"alias {name}='{command}'"],
+                ['bash', '-n', '-c', f"alias {name}={shlex.quote(command)}"],
                 capture_output=True, timeout=3
             )
             if result.returncode != 0:
@@ -3269,8 +3269,8 @@ StartupNotify=true
         content = open(aliases_file).read() if os.path.exists(aliases_file) else header
 
         valid, reason = self._validate_alias(name, command)
-        new_line = (f"alias {name}='{command}'"
-                    if valid else f"# alias {name}='{command}'  # {reason.upper()}")
+        new_line = (f"alias {name}={shlex.quote(command)}"
+                    if valid else f"# alias {name}={shlex.quote(command)}  # {reason.upper()}")
 
         # Match any existing definition of this alias name (commented or active).
         # Use [ \t]* instead of \s* to avoid consuming blank lines above the entry.
@@ -3339,9 +3339,9 @@ StartupNotify=true
                                         alias_cmd = self._resolve_alias_command(alias_cmd)
                                         valid, reason = self._validate_alias(alias_name, alias_cmd)
                                         if valid:
-                                            lines.append(f"alias {alias_name}='{alias_cmd}'")
+                                            lines.append(f"alias {alias_name}={shlex.quote(alias_cmd)}")
                                         else:
-                                            lines.append(f"# alias {alias_name}='{alias_cmd}'  # {reason.upper()}")
+                                            lines.append(f"# alias {alias_name}={shlex.quote(alias_cmd)}  # {reason.upper()}")
             except Exception:
                 continue
 
