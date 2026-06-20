@@ -1116,7 +1116,28 @@ class ProjectFlowApp(QMainWindow):
         widget = QWidget()
         main_layout = QVBoxLayout(widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(6)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+        scan_btn = QPushButton("🔍 Scan for Docs")
+        scan_btn.setToolTip("Scan project folder for .md and .html files and add them to a Documentation category")
+        scan_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ background-color: {self.t('bg_button_hover')}; }}
+        """)
+        scan_btn.clicked.connect(self._show_doc_scan_dialog)
+        toolbar.addWidget(scan_btn)
+        toolbar.addStretch()
+        main_layout.addLayout(toolbar)
 
         # Single tree editor for COLUMN_1 (no tabs needed)
         self._proj_trees = []
@@ -1125,6 +1146,276 @@ class ProjectFlowApp(QMainWindow):
         main_layout.addWidget(tree, 1)  # Stretch to fill space
 
         return widget
+
+    def _scan_for_docs(self, root_path):
+        """Walk root_path and return (display_name, abs_path, app) for doc files."""
+        SKIP_DIRS = {
+            'node_modules', '.git', 'dist', 'build', '__pycache__',
+            'venv', '.venv', '.archive', 'target', '.next', 'out',
+            '.nuxt', '.svelte-kit', 'coverage', '.cache', '.tox',
+        }
+        DOC_DIRS = {'docs', 'documentation', 'manual', 'doc', 'wiki',
+                    'help', 'guides', 'reference', 'api', 'spec'}
+
+        is_npm = os.path.exists(os.path.join(root_path, 'package.json'))
+        results = []
+        seen = set()
+
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            rel = os.path.relpath(dirpath, root_path)
+            depth = 0 if rel == '.' else rel.count(os.sep) + 1
+            if depth > 4:
+                dirnames.clear()
+                continue
+
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if d not in SKIP_DIRS and not (d.startswith('.') and d != '.')
+            )
+
+            dir_name = os.path.basename(dirpath).lower()
+            in_doc_dir = depth == 0 or dir_name in DOC_DIRS
+
+            for filename in sorted(filenames):
+                stem, ext = os.path.splitext(filename)
+                ext = ext.lower()
+                if ext not in ('.md', '.html', '.htm'):
+                    continue
+                abs_path = os.path.join(dirpath, filename)
+                if abs_path in seen:
+                    continue
+                seen.add(abs_path)
+                if ext == '.md':
+                    app = 'default'
+                else:
+                    if is_npm and not in_doc_dir:
+                        continue
+                    app = 'firefox'
+                display = stem.replace('_', ' ').replace('-', ' ')
+                results.append((display, abs_path, app))
+
+        return results, is_npm
+
+    def _show_doc_scan_dialog(self):
+        """Scan a folder for documentation files and add selected ones to a Documentation category."""
+        scan_path = getattr(self, 'config_folder_path', None)
+        if not scan_path or not os.path.isdir(scan_path):
+            if hasattr(self, 'current_config_file') and self.current_config_file:
+                candidate = os.path.dirname(os.path.abspath(self.current_config_file))
+                if os.path.isdir(candidate):
+                    scan_path = candidate
+        if not scan_path or not os.path.isdir(scan_path):
+            chosen = QFileDialog.getExistingDirectory(self, "Select Project Folder to Scan", os.path.expanduser("~"))
+            if not chosen:
+                return
+            scan_path = chosen
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Scan for Documentation")
+        dlg.resize(580, 500)
+        dlg.setStyleSheet(f"background-color: {self.t('bg_primary')}; color: {self.t('fg_primary')};")
+
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.setContentsMargins(16, 16, 16, 12)
+        dlg_layout.setSpacing(10)
+
+        lbl_style = f"color: {self.t('fg_primary')};"
+        input_style = f"""
+            QLineEdit {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 5px;
+            }}
+        """
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 5px 10px;
+            }}
+            QPushButton:hover {{ background-color: {self.t('bg_button_hover')}; }}
+        """
+        list_style = f"""
+            QListWidget {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+            }}
+            QListWidget::item {{ padding: 4px 6px; border-bottom: 1px solid {self.t('border')}; }}
+            QListWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        # Folder row
+        folder_row = QHBoxLayout()
+        folder_row.setSpacing(6)
+        folder_lbl = QLabel("Folder:")
+        folder_lbl.setStyleSheet(lbl_style)
+        path_edit = QLineEdit(scan_path)
+        path_edit.setReadOnly(True)
+        path_edit.setStyleSheet(input_style)
+        change_btn = QPushButton("📂 Change")
+        change_btn.setStyleSheet(btn_style)
+        folder_row.addWidget(folder_lbl)
+        folder_row.addWidget(path_edit, 1)
+        folder_row.addWidget(change_btn)
+        dlg_layout.addLayout(folder_row)
+
+        # Select / deselect row
+        sel_row = QHBoxLayout()
+        sel_row.setSpacing(6)
+        sel_all_btn = QPushButton("Select All")
+        sel_all_btn.setStyleSheet(btn_style)
+        desel_all_btn = QPushButton("Deselect All")
+        desel_all_btn.setStyleSheet(btn_style)
+        sel_row.addWidget(sel_all_btn)
+        sel_row.addWidget(desel_all_btn)
+        sel_row.addStretch()
+        dlg_layout.addLayout(sel_row)
+
+        # File list
+        file_list = QListWidget()
+        file_list.setStyleSheet(list_style)
+        dlg_layout.addWidget(file_list, 1)
+
+        # Note/warning label
+        note_lbl = QLabel("")
+        note_lbl.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        note_lbl.setWordWrap(True)
+        dlg_layout.addWidget(note_lbl)
+
+        # Bottom buttons
+        btm_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(btn_style)
+        add_btn = QPushButton("Add to Documentation")
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: {self.t('bg_category_hover')}; }}
+            QPushButton:disabled {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_secondary')};
+            }}
+        """)
+        btm_row.addStretch()
+        btm_row.addWidget(cancel_btn)
+        btm_row.addWidget(add_btn)
+        dlg_layout.addLayout(btm_row)
+
+        # State
+        current_path = [scan_path]
+
+        def populate(path):
+            file_list.clear()
+            found, is_npm = self._scan_for_docs(path)
+
+            existing_paths = set()
+            for cat_dict in self.COLUMN_1:
+                if 'Documentation' in cat_dict:
+                    existing_paths = {item[1] for item in cat_dict['Documentation'] if len(item) > 1}
+                    break
+
+            for display, abs_path, app in found:
+                already = abs_path in existing_paths
+                rel = os.path.relpath(abs_path, path)
+                list_item = QListWidgetItem(f"{display}  —  {rel}")
+                list_item.setData(Qt.ItemDataRole.UserRole, (display, abs_path, app))
+                list_item.setFlags(list_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                list_item.setCheckState(Qt.CheckState.Unchecked if already else Qt.CheckState.Checked)
+                if already:
+                    list_item.setToolTip("Already in Documentation category")
+                    list_item.setForeground(QColor(self.t('fg_secondary')))
+                file_list.addItem(list_item)
+
+            if not found:
+                note_lbl.setText("No documentation files found in this folder.")
+                add_btn.setEnabled(False)
+            elif is_npm:
+                note_lbl.setText("npm project detected — HTML files outside docs/ folders are excluded.")
+                add_btn.setEnabled(True)
+            else:
+                note_lbl.setText("")
+                add_btn.setEnabled(True)
+
+        populate(scan_path)
+
+        def change_folder():
+            chosen = QFileDialog.getExistingDirectory(dlg, "Select Folder to Scan", current_path[0])
+            if chosen:
+                current_path[0] = chosen
+                path_edit.setText(chosen)
+                populate(chosen)
+
+        def select_all():
+            for i in range(file_list.count()):
+                file_list.item(i).setCheckState(Qt.CheckState.Checked)
+
+        def deselect_all():
+            for i in range(file_list.count()):
+                file_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+        def do_add():
+            selected = []
+            for i in range(file_list.count()):
+                li = file_list.item(i)
+                if li.checkState() == Qt.CheckState.Checked:
+                    selected.append(li.data(Qt.ItemDataRole.UserRole))
+            if not selected:
+                dlg.reject()
+                return
+
+            doc_items = None
+            for cat_dict in self.COLUMN_1:
+                if 'Documentation' in cat_dict:
+                    doc_items = cat_dict['Documentation']
+                    break
+            if doc_items is None:
+                self.COLUMN_1.append({'Documentation': []})
+                doc_items = self.COLUMN_1[-1]['Documentation']
+
+            existing_paths = {item[1] for item in doc_items if len(item) > 1}
+            added = 0
+            for name, path, app in selected:
+                if path not in existing_paths:
+                    doc_items.append([name, path, app])
+                    added += 1
+
+            self.config_folder_path = current_path[0]
+            if hasattr(self, '_proj_folder_path'):
+                self._proj_folder_path.setText(current_path[0])
+
+            self._save_project_config()
+
+            if hasattr(self, '_proj_trees') and self._proj_trees:
+                self._refresh_column_tree(self._proj_trees[0], 0)
+
+            dlg.accept()
+            QMessageBox.information(
+                self, "Done",
+                f"Added {added} item{'s' if added != 1 else ''} to Documentation."
+            )
+
+        change_btn.clicked.connect(change_folder)
+        sel_all_btn.clicked.connect(select_all)
+        desel_all_btn.clicked.connect(deselect_all)
+        cancel_btn.clicked.connect(dlg.reject)
+        add_btn.clicked.connect(do_add)
+
+        dlg.exec()
 
     def _create_project_defaults_tab(self):
         """Create the project defaults tab for viewer settings"""
