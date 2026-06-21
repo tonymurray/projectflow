@@ -294,6 +294,41 @@ class CategoryDropZone(QWidget):
         return len(self.item_widgets)
 
 
+class DragHandle(QLabel):
+    """A visible ⠿ drag handle for reordering launcher items in edit mode"""
+
+    def __init__(self, col_idx, category_name, item_idx, parent=None):
+        super().__init__("⠿", parent)
+        self.col_idx = col_idx
+        self.category_name = category_name
+        self.item_idx = item_idx
+        self.drag_start_pos = None
+        self.setFixedWidth(18)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("Drag to reorder")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or not self.drag_start_pos:
+            return
+        if (event.pos() - self.drag_start_pos).manhattanLength() < 10:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(f"item|{self.col_idx}|{self.category_name}|{self.item_idx}")
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def mouseReleaseEvent(self, event):
+        self.drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
+
 class ClickableSearchTitle(QWidget):
     """A title widget that transforms into a search input on click"""
 
@@ -4809,6 +4844,10 @@ function filterAliases(q) {{
             search_shortcut1.activated.connect(self.focus_project_search)
             search_shortcut2 = QShortcut(QKeySequence("F3"), self)
             search_shortcut2.activated.connect(self.focus_project_search)
+            edit_shortcut = QShortcut(QKeySequence("Ctrl+E"), self)
+            edit_shortcut.activated.connect(self.toggle_edit_mode)
+            save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+            save_shortcut.activated.connect(self.toggle_edit_mode)
             self._search_shortcuts_created = True
 
         title_bar.addStretch()
@@ -5706,6 +5745,14 @@ function filterAliases(q) {{
                     header_layout.addWidget(edit_btn)
 
                     if self.edit_mode:
+                        # Scan for Docs button
+                        scan_docs_btn = QPushButton("🔍 Scan Docs")
+                        scan_docs_btn.setMinimumHeight(self.d('header_btn_height'))
+                        scan_docs_btn.setToolTip("Scan project folder for documentation files")
+                        scan_docs_btn.setStyleSheet(green_btn_style)
+                        scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
+                        header_layout.addWidget(scan_docs_btn)
+
                         # Project Details button
                         advanced_btn = QPushButton("Project Details")
                         advanced_btn.setMaximumWidth(100)
@@ -5763,17 +5810,18 @@ function filterAliases(q) {{
                         )
                         category_header_layout.addWidget(category_name_edit, 1)
 
-                        delete_category_btn = QPushButton("🗑 Delete Category")
-                        delete_category_btn.setMaximumWidth(130)
+                        delete_category_btn = QPushButton("🗑")
+                        delete_category_btn.setFixedSize(30, 28)
+                        delete_category_btn.setToolTip(f"Delete category '{category_name}'")
                         delete_category_btn.setStyleSheet(f"""
                             QPushButton {{
-                                background-color: {self.t('bg_danger')};
-                                color: {self.t('fg_on_dark')};
-                                font-weight: bold;
+                                background-color: {self.t('bg_button')};
+                                color: {self.t('bg_danger')};
+                                border: 1px solid {self.t('border')};
                                 border-radius: 3px;
                             }}
                             QPushButton:hover {{
-                                background-color: {self.t('bg_danger_hover')};
+                                background-color: {self.t('bg_danger')};
                                 color: {self.t('fg_on_dark')};
                             }}
                         """)
@@ -5807,7 +5855,12 @@ function filterAliases(q) {{
                         title_btn.clicked.connect(
                             lambda checked=False, group_items=items: self.open_all_in_group(group_items)
                         )
-                        title_btn.setToolTip(f"Click to open all items in {category_name}")
+                        title_btn.setToolTip(f"Click to open all items in {category_name}\nRight-click to rename or delete")
+                        title_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                        title_btn.customContextMenuRequested.connect(
+                            lambda pos, btn=title_btn, ci=col_idx, cn=category_name:
+                                self._show_category_context_menu(btn, ci, cn)
+                        )
                         group_container_layout.addWidget(title_btn)
 
                     # Create a group box for the items (without a title since we have the button)
@@ -5830,13 +5883,11 @@ function filterAliases(q) {{
                     group_layout = QVBoxLayout()
                     group_layout.setSpacing(3)
 
-                    # Create drop zone for drag-and-drop reordering (only in view mode)
-                    category_drop_zone = None
-                    if not self.edit_mode:
-                        category_drop_zone = CategoryDropZone(self, col_idx, category_name)
-                        drop_zone_layout = QVBoxLayout(category_drop_zone)
-                        drop_zone_layout.setContentsMargins(0, 0, 0, 0)
-                        drop_zone_layout.setSpacing(3)
+                    # Create drop zone for drag-and-drop reordering (always active)
+                    category_drop_zone = CategoryDropZone(self, col_idx, category_name)
+                    drop_zone_layout = QVBoxLayout(category_drop_zone)
+                    drop_zone_layout.setContentsMargins(0, 0, 0, 0)
+                    drop_zone_layout.setSpacing(3)
 
                     # Add buttons for each item in this category
                     for idx, item in enumerate(items):
@@ -5848,19 +5899,12 @@ function filterAliases(q) {{
                             display_name, path, app = item
 
                         if self.edit_mode:
-                            # EDIT MODE: Show editable fields with controls
+                            # EDIT MODE: compact row with drag handle, launcher, edit + delete buttons
                             item_widget = self.create_edit_item_widget(
                                 col_idx, category_name, idx, display_name, path, app
                             )
-                            group_layout.addWidget(item_widget)
-
-                            # Add separator line between items with spacing
-                            group_layout.addSpacing(10)
-                            separator = QFrame()
-                            separator.setFrameShape(QFrame.Shape.HLine)
-                            separator.setStyleSheet(f"background-color: {self.t('border')}; max-height: 1px;")
-                            group_layout.addWidget(separator)
-                            group_layout.addSpacing(5)
+                            drop_zone_layout.addWidget(item_widget)
+                            category_drop_zone.add_item(item_widget, idx)
                         else:
                             # VIEW MODE: Show normal button
                             # Get app icon if available — either emoji text or SVG file
@@ -5889,6 +5933,7 @@ function filterAliases(q) {{
 
                             # Set tooltip showing the command and path (with drag hint)
                             btn.setToolTip(f"[{app}] {path}\n(Drag to reorder)")
+                            self._wire_launcher_context_menu(btn, col_idx, category_name, idx)
 
                             # Shared style for small icon buttons beside launchers
                             icon_btn_style = f"""
@@ -6156,20 +6201,20 @@ function filterAliases(q) {{
                                     drop_zone_layout.addWidget(btn)
                                     category_drop_zone.add_item(btn, idx)
 
-                    # Add the drop zone to group layout (in view mode)
-                    if not self.edit_mode and category_drop_zone:
-                        group_layout.addWidget(category_drop_zone)
+                    # Add the drop zone to group layout (always — drag works in both modes)
+                    group_layout.addWidget(category_drop_zone)
 
                     # Add "Add Launcher" button in edit mode
                     if self.edit_mode:
                         add_entry_btn = QPushButton("➕ Add Launcher")
+                        add_entry_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
                         add_entry_btn.setStyleSheet(f"""
                             QPushButton {{
                                 background-color: {self.t('bg_success')};
                                 color: {self.t('fg_on_dark')};
                                 border: 1px solid {self.t('bg_success_hover')};
                                 border-radius: 3px;
-                                padding: 5px;
+                                padding: 4px 8px;
                                 font-size: 10px;
                             }}
                             QPushButton:hover {{
@@ -6274,13 +6319,14 @@ function filterAliases(q) {{
             # Add "Add Category" button in edit mode
             if self.edit_mode:
                 add_category_btn = QPushButton("➕ Add Category")
+                add_category_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
                 add_category_btn.setStyleSheet(f"""
                     QPushButton {{
                         background-color: {self.t('bg_category')};
                         color: {self.t('fg_on_dark')};
                         border: 1px solid {self.t('bg_category_hover')};
                         border-radius: 3px;
-                        padding: 8px;
+                        padding: 5px 10px;
                         font-size: 11px;
                         font-weight: bold;
                     }}
@@ -6294,27 +6340,6 @@ function filterAliases(q) {{
                 )
                 column_layout.addWidget(add_category_btn)
 
-                # Add Save button at bottom in edit mode
-                save_btn = QPushButton("💾 Save")
-                save_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: {self.t('bg_success')};
-                        color: {self.t('fg_on_dark')};
-                        border: 1px solid {self.t('bg_success_hover')};
-                        border-radius: 3px;
-                        padding: 8px;
-                        font-size: 11px;
-                        font-weight: bold;
-                        margin-top: 10px;
-                    }}
-                    QPushButton:hover {{
-                        background-color: {self.t('bg_success_hover')};
-                        color: {self.t('fg_on_dark')};
-                    }}
-                """)
-                save_btn.setToolTip("Save and exit edit mode")
-                save_btn.clicked.connect(self.toggle_edit_mode)
-                column_layout.addWidget(save_btn)
 
             # Add stretch at bottom of column
             column_layout.addStretch()
@@ -7373,29 +7398,110 @@ function filterAliases(q) {{
         # Refresh the UI to show/hide edit controls
         self.refresh_projects()
 
-    def create_edit_item_widget(self, col_idx, category_name, item_idx, name, path, app):
-        """Create an editable widget for an item in edit mode"""
-        item_widget = QWidget()
-        main_layout = QVBoxLayout(item_widget)
-        main_layout.setContentsMargins(2, 2, 2, 2)
-        main_layout.setSpacing(3)
+    def _wire_launcher_context_menu(self, btn, col_idx, category_name, item_idx):
+        """Attach a right-click Edit/Delete menu to a launcher button."""
+        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        btn.customContextMenuRequested.connect(
+            lambda pos, b=btn, ci=col_idx, cn=category_name, ii=item_idx:
+                self._show_launcher_context_menu(b, ci, cn, ii)
+        )
 
-        # Shared style for edit fields
-        edit_style = f"""
-            QLineEdit, QPlainTextEdit {{
-                background-color: {self.t('bg_input')};
+    def _show_launcher_context_menu(self, btn, col_idx, category_name, item_idx):
+        """Show right-click Edit/Delete menu for a launcher."""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
-                border-radius: 3px;
                 padding: 4px;
             }}
-            QLineEdit:focus, QPlainTextEdit:focus {{
-                border: 1px solid {self.t('bg_category')};
+            QMenu::item {{ padding: 6px 20px; }}
+            QMenu::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
             }}
-        """
+        """)
+        edit_action = menu.addAction("✏️  Edit")
+        delete_action = menu.addAction("🗑  Delete")
 
-        # Button style for edit controls
-        edit_btn_style = f"""
+        action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if action == edit_action:
+            self._open_item_edit_dialog(col_idx, category_name, item_idx)
+        elif action == delete_action:
+            self.delete_item(col_idx, category_name, item_idx)
+
+    def _show_category_context_menu(self, btn, col_idx, category_name):
+        """Show right-click Rename/Delete menu for a category header."""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                padding: 4px;
+            }}
+            QMenu::item {{ padding: 6px 20px; }}
+            QMenu::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        rename_action = menu.addAction("✏️  Rename")
+        delete_action = menu.addAction("🗑  Delete")
+
+        action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if action == rename_action:
+            from PyQt6.QtWidgets import QInputDialog
+            new_name, ok = QInputDialog.getText(
+                self, "Rename Category", "New name:", text=category_name
+            )
+            if ok and new_name.strip() and new_name.strip() != category_name:
+                for cat_dict in self.COLUMN_1:
+                    if category_name in cat_dict:
+                        cat_dict[new_name.strip()] = cat_dict.pop(category_name)
+                        break
+                self.save_config_to_json()
+                self.refresh_projects()
+        elif action == delete_action:
+            self.delete_category(col_idx, category_name)
+
+    def create_edit_item_widget(self, col_idx, category_name, item_idx, name, path, app):
+        """Create a compact edit row: drag handle | launcher button | ✏️ | 🗑"""
+        item_widget = QWidget()
+        row = QHBoxLayout(item_widget)
+        row.setContentsMargins(2, 2, 2, 2)
+        row.setSpacing(4)
+
+        # Drag handle
+        handle = DragHandle(col_idx, category_name, item_idx)
+        handle.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 14px;")
+        row.addWidget(handle)
+
+        # Launcher button — same icon/style as view mode, still clickable
+        app_icon = ""
+        svg_icon_path = None
+        if app in self.APP_INFO:
+            icon_val = self.APP_INFO[app]["icon"]
+            if icon_val.endswith(('.svg', '.png', '.jpg')):
+                candidate = os.path.join(self.script_dir, icon_val)
+                if os.path.isfile(candidate):
+                    svg_icon_path = candidate
+            else:
+                app_icon = icon_val + " "
+
+        btn = DraggableItemButton(f"{app_icon}{name}", col_idx, category_name, item_idx)
+        btn.setMinimumHeight(30)
+        btn.setStyleSheet(self.get_item_button_style())
+        if svg_icon_path:
+            btn.setIcon(QIcon(svg_icon_path))
+            btn.setIconSize(QSize(16, 16))
+        btn.clicked.connect(lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a))
+        btn.setToolTip(f"[{app}] {path}")
+        self._wire_launcher_context_menu(btn, col_idx, category_name, item_idx)
+        row.addWidget(btn, 1)
+
+        ctrl_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
                 color: {self.t('fg_primary')};
@@ -7408,59 +7514,19 @@ function filterAliases(q) {{
             }}
         """
 
-        # Row 1: Name, App, Edit button, Up/Down/Delete buttons
-        row1_layout = QHBoxLayout()
-        row1_layout.setSpacing(5)
-
-        # Name field
-        name_edit = QLineEdit(name)
-        name_edit.setPlaceholderText("Name")
-        name_edit.setMinimumWidth(120)
-        name_edit.setMaximumWidth(200)
-        name_edit.setStyleSheet(edit_style)
-        row1_layout.addWidget(name_edit)
-
-        # App field
-        app_edit = QLineEdit(app)
-        app_edit.setPlaceholderText("App")
-        app_edit.setMinimumWidth(80)
-        app_edit.setMaximumWidth(120)
-        app_edit.setStyleSheet(edit_style)
-        row1_layout.addWidget(app_edit)
-
-        # Edit button (opens advanced dialog) - right next to app field
         edit_btn = QPushButton("✏️")
-        edit_btn.setFixedSize(30, 26)
-        edit_btn.setToolTip("Open edit dialog")
-        edit_btn.setStyleSheet(edit_btn_style)
-        row1_layout.addWidget(edit_btn)
-
-        row1_layout.addStretch()
-
-        # Up button
-        up_btn = QPushButton("↑")
-        up_btn.setFixedSize(30, 26)
-        up_btn.setToolTip("Move up")
-        up_btn.setStyleSheet(edit_btn_style)
-        up_btn.clicked.connect(
-            lambda: self.move_item_up(col_idx, category_name, item_idx)
+        edit_btn.setFixedSize(30, 28)
+        edit_btn.setToolTip("Edit launcher")
+        edit_btn.setStyleSheet(ctrl_style)
+        edit_btn.clicked.connect(
+            lambda checked=False, ci=col_idx, cn=category_name, ii=item_idx:
+                self._open_item_edit_dialog(ci, cn, ii)
         )
-        row1_layout.addWidget(up_btn)
+        row.addWidget(edit_btn)
 
-        # Down button
-        down_btn = QPushButton("↓")
-        down_btn.setFixedSize(30, 26)
-        down_btn.setToolTip("Move down")
-        down_btn.setStyleSheet(edit_btn_style)
-        down_btn.clicked.connect(
-            lambda: self.move_item_down(col_idx, category_name, item_idx)
-        )
-        row1_layout.addWidget(down_btn)
-
-        # Delete button
         del_btn = QPushButton("🗑")
-        del_btn.setFixedSize(30, 26)
-        del_btn.setToolTip("Delete item")
+        del_btn.setFixedSize(30, 28)
+        del_btn.setToolTip("Delete launcher")
         del_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
@@ -7474,131 +7540,28 @@ function filterAliases(q) {{
             }}
         """)
         del_btn.clicked.connect(
-            lambda: self.delete_item(col_idx, category_name, item_idx)
+            lambda checked=False, ci=col_idx, cn=category_name, ii=item_idx:
+                self.delete_item(ci, cn, ii)
         )
-        row1_layout.addWidget(del_btn)
-
-        main_layout.addLayout(row1_layout)
-
-        # Row 2: Path label and multi-line path field
-        row2_layout = QVBoxLayout()
-        row2_layout.setSpacing(2)
-
-        path_label = QLabel("Path(s)/Folders:")
-        path_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
-        row2_layout.addWidget(path_label)
-
-        path_edit = QPlainTextEdit(path)
-        path_edit.setPlaceholderText("File path, folder path, or URL (one per line for multiple)")
-        path_edit.setStyleSheet(edit_style)
-        path_edit.setMaximumHeight(60)
-        row2_layout.addWidget(path_edit)
-
-        main_layout.addLayout(row2_layout)
-
-        # Store references to the edit fields for saving later
-        item_widget.name_edit = name_edit
-        item_widget.path_edit = path_edit
-        item_widget.app_edit = app_edit
-        item_widget.col_idx = col_idx
-        item_widget.category_name = category_name
-        item_widget.item_idx = item_idx
-
-        # Connect edit button to open dialog
-        edit_btn.clicked.connect(
-            lambda: self._open_edit_dialog_from_inline(item_widget)
-        )
-
-        # Connect change handlers to auto-save
-        name_edit.textChanged.connect(lambda: self.save_item_changes(item_widget))
-        path_edit.textChanged.connect(lambda: self.save_item_changes(item_widget))
-        app_edit.textChanged.connect(lambda: self.save_item_changes(item_widget))
+        row.addWidget(del_btn)
 
         return item_widget
 
-    def _open_edit_dialog_from_inline(self, item_widget):
-        """Open the edit dialog from inline edit widget"""
-        item_data = {
-            "name": item_widget.name_edit.text(),
-            "path": item_widget.path_edit.toPlainText(),
-            "app": item_widget.app_edit.text(),
-            "index": item_widget.item_idx
-        }
-        self._show_item_edit_dialog(
-            item_widget.col_idx,
-            item_widget.category_name,
-            item_data,
-            tree=None,
-            inline_widget=item_widget
-        )
-
-    def save_item_changes(self, item_widget):
-        """Save changes from an edit widget back to the config data"""
-        col_idx = item_widget.col_idx
-        category_name = item_widget.category_name
-        item_idx = item_widget.item_idx
-
-        # Get the new values
-        new_name = item_widget.name_edit.text()
-        new_path = item_widget.path_edit.toPlainText()
-        new_app = item_widget.app_edit.text()
-
-        # Update the in-memory config
-        column = self.COLUMN_1
-        for category_dict in column:
-            if category_name in category_dict:
-                items = category_dict[category_name]
+    def _open_item_edit_dialog(self, col_idx, category_name, item_idx):
+        """Look up current item data from COLUMN_1 and open the edit dialog."""
+        for cat_dict in self.COLUMN_1:
+            if category_name in cat_dict:
+                items = cat_dict[category_name]
                 if item_idx < len(items):
-                    items[item_idx] = [new_name, new_path, new_app]
+                    item = items[item_idx]
+                    item_data = {
+                        "name": item[0] if len(item) > 0 else "",
+                        "path": item[1] if len(item) > 1 else "",
+                        "app": item[2] if len(item) > 2 else "",
+                        "index": item_idx,
+                    }
+                    self._show_item_edit_dialog(col_idx, category_name, item_data, tree=None, inline_widget=None)
                 break
-
-        # Auto-save to JSON file
-        self.save_config_to_json()
-
-        # Schedule alias file update after the user stops typing (debounced).
-        # Writing on every keystroke would create a spurious alias entry per partial name.
-        if new_app.strip() == "alias" and ' ' in new_path.strip():
-            _alias_name, _, _alias_cmd = new_path.partition(' ')
-            if _alias_name.strip() and _alias_cmd.strip():
-                self._pending_alias_write = (_alias_name.strip(), _alias_cmd.strip())
-                self._alias_write_timer.start()  # restart countdown on each keystroke
-
-    def move_item_up(self, col_idx, category_name, item_idx):
-        """Move an item up in the list"""
-        if item_idx == 0:
-            return  # Already at top
-
-        # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
-
-        column = self.COLUMN_1
-        for category_dict in column:
-            if category_name in category_dict:
-                items = category_dict[category_name]
-                # Swap with previous item
-                items[item_idx], items[item_idx - 1] = items[item_idx - 1], items[item_idx]
-                break
-
-        self.save_config_to_json()
-        self.refresh_projects(restore_scroll_pos=scroll_pos)
-
-    def move_item_down(self, col_idx, category_name, item_idx):
-        """Move an item down in the list"""
-        # Save scroll position
-        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
-
-        column = self.COLUMN_1
-        for category_dict in column:
-            if category_name in category_dict:
-                items = category_dict[category_name]
-                if item_idx >= len(items) - 1:
-                    return  # Already at bottom
-                # Swap with next item
-                items[item_idx], items[item_idx + 1] = items[item_idx + 1], items[item_idx]
-                break
-
-        self.save_config_to_json()
-        self.refresh_projects(restore_scroll_pos=scroll_pos)
 
     def delete_item(self, col_idx, category_name, item_idx):
         """Delete an item from the config"""
