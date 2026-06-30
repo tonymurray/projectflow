@@ -3244,8 +3244,8 @@ StartupNotify=true
             # Add to front of list
             self.settings["recent_projects"].insert(0, config_path)
 
-            # Keep only 10 most recent
-            self.settings["recent_projects"] = self.settings["recent_projects"][:10]
+            # Keep up to 100 so we have usage order for all projects
+            self.settings["recent_projects"] = self.settings["recent_projects"][:100]
 
         self.save_settings()
 
@@ -4865,10 +4865,12 @@ function filterAliases(q) {{
             self.title_search.enter_search_mode()
 
     def create_projects_section(self, parent_layout):
-        """Create unified projects section with toggle between recent and alphabetical modes"""
-        # Initialize mode state
+        """Create unified projects section with toggle between recent, alphabetical, pinned modes"""
+        # Initialize mode state (persisted across sessions)
         if not hasattr(self, 'projects_mode'):
-            self.projects_mode = 'recent'  # 'recent' or 'alphabetical'
+            self.projects_mode = self.settings.get('projects_mode', 'recent')
+        if not hasattr(self, 'projects_sort_reverse'):
+            self.projects_sort_reverse = False
 
         # Header with lines on either side
         header_row = QHBoxLayout()
@@ -4882,7 +4884,8 @@ function filterAliases(q) {{
         header_row.addWidget(left_line, 1)
 
         # Header label (changes based on mode)
-        self.projects_header_label = QLabel("Recent Projects" if self.projects_mode == 'recent' else "Main Projects")
+        mode_labels = {'recent': 'Recent Projects', 'alphabetical': 'Main Projects', 'pinned': 'Pinned Projects', 'folder': 'Folder Projects', 'archive': 'Archived Projects'}
+        self.projects_header_label = QLabel(mode_labels.get(self.projects_mode, 'Recent Projects'))
         self.projects_header_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         header_row.addWidget(self.projects_header_label)
 
@@ -4892,27 +4895,7 @@ function filterAliases(q) {{
         right_line.setFixedHeight(1)
         header_row.addWidget(right_line, 1)
 
-        # Reset button (only visible in recent mode when pinned projects exist)
-        self.reset_btn = QPushButton("↺")
-        self.reset_btn.setFixedWidth(20)
-        self.reset_btn.setFixedHeight(20)
-        self.reset_btn.setToolTip("Reset to recent order (clear pins)")
-        self.reset_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {self.t('fg_muted')};
-                border: none;
-                font-size: 14px;
-            }}
-            QPushButton:hover {{
-                color: {self.t('bg_danger')};
-            }}
-        """)
-        self.reset_btn.clicked.connect(self.reset_pinned_projects)
-        self.reset_btn.setVisible(False)  # Will be shown if pinned projects exist
-        header_row.addWidget(self.reset_btn)
-
-        # Style for toggle buttons
+        # Styles for tab buttons (always visible) and toggle buttons (show/hide)
         self._toggle_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_secondary')};
@@ -4927,29 +4910,43 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """
-        toggle_btn_style = self._toggle_btn_style
+        self._tab_active_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_navy')};
+                color: white;
+                border: none;
+                border-radius: 3px;
+                font-size: 11px;
+                padding: 3px 8px;
+            }}
+        """
 
-        # Recent Projects toggle button
-        self.recent_projects_btn = QPushButton("Recent")
-        self.recent_projects_btn.setToolTip("Show recent projects")
-        self.recent_projects_btn.setStyleSheet(toggle_btn_style)
+        # 🕐 and A-Z are always-visible tabs; clicking active tab reverses sort
+        self.recent_projects_btn = QPushButton()
         self.recent_projects_btn.clicked.connect(lambda: self.switch_projects_mode('recent'))
-        self.recent_projects_btn.setVisible(False)  # Hidden when in recent mode
         header_row.addWidget(self.recent_projects_btn)
 
-        # Main Projects toggle button
-        self.main_projects_btn = QPushButton("All projects")
-        self.main_projects_btn.setToolTip("Show all projects from projects/ folder")
-        self.main_projects_btn.setStyleSheet(toggle_btn_style)
+        self.main_projects_btn = QPushButton()
         self.main_projects_btn.clicked.connect(lambda: self.switch_projects_mode('alphabetical'))
         header_row.addWidget(self.main_projects_btn)
 
-        # Archive toggle button
+        # Pinned Projects toggle button (show/hide)
+        self.pinned_projects_btn = QPushButton("📌")
+        self.pinned_projects_btn.setToolTip("Show pinned projects")
+        self.pinned_projects_btn.setStyleSheet(self._toggle_btn_style)
+        self.pinned_projects_btn.clicked.connect(lambda: self.switch_projects_mode('pinned'))
+        self.pinned_projects_btn.setVisible(self.projects_mode != 'pinned')
+        header_row.addWidget(self.pinned_projects_btn)
+
+        # Archive toggle button (show/hide)
         self.archive_projects_btn = QPushButton("Archive")
         self.archive_projects_btn.setToolTip("Show archived projects")
-        self.archive_projects_btn.setStyleSheet(toggle_btn_style)
+        self.archive_projects_btn.setStyleSheet(self._toggle_btn_style)
         self.archive_projects_btn.clicked.connect(lambda: self.switch_projects_mode('archive'))
+        self.archive_projects_btn.setVisible(self.projects_mode != 'archive')
         header_row.addWidget(self.archive_projects_btn)
+
+        self._update_project_tab_buttons()
 
         parent_layout.addLayout(header_row)
 
@@ -4970,36 +4967,44 @@ function filterAliases(q) {{
         self.populate_projects()
 
     def switch_projects_mode(self, mode):
-        """Switch to a specific project mode (recent, alphabetical, folder, or archive)"""
-        self.projects_mode = mode
+        """Switch project mode; clicking the active tab reverses sort order"""
+        if mode == self.projects_mode and mode in ('recent', 'alphabetical'):
+            self.projects_sort_reverse = not self.projects_sort_reverse
+        else:
+            self.projects_mode = mode
+            self.projects_sort_reverse = False
+            self.settings['projects_mode'] = mode
+            self.save_settings()
 
-        # Update header label and button visibility
-        if mode == 'recent':
-            self.projects_header_label.setText("Recent Projects")
-            self.reset_btn.setVisible(len(self.settings.get("pinned_projects", [])) > 0)
-            self.recent_projects_btn.setVisible(False)
-            self.main_projects_btn.setVisible(True)
-            self.archive_projects_btn.setVisible(True)
-        elif mode == 'alphabetical':
-            self.projects_header_label.setText("Main Projects")
-            self.reset_btn.setVisible(False)
-            self.recent_projects_btn.setVisible(True)
-            self.main_projects_btn.setVisible(False)
-            self.archive_projects_btn.setVisible(True)
-        elif mode == 'folder':
-            self.projects_header_label.setText("Folder Projects")
-            self.reset_btn.setVisible(False)
-            self.recent_projects_btn.setVisible(True)
-            self.main_projects_btn.setVisible(True)
-            self.archive_projects_btn.setVisible(True)
-        elif mode == 'archive':
-            self.projects_header_label.setText("Archived Projects")
-            self.reset_btn.setVisible(False)
-            self.recent_projects_btn.setVisible(True)
-            self.main_projects_btn.setVisible(True)
-            self.archive_projects_btn.setVisible(False)
+        mode_labels = {'recent': 'Recent Projects', 'alphabetical': 'Main Projects', 'pinned': 'Pinned Projects', 'folder': 'Folder Projects', 'archive': 'Archived Projects'}
+        self.projects_header_label.setText(mode_labels.get(self.projects_mode, 'Recent Projects'))
+
+        self._update_project_tab_buttons()
+        self.pinned_projects_btn.setVisible(self.projects_mode != 'pinned')
+        self.archive_projects_btn.setVisible(self.projects_mode != 'archive')
 
         self.populate_projects()
+
+    def _update_project_tab_buttons(self):
+        """Update 🕐 and A-Z tab labels and styles based on current mode and sort direction"""
+        clock_label = "🕐↑" if (self.projects_mode == 'recent' and self.projects_sort_reverse) else "🕐"
+        az_label = "Z–A" if (self.projects_mode == 'alphabetical' and self.projects_sort_reverse) else "A–Z"
+
+        self.recent_projects_btn.setText(clock_label)
+        self.recent_projects_btn.setToolTip(
+            "Oldest first — click for newest first" if (self.projects_mode == 'recent' and self.projects_sort_reverse)
+            else "Most recently used first — click to reverse"
+        )
+        self.main_projects_btn.setText(az_label)
+        self.main_projects_btn.setToolTip(
+            "Z→A — click for A→Z" if (self.projects_mode == 'alphabetical' and self.projects_sort_reverse)
+            else "A→Z — click to reverse"
+        )
+
+        active = self._tab_active_style
+        inactive = self._toggle_btn_style
+        self.recent_projects_btn.setStyleSheet(active if self.projects_mode == 'recent' else inactive)
+        self.main_projects_btn.setStyleSheet(active if self.projects_mode == 'alphabetical' else inactive)
 
     def populate_projects(self):
         """Populate projects based on current mode (recent or alphabetical)"""
@@ -5018,6 +5023,8 @@ function filterAliases(q) {{
             self._populate_recent_projects()
         elif self.projects_mode == 'alphabetical':
             self._populate_alphabetical_projects()
+        elif self.projects_mode == 'pinned':
+            self._populate_pinned_projects()
         elif self.projects_mode == 'folder':
             self._populate_folder_projects()
         elif self.projects_mode == 'archive':
@@ -5109,41 +5116,77 @@ function filterAliases(q) {{
         self.populate_projects()
 
     def _populate_recent_projects(self):
-        """Populate with recent/pinned projects (drag-drop enabled)"""
+        """Populate all projects sorted by most recently used, falling back to file mtime"""
         recent_projects = self.settings.get("recent_projects", [])
-        pinned_projects = self.settings.get("pinned_projects", [])
-
-        # Filter to only existing non-archived files
         recent_projects = [c for c in recent_projects if os.path.exists(c) and '/.archive/' not in c]
-        pinned_projects = [c for c in pinned_projects if os.path.exists(c) and '/.archive/' not in c]
 
-        # Show/hide reset button based on pinned projects
-        self.reset_btn.setVisible(len(pinned_projects) > 0)
+        # Add remaining projects from projects/ dir not already tracked, sorted by mtime
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        if os.path.exists(configs_dir):
+            untracked = []
+            for f in os.listdir(configs_dir):
+                if f.endswith('.json') and not f.startswith('.'):
+                    full_path = os.path.join(configs_dir, f)
+                    if full_path not in recent_projects:
+                        untracked.append((full_path, os.path.getmtime(full_path)))
+            untracked.sort(key=lambda x: x[1], reverse=True)
+            recent_projects.extend(p for p, _ in untracked)
 
-        # Build combined list: pinned first, then recent (excluding pinned)
-        recent_only = [c for c in recent_projects if c not in pinned_projects]
-        combined_projects = pinned_projects + recent_only
-
-        # Backfill from available projects if we have fewer than 10
-        if len(combined_projects) < 10:
-            configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
-            if os.path.exists(configs_dir):
-                available = []
-                for f in os.listdir(configs_dir):
-                    if f.endswith('.json') and not f.startswith('.'):
-                        full_path = os.path.join(configs_dir, f)
-                        available.append((full_path, os.path.getmtime(full_path)))
-                available.sort(key=lambda x: x[1], reverse=True)
-                for config_path, _ in available:
-                    if config_path not in combined_projects:
-                        combined_projects.append(config_path)
-                        if len(combined_projects) >= 10:
-                            break
-
-        if not combined_projects:
+        if not recent_projects:
             return
 
-        # Create horizontal layout with ConfigBarWidget for drag-drop
+        if self.projects_sort_reverse:
+            recent_projects = list(reversed(recent_projects))
+
+        max_per_row = 10
+        grid = QGridLayout()
+        grid.setSpacing(5)
+        grid.setContentsMargins(0, 0, 0, 0)
+
+        for idx, config_path in enumerate(recent_projects):
+            row = idx // max_per_row
+            col = idx % max_per_row
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            grid.addWidget(btn_container, row, col)
+
+        for col in range(max_per_row):
+            grid.setColumnStretch(col, 1)
+
+        self.projects_layout.addLayout(grid)
+        self._append_folder_projects_row()
+
+    def _populate_pinned_projects(self):
+        """Populate with pinned projects (drag-drop to reorder, right-click to unpin)"""
+        pinned_projects = self.settings.get("pinned_projects", [])
+        pinned_projects = [c for c in pinned_projects if os.path.exists(c) and '/.archive/' not in c]
+
+        if not pinned_projects:
+            hint = QLabel("Right-click any project in Recent or A–Z to pin it here.")
+            hint.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 8px 0;")
+            self.projects_layout.addWidget(hint)
+            return
+
+        # Header row with reset button
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 4)
+        header_row.addStretch()
+        reset_btn = QPushButton("↺ Clear pins")
+        reset_btn.setToolTip("Remove all pins")
+        reset_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {self.t('fg_muted')};
+                border: none;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                color: {self.t('bg_danger')};
+            }}
+        """)
+        reset_btn.clicked.connect(self.reset_pinned_projects)
+        header_row.addWidget(reset_btn)
+        self.projects_layout.addLayout(header_row)
+
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(5)
         buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -5153,20 +5196,16 @@ function filterAliases(q) {{
         config_bar_layout.setContentsMargins(0, 0, 0, 0)
         config_bar_layout.setSpacing(5)
 
-        for config_path in combined_projects[:10]:
-            is_pinned = config_path in pinned_projects
-            btn_container = self._create_config_button(config_path, is_pinned, draggable=True)
+        for config_path in pinned_projects:
+            btn_container = self._create_config_button(config_path, is_pinned=True, draggable=True)
             config_bar_layout.addWidget(btn_container)
-            self.config_bar_widget.add_button(btn_container, config_path, is_pinned)
+            self.config_bar_widget.add_button(btn_container, config_path, is_pinned=True)
 
         buttons_layout.addWidget(self.config_bar_widget)
-
-        # Left-align if fewer than 10 projects, otherwise let them stretch to fill
-        if len(combined_projects) < 10:
+        if len(pinned_projects) < 10:
             buttons_layout.addStretch()
 
         self.projects_layout.addLayout(buttons_layout)
-        self._append_folder_projects_row()
 
     def _populate_alphabetical_projects(self):
         """Populate with all projects alphabetically in a grid of 10 columns"""
@@ -5181,7 +5220,7 @@ function filterAliases(q) {{
             if f.endswith('.json'):
                 full_path = os.path.join(configs_dir, f)
                 config_files.append(full_path)
-        config_files.sort(key=lambda x: os.path.basename(x).lower())
+        config_files.sort(key=lambda x: os.path.basename(x).lower(), reverse=self.projects_sort_reverse)
 
         if not config_files:
             return
@@ -5323,6 +5362,15 @@ function filterAliases(q) {{
             delete_action = menu.addAction("Delete permanently")
             delete_action.triggered.connect(lambda: self._delete_project_permanently(config_path))
         else:
+            pinned = self.settings.get("pinned_projects", [])
+            if self.projects_mode == 'pinned':
+                unpin_action = menu.addAction("Unpin")
+                unpin_action.triggered.connect(lambda: self._unpin_project(config_path))
+                menu.addSeparator()
+            elif config_path not in pinned:
+                pin_action = menu.addAction("📌 Pin")
+                pin_action.triggered.connect(lambda: self._pin_project(config_path))
+                menu.addSeparator()
             archive_action = menu.addAction("Archive project")
             archive_action.triggered.connect(lambda: self.archive_project(config_path))
 
@@ -5517,7 +5565,7 @@ function filterAliases(q) {{
 
         btn.clicked.connect(lambda checked=False, path=config_path: self.switch_to_config(path))
         if draggable:
-            tooltip = f"{'📌 ' if is_pinned else ''}{config_path}\n(Drag to reorder/pin)"
+            tooltip = f"📌 {config_path}\n(Drag to reorder)"
         else:
             tooltip = f"Switch to {display_name}"
         btn.setToolTip(tooltip)
@@ -5577,36 +5625,36 @@ function filterAliases(q) {{
         return btn_container
 
     def handle_config_drop(self, dragged_path, drop_index):
-        """Handle a config being dropped at a new position"""
-        pinned_projects = self.settings.get("pinned_projects", [])
-        recent_projects = self.settings.get("recent_projects", [])
-
-        # Filter to existing files
-        pinned_projects = [c for c in pinned_projects if os.path.exists(c)]
-        recent_only = [c for c in recent_projects if c not in pinned_projects and os.path.exists(c)]
-
-        # Remove dragged item from both lists
-        if dragged_path in pinned_projects:
-            pinned_projects.remove(dragged_path)
-        if dragged_path in recent_only:
-            recent_only.remove(dragged_path)
-
-        # Insert at new position - anything dropped becomes pinned
-        # If dropped in pinned area (index < len(pinned)), insert there
-        # Otherwise append to pinned (dragging pins it)
-        if drop_index <= len(pinned_projects):
-            pinned_projects.insert(drop_index, dragged_path)
-        else:
-            # Dropped after pinned area - still pin it at the end of pinned
-            pinned_projects.append(dragged_path)
-
-        # Save and refresh
-        self.settings["pinned_projects"] = pinned_projects
+        """Handle a pinned config being reordered via drag-drop"""
+        pinned = self.settings.get("pinned_projects", [])
+        pinned = [c for c in pinned if os.path.exists(c)]
+        if dragged_path in pinned:
+            pinned.remove(dragged_path)
+        pinned.insert(min(drop_index, len(pinned)), dragged_path)
+        self.settings["pinned_projects"] = pinned
         self.save_settings()
         self.refresh_projects()
 
+    def _pin_project(self, config_path):
+        """Add a project to the pinned list"""
+        pinned = self.settings.get("pinned_projects", [])
+        if config_path not in pinned:
+            pinned.append(config_path)
+            self.settings["pinned_projects"] = pinned
+            self.save_settings()
+            self.refresh_projects()
+
+    def _unpin_project(self, config_path):
+        """Remove a project from the pinned list"""
+        pinned = self.settings.get("pinned_projects", [])
+        if config_path in pinned:
+            pinned.remove(config_path)
+            self.settings["pinned_projects"] = pinned
+            self.save_settings()
+            self.refresh_projects()
+
     def reset_pinned_projects(self):
-        """Clear all pinned configs, reverting to recent order"""
+        """Clear all pinned configs"""
         self.settings["pinned_projects"] = []
         self.save_settings()
         self.refresh_projects()
