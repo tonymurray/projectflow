@@ -9,6 +9,6 @@ pkgs.mkShell {
       qtconsole
       ipykernel
     ]))
-    xorg.xcbutilcursor
+    libxcb-cursor
   ];
 }
