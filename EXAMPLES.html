@@ -393,10 +393,11 @@ fi</div>
         <span class="handler-name">Tail Log</span>
         <span class="handler-key">tail_log</span>
     </div>
-    <div class="description">Opens a terminal and tails debug.log in the specified directory.</div>
-    <div class="example-label">Example:</div>
+    <div class="description">Opens a terminal and tails a log file. Pass a directory to auto-detect the log file (prefers <code>debug.log</code>, falls back to <code>error.log</code>; waits for <code>debug.log</code> if neither exists). Pass a full path to tail a specific file.</div>
+    <div class="example-label">Examples:</div>
     <div class="example-code">["Watch Logs", "~/projects/myapp", "tail_log"]</div>
-    <span class="type-badge type-simple">Simple</span>
+    <div class="example-code">["Watch Error Log", "~/somewhere/error.log", "tail_log"]</div>
+    <span class="type-badge type-complex">Complex</span>
 </div>
 
 <div class="card">

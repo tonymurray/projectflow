@@ -111,16 +111,6 @@ LAUNCH_HANDLERS = {
     # Note: "terminal" handler is now handled dynamically in projectflow.py
     # to use the configured terminal emulator
 
-    # Tail a debug.log file in terminal
-    "tail_log": {
-        "type": "shell",
-        "command": "cd {path} && tail -n 500 -f debug.log",
-        "terminal": True,
-        "hold": True,
-        "description": "Tail debug.log in terminal",
-        "example": "~/projects/myapp"
-    },
-
     # Tail a debug.log file in kitty (--hold keeps window open after Ctrl+C)
     "kitty_tail": {
         "command": ["kitty", "--directory", "{path}", "--hold", "tail", "-n", "500", "-f", "debug.log"],
@@ -152,6 +142,44 @@ LAUNCH_HANDLERS = {
 # =============================================================================
 # For handlers that need Python logic beyond simple command templates.
 # Each function receives (path, expanded_path) and should return a status message.
+
+def handle_tail_log(path, expanded_path):
+    """
+    Tail a log file in terminal.
+
+    Usage in config:
+        ["Tail Log", "~/projects/myapp", "tail_log"]         -> tails debug.log (or error.log)
+        ["Tail Log", "~/somewhere/error.log", "tail_log"]    -> tails that specific file
+
+    If given a directory, prefers debug.log; falls back to error.log if debug.log
+    is absent; defaults to debug.log if neither exists (tail -f will wait for it).
+    If given a file path directly, tails that file.
+    """
+    log_path = os.path.expanduser(expanded_path)
+
+    if os.path.isfile(log_path):
+        log_file = log_path
+    elif os.path.isdir(log_path):
+        debug_log = os.path.join(log_path, 'debug.log')
+        error_log = os.path.join(log_path, 'error.log')
+        if os.path.exists(debug_log):
+            log_file = debug_log
+        elif os.path.exists(error_log):
+            log_file = error_log
+        else:
+            log_file = debug_log
+    else:
+        # Path doesn't exist yet — treat as file if it has an extension, else dir/debug.log
+        if os.path.splitext(log_path)[1]:
+            log_file = log_path
+        else:
+            log_file = os.path.join(log_path, 'debug.log')
+
+    shell_cmd = f"tail -n 500 -f {shlex.quote(log_file)}"
+    cmd = _build_terminal_shell_cmd(shell_cmd, hold=True)
+    subprocess.Popen(cmd, start_new_session=True)
+    return f"Tailing {log_file}"
+
 
 def handle_ssh_session(path, expanded_path):
     """
@@ -556,6 +584,10 @@ def handle_rsync_backup_id_port(path, expanded_path):
 # Metadata for complex handlers (descriptions and examples for the UI)
 
 COMPLEX_HANDLER_INFO = {
+    "tail_log": {
+        "description": "Tail a log file (or debug.log/error.log in a directory)",
+        "example": "~/projects/myapp  or  ~/somewhere/error.log"
+    },
     "ssh_session": {
         "description": "SSH with optional path and command",
         "example": "user@host /var/www ./go.sh"
@@ -601,6 +633,7 @@ COMPLEX_HANDLER_INFO = {
 
 # Register complex handlers
 COMPLEX_HANDLERS = {
+    "tail_log": handle_tail_log,
     "ssh_session": handle_ssh_session,
     "ssh_cd_npm": handle_ssh_session,  # Alias - describes the SSH + cd + npm functionality
     "terminal_cmd": handle_terminal_cmd,

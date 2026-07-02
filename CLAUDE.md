@@ -285,7 +285,7 @@ Launch handlers define how files, folders, and URLs are opened in various applic
 These are defined in `LAUNCH_HANDLERS` dict in `launch_handlers.py`:
 - `firefox` - Open URL in Firefox new window
 - `chrome` - Open URL in Chrome via Flatpak
-- `tail_log` - Tail debug.log in terminal
+- `tail_log` - Tail a log file; pass a directory (auto-detects `debug.log` or `error.log`) or a specific file path
 - `rsync_backup` - Run rsync with common excludes
 
 ### Custom Handlers (from launch_handlers_custom.json)

@@ -19,10 +19,10 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter
+    QSplitter, QSpinBox
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray
-from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter
+from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
 import re
 import urllib.request
 import urllib.error
@@ -142,6 +142,17 @@ class ConfigBarWidget(QWidget):
         self.app = app
         self.setAcceptDrops(True)
         self.buttons = []  # List of (button_container, config_path, is_pinned)
+        self._reflow_fn = None  # set by _populate_pinned_projects to sync cell widths
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._reflow_fn:
+            self._reflow_fn(self.width())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._reflow_fn and event.size().width() != event.oldSize().width():
+            self._reflow_fn(event.size().width())
 
     def add_button(self, btn_container, config_path, is_pinned):
         self.buttons.append((btn_container, config_path, is_pinned))
@@ -176,6 +187,73 @@ class ConfigBarWidget(QWidget):
             if pos.x() < btn_rect.center().x():
                 return i
         return len(self.buttons)
+
+
+class FlowWidget(QWidget):
+    """Responsive grid widget: target_cols per row, all cells same width stretching to fill.
+    Narrows to fewer columns before cells shrink below min_cell_w. Re-elides button text on resize."""
+
+    _ITEM_H = 28  # matches QPushButton min height 26 + layout margins
+
+    def __init__(self, parent=None, target_cols=10, min_cell_w=80, hspacing=5, vspacing=5):
+        super().__init__(parent)
+        self._widgets = []
+        self._target_cols = target_cols
+        self._min_cell_w = min_cell_w
+        self._hspacing = hspacing
+        self._vspacing = vspacing
+        self._reflowing = False
+
+    def addWidget(self, widget):
+        widget.setParent(self)
+        widget.show()
+        self._widgets.append(widget)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._reflow(self.width() or 800)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self._reflow(event.size().width())
+
+    def _reflow(self, width):
+        if self._reflowing or width <= 0 or not self._widgets:
+            return
+        self._reflowing = True
+        try:
+            n = len(self._widgets)
+            # cell_w is always based on target_cols so all lists use the same cell size.
+            # Only fall back to fitting fewer cols when the window is genuinely too narrow.
+            max_cols = max(1, (width + self._hspacing) // (self._min_cell_w + self._hspacing))
+            cols = min(n, self._target_cols, max_cols)
+            target_cell_w = (width - (self._target_cols - 1) * self._hspacing) // self._target_cols
+            if target_cell_w >= self._min_cell_w:
+                cell_w = target_cell_w          # normal: uniform ~10% width, items left-align
+            else:
+                cell_w = (width - (cols - 1) * self._hspacing) // cols  # narrow: fill the row
+
+            fm = QFontMetrics(QApplication.font())
+            for i, w in enumerate(self._widgets):
+                col = i % cols
+                row = i // cols
+                w.setFixedWidth(cell_w)
+                w.setGeometry(col * (cell_w + self._hspacing),
+                              row * (self._ITEM_H + self._vspacing),
+                              cell_w, self._ITEM_H)
+                # Re-elide the main button label when cell width changes
+                if hasattr(w, '_main_btn') and hasattr(w, '_full_text') and hasattr(w, '_side_w'):
+                    label_w = max(10, cell_w - w._side_w - 18)  # 18px = padding + border
+                    w._main_btn.setText(fm.elidedText(w._full_text, Qt.TextElideMode.ElideRight, label_w))
+
+            rows = (n + cols - 1) // cols
+            self.setFixedHeight(max(1, rows * self._ITEM_H + (rows - 1) * self._vspacing))
+        finally:
+            self._reflowing = False
+
+    def sizeHint(self):
+        return QSize(self.minimumWidth(), self.minimumHeight())
 
 
 class DraggableItemButton(QPushButton):
@@ -1079,6 +1157,44 @@ class ProjectFlowApp(QMainWindow):
         self._settings_browser_new_tab.setChecked(self.settings.get('browser_new_tab', True))
         self._settings_browser_new_tab.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(browser_label, self._settings_browser_new_tab)
+
+        # Projects per row
+        per_row_label = QLabel("Projects per row:")
+        per_row_label.setStyleSheet(label_style)
+        self._settings_projects_per_row = QSpinBox()
+        self._settings_projects_per_row.setRange(3, 20)
+        self._settings_projects_per_row.setValue(self.settings.get("projects_per_row", 10))
+        self._settings_projects_per_row.setToolTip("Number of project buttons per row in all list views (default: 10)")
+        self._settings_projects_per_row.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+        """)
+        layout.addRow(per_row_label, self._settings_projects_per_row)
+
+        # Project button spacing
+        spacing_label = QLabel("Button spacing:")
+        spacing_label.setStyleSheet(label_style)
+        self._settings_projects_spacing = QSpinBox()
+        self._settings_projects_spacing.setRange(2, 15)
+        self._settings_projects_spacing.setValue(self.settings.get("projects_spacing", 5))
+        self._settings_projects_spacing.setToolTip("Gap between project buttons in pixels (default: 5)")
+        self._settings_projects_spacing.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+        """)
+        layout.addRow(spacing_label, self._settings_projects_spacing)
 
         # Joplin Token
         joplin_label = QLabel("Joplin Token:")
@@ -2951,6 +3067,8 @@ class ProjectFlowApp(QMainWindow):
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
+            self.settings["projects_per_row"] = self._settings_projects_per_row.value()
+            self.settings["projects_spacing"] = self._settings_projects_spacing.value()
 
             default_app = self._settings_default_app.currentText().strip()
             if default_app:
@@ -4870,12 +4988,74 @@ function filterAliases(q) {{
         if not hasattr(self, 'projects_mode'):
             self.projects_mode = self.settings.get('projects_mode', 'recent')
         if not hasattr(self, 'projects_sort_reverse'):
-            self.projects_sort_reverse = False
+            self.projects_sort_reverse = self.settings.get('projects_sort_reverse', False)
+        if not hasattr(self, 'recent_compact'):
+            self.recent_compact = self.settings.get('recent_compact', True)
+        if not hasattr(self, 'pinned_compact'):
+            self.pinned_compact = self.settings.get('pinned_compact', True)
 
-        # Header with lines on either side
+        # Shared button styles — same sizing for all three left tab buttons
+        self._toggle_btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_muted')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                font-size: 11px;
+                padding: 3px 8px;
+                min-height: 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+        self._tab_active_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-bottom: 2px solid {self.t('bg_category')};
+                border-radius: 3px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 3px 8px;
+                min-height: 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        # Layout: [🕐] [📌] [A–Z]  [left_line] [title] [right_line]  [Archive]
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(15)
+        header_row.setSpacing(4)
+
+        # Left group: three mode buttons
+        self.recent_projects_btn = QPushButton()
+        self.recent_projects_btn.clicked.connect(lambda: self.switch_projects_mode('recent'))
+        header_row.addWidget(self.recent_projects_btn)
+
+        self.pinned_projects_btn = QPushButton()
+        self.pinned_projects_btn.clicked.connect(lambda: self.switch_projects_mode('pinned'))
+        header_row.addWidget(self.pinned_projects_btn)
+
+        self.main_projects_btn = QPushButton()
+        self.main_projects_btn.clicked.connect(lambda: self.switch_projects_mode('alphabetical'))
+        header_row.addWidget(self.main_projects_btn)
+
+        self.folder_projects_btn = QPushButton()
+        _folder_icon = QIcon.fromTheme("folder")
+        if _folder_icon.isNull():
+            _folder_icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        self.folder_projects_btn.setIcon(_folder_icon)
+        self.folder_projects_btn.setToolTip("Folder projects")
+        self.folder_projects_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
+        header_row.addWidget(self.folder_projects_btn)
+
+        header_row.addSpacing(6)
 
         left_line = QFrame()
         left_line.setFrameShape(QFrame.Shape.HLine)
@@ -4883,9 +5063,8 @@ function filterAliases(q) {{
         left_line.setFixedHeight(1)
         header_row.addWidget(left_line, 1)
 
-        # Header label (changes based on mode)
-        mode_labels = {'recent': 'Recent Projects', 'alphabetical': 'Main Projects', 'pinned': 'Pinned Projects', 'folder': 'Folder Projects', 'archive': 'Archived Projects'}
-        self.projects_header_label = QLabel(mode_labels.get(self.projects_mode, 'Recent Projects'))
+        # Header label (reflects current mode + sub-state)
+        self.projects_header_label = QLabel(self._get_projects_title())
         self.projects_header_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         header_row.addWidget(self.projects_header_label)
 
@@ -4895,51 +5074,10 @@ function filterAliases(q) {{
         right_line.setFixedHeight(1)
         header_row.addWidget(right_line, 1)
 
-        # Styles for tab buttons (always visible) and toggle buttons (show/hide)
-        self._toggle_btn_style = f"""
-            QPushButton {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_muted')};
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                font-size: 11px;
-                padding: 3px 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
-            }}
-        """
-        self._tab_active_style = f"""
-            QPushButton {{
-                background-color: {self.t('bg_navy')};
-                color: white;
-                border: none;
-                border-radius: 3px;
-                font-size: 11px;
-                padding: 3px 8px;
-            }}
-        """
+        header_row.addSpacing(6)
 
-        # 🕐 and A-Z are always-visible tabs; clicking active tab reverses sort
-        self.recent_projects_btn = QPushButton()
-        self.recent_projects_btn.clicked.connect(lambda: self.switch_projects_mode('recent'))
-        header_row.addWidget(self.recent_projects_btn)
-
-        self.main_projects_btn = QPushButton()
-        self.main_projects_btn.clicked.connect(lambda: self.switch_projects_mode('alphabetical'))
-        header_row.addWidget(self.main_projects_btn)
-
-        # Pinned Projects toggle button (show/hide)
-        self.pinned_projects_btn = QPushButton("📌")
-        self.pinned_projects_btn.setToolTip("Show pinned projects")
-        self.pinned_projects_btn.setStyleSheet(self._toggle_btn_style)
-        self.pinned_projects_btn.clicked.connect(lambda: self.switch_projects_mode('pinned'))
-        self.pinned_projects_btn.setVisible(self.projects_mode != 'pinned')
-        header_row.addWidget(self.pinned_projects_btn)
-
-        # Archive toggle button (show/hide)
-        self.archive_projects_btn = QPushButton("Archive")
+        # Right: Archived (hides itself when active)
+        self.archive_projects_btn = QPushButton("Archived")
         self.archive_projects_btn.setToolTip("Show archived projects")
         self.archive_projects_btn.setStyleSheet(self._toggle_btn_style)
         self.archive_projects_btn.clicked.connect(lambda: self.switch_projects_mode('archive'))
@@ -4966,45 +5104,84 @@ function filterAliases(q) {{
         # Populate based on current mode
         self.populate_projects()
 
+    def _get_projects_title(self):
+        """Return the header title for the current mode and sub-state"""
+        if self.projects_mode == 'recent':
+            return "Recent" if self.recent_compact else "Recent (all)"
+        if self.projects_mode == 'alphabetical':
+            return "By title (Z–A)" if self.projects_sort_reverse else "By title (A–Z)"
+        if self.projects_mode == 'pinned':
+            return "Pinned" if self.pinned_compact else "Pinned (all)"
+        return {'folder': 'Folder Projects', 'archive': 'Archived'}.get(self.projects_mode, 'Projects')
+
     def switch_projects_mode(self, mode):
-        """Switch project mode; clicking the active tab reverses sort order"""
-        if mode == self.projects_mode and mode in ('recent', 'alphabetical'):
-            self.projects_sort_reverse = not self.projects_sort_reverse
+        """Switch project mode; clicking active Recent/Pinned toggles compact/full, active A-Z reverses sort"""
+        if mode == self.projects_mode:
+            if mode == 'recent':
+                self.recent_compact = not self.recent_compact
+                self.settings['recent_compact'] = self.recent_compact
+                self.save_settings()
+            elif mode == 'alphabetical':
+                self.projects_sort_reverse = not self.projects_sort_reverse
+                self.settings['projects_sort_reverse'] = self.projects_sort_reverse
+                self.save_settings()
+            elif mode == 'pinned':
+                self.pinned_compact = not self.pinned_compact
+                self.settings['pinned_compact'] = self.pinned_compact
+                self.save_settings()
         else:
             self.projects_mode = mode
-            self.projects_sort_reverse = False
             self.settings['projects_mode'] = mode
             self.save_settings()
 
-        mode_labels = {'recent': 'Recent Projects', 'alphabetical': 'Main Projects', 'pinned': 'Pinned Projects', 'folder': 'Folder Projects', 'archive': 'Archived Projects'}
-        self.projects_header_label.setText(mode_labels.get(self.projects_mode, 'Recent Projects'))
+        self.projects_header_label.setText(self._get_projects_title())
 
         self._update_project_tab_buttons()
-        self.pinned_projects_btn.setVisible(self.projects_mode != 'pinned')
         self.archive_projects_btn.setVisible(self.projects_mode != 'archive')
 
         self.populate_projects()
 
     def _update_project_tab_buttons(self):
-        """Update 🕐 and A-Z tab labels and styles based on current mode and sort direction"""
-        clock_label = "🕐↑" if (self.projects_mode == 'recent' and self.projects_sort_reverse) else "🕐"
+        """Update tab button labels, tooltips, and styles based on current mode and state"""
+        # Recent button
+        if self.projects_mode == 'recent' and not self.recent_compact:
+            clock_label = "🕐 ▾"
+            clock_tooltip = "Showing all recent — click to collapse to 10"
+        else:
+            clock_label = "🕐"
+            clock_tooltip = (
+                "10 most recent shown — click to show all"
+                if self.projects_mode == 'recent'
+                else "Most recently used first"
+            )
+
+        # Pinned button
+        if self.projects_mode == 'pinned' and not self.pinned_compact:
+            pin_label = "📌 ▾"
+            pin_tooltip = "Showing all projects — click to collapse"
+        else:
+            pin_label = "📌"
+            pin_tooltip = ("Show all to drag-to-pin" if self.projects_mode == 'pinned'
+                           else "Show pinned projects")
+
+        # A-Z button
         az_label = "Z–A" if (self.projects_mode == 'alphabetical' and self.projects_sort_reverse) else "A–Z"
+        az_tooltip = ("Z→A — click for A→Z" if (self.projects_mode == 'alphabetical' and self.projects_sort_reverse)
+                      else "A→Z — click to reverse")
 
         self.recent_projects_btn.setText(clock_label)
-        self.recent_projects_btn.setToolTip(
-            "Oldest first — click for newest first" if (self.projects_mode == 'recent' and self.projects_sort_reverse)
-            else "Most recently used first — click to reverse"
-        )
+        self.recent_projects_btn.setToolTip(clock_tooltip)
+        self.pinned_projects_btn.setText(pin_label)
+        self.pinned_projects_btn.setToolTip(pin_tooltip)
         self.main_projects_btn.setText(az_label)
-        self.main_projects_btn.setToolTip(
-            "Z→A — click for A→Z" if (self.projects_mode == 'alphabetical' and self.projects_sort_reverse)
-            else "A→Z — click to reverse"
-        )
+        self.main_projects_btn.setToolTip(az_tooltip)
 
         active = self._tab_active_style
         inactive = self._toggle_btn_style
         self.recent_projects_btn.setStyleSheet(active if self.projects_mode == 'recent' else inactive)
+        self.pinned_projects_btn.setStyleSheet(active if self.projects_mode == 'pinned' else inactive)
         self.main_projects_btn.setStyleSheet(active if self.projects_mode == 'alphabetical' else inactive)
+        self.folder_projects_btn.setStyleSheet(active if self.projects_mode == 'folder' else inactive)
 
     def populate_projects(self):
         """Populate projects based on current mode (recent or alphabetical)"""
@@ -5043,77 +5220,19 @@ function filterAliases(q) {{
             self.save_settings()
 
         if not folder_projects:
-            # Show helpful message
-            label = QLabel("No folder projects yet.\n\nUse the Folder Browser to navigate to a folder and click 'Make Project' to create one.")
+            label = QLabel("No folder projects yet.\n\nBrowse the file system using the Folder Browser tab,\nthen open or create a project in any folder.")
             label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 20px;")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.projects_layout.addWidget(label)
             return
 
-        # Create horizontal layout for buttons
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(5)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
-
-        for config_path in folder_projects[:10]:
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=_spacing)
+        for config_path in folder_projects:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
-            buttons_layout.addWidget(btn_container)
-
-        # Left-align if fewer than 10 projects
-        if len(folder_projects) < 10:
-            buttons_layout.addStretch()
-
-        self.projects_layout.addLayout(buttons_layout)
-
-    def _append_folder_projects_row(self):
-        """Append a folder projects row to self.projects_layout (used by recent and main views)"""
-        folder_projects = self.settings.get("folder_projects", [])
-        folder_projects = [p for p in folder_projects if os.path.exists(p)]
-        if not folder_projects:
-            return
-
-        show = getattr(self, '_folder_row_visible', True)
-
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(5)
-        buttons_layout.setContentsMargins(0, 2, 0, 0)
-
-        if show:
-            for config_path in folder_projects[:10]:
-                btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
-                buttons_layout.addWidget(btn_container)
-
-        buttons_layout.addStretch()
-
-        # Folder toggle button — always visible; faded when row is hidden
-        folder_btn = QPushButton("Folder")
-        folder_btn.setToolTip("Show/hide folder projects")
-        if show:
-            folder_btn.setStyleSheet(self._toggle_btn_style)
-        else:
-            folder_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.t('bg_secondary')};
-                    color: {self.t('border')};
-                    border: 1px solid {self.t('border')};
-                    border-radius: 3px;
-                    font-size: 11px;
-                    padding: 3px 8px;
-                }}
-                QPushButton:hover {{
-                    background-color: {self.t('bg_button_hover')};
-                    color: {self.t('fg_on_dark')};
-                }}
-            """)
-        folder_btn.clicked.connect(self._toggle_folder_row)
-        buttons_layout.addWidget(folder_btn)
-
-        self.projects_layout.addLayout(buttons_layout)
-
-    def _toggle_folder_row(self):
-        """Toggle visibility of the folder projects row"""
-        self._folder_row_visible = not getattr(self, '_folder_row_visible', True)
-        self.populate_projects()
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
 
     def _populate_recent_projects(self):
         """Populate all projects sorted by most recently used, falling back to file mtime"""
@@ -5135,77 +5254,143 @@ function filterAliases(q) {{
         if not recent_projects:
             return
 
-        if self.projects_sort_reverse:
-            recent_projects = list(reversed(recent_projects))
-
-        max_per_row = 10
-        grid = QGridLayout()
-        grid.setSpacing(5)
-        grid.setContentsMargins(0, 0, 0, 0)
-
-        for idx, config_path in enumerate(recent_projects):
-            row = idx // max_per_row
-            col = idx % max_per_row
+        cols = self.settings.get("projects_per_row", 10)
+        spacing = self.settings.get("projects_spacing", 5)
+        items = recent_projects[:cols] if self.recent_compact else recent_projects
+        flow_widget = FlowWidget(target_cols=len(items) if self.recent_compact else cols,
+                                 hspacing=spacing, vspacing=spacing)
+        for config_path in items:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
-            grid.addWidget(btn_container, row, col)
-
-        for col in range(max_per_row):
-            grid.setColumnStretch(col, 1)
-
-        self.projects_layout.addLayout(grid)
-        self._append_folder_projects_row()
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
 
     def _populate_pinned_projects(self):
-        """Populate with pinned projects (drag-drop to reorder, right-click to unpin)"""
+        """Pinned view: compact = Zone 1 only (pinned row); expanded = Zone 1 + Zone 2 (all projects, drag-to-pin)"""
         pinned_projects = self.settings.get("pinned_projects", [])
         pinned_projects = [c for c in pinned_projects if os.path.exists(c) and '/.archive/' not in c]
+        pinned_set = set(pinned_projects)
+        is_full = len(pinned_projects) >= 10
 
-        if not pinned_projects:
-            hint = QLabel("Right-click any project in Recent or A–Z to pin it here.")
-            hint.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 8px 0;")
-            self.projects_layout.addWidget(hint)
-            return
+        # ── Zone 1: pinned row (drop target) ──────────────────────────────────
+        zone1_header = QHBoxLayout()
+        zone1_header.setContentsMargins(0, 0, 0, 2)
 
-        # Header row with reset button
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 4)
-        header_row.addStretch()
-        reset_btn = QPushButton("↺ Clear pins")
-        reset_btn.setToolTip("Remove all pins")
-        reset_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {self.t('fg_muted')};
-                border: none;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{
-                color: {self.t('bg_danger')};
-            }}
-        """)
-        reset_btn.clicked.connect(self.reset_pinned_projects)
-        header_row.addWidget(reset_btn)
-        self.projects_layout.addLayout(header_row)
+        if self.pinned_compact:
+            hint_text = ("Pinned list full (10/10)" if is_full
+                         else "Right-click to unpin  ·  click 📌 to add more" if pinned_projects
+                         else "No pinned projects — click 📌 to add some")
+        else:
+            hint_text = ("Pinned list full (10/10)" if is_full
+                         else "Drag projects below to pin  ·  drag to reorder  ·  right-click to unpin" if pinned_projects
+                         else "Drag any project here to pin it (max 10)")
+        hint_label = QLabel(hint_text)
+        hint_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
+        zone1_header.addWidget(hint_label)
+        zone1_header.addStretch()
 
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(5)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        if pinned_projects:
+            reset_btn = QPushButton("↺ Clear pins")
+            reset_btn.setToolTip("Remove all pins")
+            reset_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {self.t('fg_muted')};
+                    border: none;
+                    font-size: 11px;
+                }}
+                QPushButton:hover {{ color: {self.t('bg_danger')}; }}
+            """)
+            reset_btn.clicked.connect(self.reset_pinned_projects)
+            zone1_header.addWidget(reset_btn)
+        self.projects_layout.addLayout(zone1_header)
 
+        # ConfigBarWidget is the drop target
         self.config_bar_widget = ConfigBarWidget(self)
+        self.config_bar_widget.setAcceptDrops(True)
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+
         config_bar_layout = QHBoxLayout(self.config_bar_widget)
         config_bar_layout.setContentsMargins(0, 0, 0, 0)
-        config_bar_layout.setSpacing(5)
+        config_bar_layout.setSpacing(_spacing)
 
+        zone1_containers = []
         for config_path in pinned_projects:
-            btn_container = self._create_config_button(config_path, is_pinned=True, draggable=True)
+            btn_container = self._create_config_button(config_path, is_pinned=True, draggable=True, flow_managed=True)
             config_bar_layout.addWidget(btn_container)
             self.config_bar_widget.add_button(btn_container, config_path, is_pinned=True)
+            zone1_containers.append(btn_container)
 
-        buttons_layout.addWidget(self.config_bar_widget)
-        if len(pinned_projects) < 10:
-            buttons_layout.addStretch()
+        # Deferred reflow — same formula as FlowWidget, called from showEvent/resizeEvent.
+        # ConfigBarWidget uses Preferred size policy so self.width() is only as wide as its
+        # contents — we must read the projects container width instead to match Zone 2.
+        _proj_layout = self.projects_layout
 
-        self.projects_layout.addLayout(buttons_layout)
+        def _zone1_reflow(_ignored, _containers=zone1_containers, _layout=_proj_layout,
+                          _cols=_cols, _spacing=_spacing):
+            parent = _layout.parentWidget()
+            width = parent.width() if parent and parent.width() > 10 else 0
+            if not _containers or width <= 0:
+                return
+            target_cell_w = (width - (_cols - 1) * _spacing) // _cols
+            n = len(_containers)
+            cell_w = (target_cell_w if target_cell_w >= 80
+                      else max(80, (width - (n - 1) * _spacing) // n))
+            fm = QFontMetrics(QApplication.font())
+            for c in _containers:
+                c.setFixedWidth(cell_w)
+                if hasattr(c, '_main_btn') and hasattr(c, '_full_text') and hasattr(c, '_side_w'):
+                    label_w = max(10, cell_w - c._side_w - 18)
+                    c._main_btn.setText(fm.elidedText(
+                        c._full_text, Qt.TextElideMode.ElideRight, label_w))
+
+        self.config_bar_widget._reflow_fn = _zone1_reflow
+
+        config_bar_layout.addStretch()  # keep pins left-aligned, don't stretch to fill
+        self.config_bar_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+        zone1_row = QHBoxLayout()
+        zone1_row.setSpacing(5)
+        zone1_row.setContentsMargins(0, 0, 0, 0)
+        zone1_row.addWidget(self.config_bar_widget)
+        if not pinned_projects:
+            # Empty drop zone: give it a visible dashed border so it's clearly a drop target
+            self.config_bar_widget.setMinimumHeight(30)
+            self.config_bar_widget.setStyleSheet(f"""
+                background-color: {self.t('bg_secondary')};
+                border: 1px dashed {self.t('border')};
+                border-radius: 3px;
+            """)
+        zone1_row.addStretch()
+        self.projects_layout.addLayout(zone1_row)
+
+        # ── Zone 2: all unpinned projects (drag source) — only in expanded mode ──
+        if self.pinned_compact:
+            return
+
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        if not os.path.exists(configs_dir):
+            return
+
+        all_configs = []
+        for f in os.listdir(configs_dir):
+            if f.endswith('.json') and not f.startswith('.'):
+                full_path = os.path.join(configs_dir, f)
+                if full_path not in pinned_set:
+                    all_configs.append(full_path)
+        all_configs.sort(key=lambda x: os.path.basename(x).lower())
+
+        if not all_configs:
+            return
+
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=_spacing)
+        flow_widget.setContentsMargins(0, 6, 0, 0)
+        for config_path in all_configs:
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=True)
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
 
     def _populate_alphabetical_projects(self):
         """Populate with all projects alphabetically in a grid of 10 columns"""
@@ -5225,24 +5410,13 @@ function filterAliases(q) {{
         if not config_files:
             return
 
-        # Use grid layout for consistent column widths
-        max_per_row = 10
-        grid = QGridLayout()
-        grid.setSpacing(5)
-        grid.setContentsMargins(0, 0, 0, 0)
-
-        for idx, config_path in enumerate(config_files):
-            row = idx // max_per_row
-            col = idx % max_per_row
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=_spacing)
+        for config_path in config_files:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
-            grid.addWidget(btn_container, row, col)
-
-        # Set all columns to stretch equally
-        for col in range(max_per_row):
-            grid.setColumnStretch(col, 1)
-
-        self.projects_layout.addLayout(grid)
-        self._append_folder_projects_row()
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
 
     def _populate_archived_projects(self):
         """Populate with archived projects (main + folder)"""
@@ -5363,11 +5537,11 @@ function filterAliases(q) {{
             delete_action.triggered.connect(lambda: self._delete_project_permanently(config_path))
         else:
             pinned = self.settings.get("pinned_projects", [])
-            if self.projects_mode == 'pinned':
+            if config_path in pinned:
                 unpin_action = menu.addAction("Unpin")
                 unpin_action.triggered.connect(lambda: self._unpin_project(config_path))
                 menu.addSeparator()
-            elif config_path not in pinned:
+            elif len(pinned) < 10:
                 pin_action = menu.addAction("📌 Pin")
                 pin_action.triggered.connect(lambda: self._pin_project(config_path))
                 menu.addSeparator()
@@ -5502,8 +5676,10 @@ function filterAliases(q) {{
                         self.switch_to_config(full_path)
                         return
 
-    def _create_config_button(self, config_path, is_pinned, draggable=False):
-        """Create a config button with new window button"""
+    def _create_config_button(self, config_path, is_pinned, draggable=False, flow_managed=True):
+        """Create a config button with new window button.
+        flow_managed=True: FlowWidget controls cell width dynamically (all grid views).
+        flow_managed=False: fixed 120px width for Zone 1 pinned drag-reorder row."""
         # Get display name from config (reads project_name if set)
         raw_name = self.get_display_name_for_config_path(config_path)
         display_name = raw_name.replace("_config", "").replace("_", " ").replace("-", " ").title()
@@ -5514,17 +5690,24 @@ function filterAliases(q) {{
         btn_container_layout.setContentsMargins(0, 0, 0, 0)
         btn_container_layout.setSpacing(1)
 
-        # Main button
-        if draggable:
-            btn = DraggableConfigButton(display_name, config_path)
+        if flow_managed:
+            # FlowWidget will set cell width dynamically; main button expands to fill
+            btn_label = display_name  # FlowWidget re-elides on every resize
+            if draggable:
+                btn = DraggableConfigButton(btn_label, config_path)
+            else:
+                btn = QPushButton(btn_label)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setMinimumWidth(30)
         else:
-            btn = QPushButton(display_name)
+            # Zone 1 fixed-width pinned row — pre-elide at 120px
+            _fixed_w = 120
+            fm = QFontMetrics(QApplication.font())
+            btn_label = fm.elidedText(display_name, Qt.TextElideMode.ElideRight, _fixed_w - 18)
+            btn = DraggableConfigButton(btn_label, config_path) if draggable else QPushButton(btn_label)
+            btn.setFixedWidth(_fixed_w)
 
         btn.setMinimumHeight(26)
-        if draggable:
-            btn.setMaximumWidth(150)
-        else:
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # Style based on current and pinned status
         border_bottom = f"border-bottom: 3px solid {self.t('bg_category')};" if is_pinned else ""
@@ -5565,9 +5748,9 @@ function filterAliases(q) {{
 
         btn.clicked.connect(lambda checked=False, path=config_path: self.switch_to_config(path))
         if draggable:
-            tooltip = f"📌 {config_path}\n(Drag to reorder)"
+            tooltip = f"{display_name}\n📌 {config_path}\n(Drag to reorder)"
         else:
-            tooltip = f"Switch to {display_name}"
+            tooltip = f"{display_name}\n{config_path}"
         btn.setToolTip(tooltip)
         btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         btn.customContextMenuRequested.connect(lambda pos, p=config_path: self._project_context_menu(btn, pos, p, archived=False))
@@ -5622,12 +5805,21 @@ function filterAliases(q) {{
             new_desktop_btn.setToolTip("Open in new virtual desktop")
             btn_container_layout.addWidget(new_desktop_btn)
 
+        # Store metadata so FlowWidget can re-elide text on resize
+        if flow_managed:
+            has_desktop = self._can_open_in_new_desktop()
+            btn_container._main_btn = btn
+            btn_container._full_text = display_name
+            btn_container._side_w = 27 + (27 if has_desktop else 0)  # ↗ + optional ⧉ + spacing
+
         return btn_container
 
     def handle_config_drop(self, dragged_path, drop_index):
-        """Handle a pinned config being reordered via drag-drop"""
+        """Handle a config being dropped onto the pinned zone (reorder or add, max 10)"""
         pinned = self.settings.get("pinned_projects", [])
         pinned = [c for c in pinned if os.path.exists(c)]
+        if dragged_path not in pinned and len(pinned) >= 10:
+            return  # at capacity — hint label already communicates this
         if dragged_path in pinned:
             pinned.remove(dragged_path)
         pinned.insert(min(drop_index, len(pinned)), dragged_path)
@@ -5636,9 +5828,9 @@ function filterAliases(q) {{
         self.refresh_projects()
 
     def _pin_project(self, config_path):
-        """Add a project to the pinned list"""
+        """Add a project to the pinned list (max 10)"""
         pinned = self.settings.get("pinned_projects", [])
-        if config_path not in pinned:
+        if config_path not in pinned and len(pinned) < 10:
             pinned.append(config_path)
             self.settings["pinned_projects"] = pinned
             self.save_settings()

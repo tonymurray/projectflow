@@ -187,9 +187,10 @@ Trailing slashes on the source folder are not allowed in rsync commands because 
 
 ### Other Handlers
 
-**tail_log** - Tail debug.log in terminal:
+**tail_log** - Tail a log file in terminal. Pass a directory to auto-detect (`debug.log` preferred, falls back to `error.log`), or pass a specific file path:
 ```json
 ["View Logs", "~/projects/myapp", "tail_log"]
+["View Logs", "~/somewhere/error.log", "tail_log"]
 ```
 
 **dolphin_tabs** - Open multiple folders as Dolphin tabs (KDE only):
