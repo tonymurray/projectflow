@@ -1183,7 +1183,7 @@ class ProjectFlowApp(QMainWindow):
         self._settings_projects_spacing = QSpinBox()
         self._settings_projects_spacing.setRange(2, 15)
         self._settings_projects_spacing.setValue(self.settings.get("projects_spacing", 5))
-        self._settings_projects_spacing.setToolTip("Gap between project buttons in pixels (default: 5)")
+        self._settings_projects_spacing.setToolTip("Horizontal gap between project buttons in pixels (default: 5)")
         self._settings_projects_spacing.setStyleSheet(f"""
             QSpinBox {{
                 background-color: {self.t('bg_secondary')};
@@ -5228,7 +5228,7 @@ function filterAliases(q) {{
 
         _cols = self.settings.get("projects_per_row", 10)
         _spacing = self.settings.get("projects_spacing", 5)
-        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=_spacing)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=3)
         for config_path in folder_projects:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
             flow_widget.addWidget(btn_container)
@@ -5258,7 +5258,7 @@ function filterAliases(q) {{
         spacing = self.settings.get("projects_spacing", 5)
         items = recent_projects[:cols] if self.recent_compact else recent_projects
         flow_widget = FlowWidget(target_cols=len(items) if self.recent_compact else cols,
-                                 hspacing=spacing, vspacing=spacing)
+                                 hspacing=spacing, vspacing=3)
         for config_path in items:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
             flow_widget.addWidget(btn_container)
@@ -5385,7 +5385,7 @@ function filterAliases(q) {{
 
         _cols = self.settings.get("projects_per_row", 10)
         _spacing = self.settings.get("projects_spacing", 5)
-        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=_spacing)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=3)
         flow_widget.setContentsMargins(0, 6, 0, 0)
         for config_path in all_configs:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=True)
@@ -5412,7 +5412,7 @@ function filterAliases(q) {{
 
         _cols = self.settings.get("projects_per_row", 10)
         _spacing = self.settings.get("projects_spacing", 5)
-        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=_spacing)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=3)
         for config_path in config_files:
             btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
             flow_widget.addWidget(btn_container)
