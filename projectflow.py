@@ -6963,11 +6963,13 @@ function filterAliases(q) {{
                     self._make_viewer_footer(f"Open in {fm_name}", "Open in file manager", self.folder_open_external)
                 )
 
-                # Initialize folder browser state - use saved path or home directory
-                if hasattr(self, 'config_folder_path') and self.config_folder_path:
-                    self.folder_current_path = self.config_folder_path
-                else:
-                    self.folder_current_path = os.path.expanduser("~")
+                # Initialize folder browser state - preserve navigation on same-project refresh;
+                # reset to config default only when no path is set (e.g. first load or project switch)
+                if not (hasattr(self, 'folder_current_path') and self.folder_current_path):
+                    if hasattr(self, 'config_folder_path') and self.config_folder_path:
+                        self.folder_current_path = self.config_folder_path
+                    else:
+                        self.folder_current_path = os.path.expanduser("~")
 
                 # Add all containers to stack layout
                 self.column2_stack_layout.addWidget(self.pdf_container)
@@ -7478,6 +7480,9 @@ function filterAliases(q) {{
 
         # Add to recent projects
         self.add_to_recent_projects(config_path)
+
+        # Clear folder navigation so the new project starts at its own default folder
+        self.folder_current_path = None
 
         # Reload with the new project
         self.refresh_projects()
