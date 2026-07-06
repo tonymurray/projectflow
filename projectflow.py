@@ -9257,6 +9257,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         add_action = menu.addAction("Add to Project...")
         add_action.triggered.connect(lambda: self.show_add_to_project_dialog(path))
 
+        # Add to Documentation action (files only)
+        if item_type != "dir":
+            doc_action = menu.addAction("Add to Documentation...")
+            doc_action.triggered.connect(lambda: self.show_add_to_documentation_dialog(path))
+
         # For directories: Make Project or Open Project
         if item_type == "dir":
             projectflow_path = os.path.join(path, ".projectflow")
@@ -9396,6 +9401,112 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         QMessageBox.information(self, "Add to Project", f"Added '{display_name}' to {project_name}")
 
         # Refresh if we added to the current project
+        if project_path == self.current_config_file:
+            self.refresh_projects()
+
+    def show_add_to_documentation_dialog(self, file_path):
+        """Show dialog to select which project to add the file to as a documentation entry"""
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects = []
+
+        if os.path.isdir(projects_dir):
+            for f in os.listdir(projects_dir):
+                if f.endswith('.json'):
+                    projects.append(f[:-5])
+
+        if not projects:
+            QMessageBox.warning(self, "Add to Documentation", f"No project files found in {projects_dir}")
+            return
+
+        projects.sort(key=str.lower)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add to Documentation")
+        dialog.setMinimumWidth(300)
+        layout = QVBoxLayout(dialog)
+
+        filename = os.path.basename(file_path)
+        label = QLabel(f"Add '{filename}' to documentation in which project?")
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.addItems(projects)
+
+        if self.current_config_file:
+            current_name = os.path.basename(self.current_config_file)
+            if current_name.endswith('.json'):
+                current_name = current_name[:-5]
+            if current_name in projects:
+                combo.setCurrentText(current_name)
+
+        layout.addWidget(combo)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_project = combo.currentText()
+            project_path = os.path.join(projects_dir, f"{selected_project}.json")
+            self.add_resource_to_documentation(file_path, project_path)
+
+    def add_resource_to_documentation(self, file_path, project_path):
+        """Add a file to a project's 'Documentation' category"""
+        try:
+            with open(project_path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read config: {e}")
+            return
+
+        if 'columns' not in data:
+            data['columns'] = [[]]
+        if not data['columns']:
+            data['columns'] = [[]]
+
+        column1 = data['columns'][0]
+
+        # Find or create "Documentation" category
+        doc_category = None
+        for category_dict in column1:
+            if isinstance(category_dict, dict) and "Documentation" in category_dict:
+                doc_category = category_dict["Documentation"]
+                break
+
+        if doc_category is None:
+            doc_category = []
+            column1.append({"Documentation": doc_category})
+
+        # Check for duplicates
+        existing_paths = [item[1] for item in doc_category if len(item) > 1]
+        if file_path in existing_paths:
+            QMessageBox.information(self, "Add to Documentation", "This file is already in the Documentation category.")
+            return
+
+        # Display name: filename stem with underscores/hyphens replaced by spaces
+        stem = os.path.splitext(os.path.basename(file_path))[0]
+        display_name = stem.replace('_', ' ').replace('-', ' ').title()
+
+        # Launcher type based on extension
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in ('.html', '.htm'):
+            app = "firefox"
+        else:
+            app = "default"
+
+        doc_category.append([display_name, file_path, app])
+
+        try:
+            with open(project_path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save config: {e}")
+            return
+
+        project_name = os.path.basename(project_path).replace('.json', '')
+        QMessageBox.information(self, "Add to Documentation", f"Added '{display_name}' to {project_name}")
+
         if project_path == self.current_config_file:
             self.refresh_projects()
 

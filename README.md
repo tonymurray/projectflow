@@ -273,6 +273,20 @@ Right-click files/folders in Dolphin to add them to a ProjectFlow project:
 2. Edit the `Exec=` line to point to where you installed `add-projectflow-servicemenu.sh`
 3. Make the script executable: `chmod +x utilities/add-projectflow-servicemenu.sh`
 
+## Folder Browser
+
+The Folder viewer lets you navigate the filesystem and interact with project files directly.
+
+### Context Menu (right-click a file or folder)
+
+- **Add to Project...** — adds the file or folder to a project's "Added Resources" category. Choose the target project from a dropdown (pre-selects the current project). Handler is auto-detected: directories open in the file manager, images open in Gwenview, everything else uses the default app.
+
+- **Add to Documentation...** — adds a file to a project's "Documentation" category (created if it doesn't exist). Available for files only. Handler is auto-detected by extension: `.html`/`.htm` open in Firefox, `.md`, `.txt`, and all other formats use the default app. The display name is derived from the filename (underscores and hyphens replaced with spaces).
+
+- **Make Project / Open as Project** — available for directories. Creates a `.projectflow` config in the folder (auto-detects project type) or switches to an existing one.
+
+- **Open in Terminal** — opens the directory in your configured terminal emulator.
+
 ## UI Controls
 
 - **Edit Mode** (Edit button): Toggle to add/edit entries and categories
