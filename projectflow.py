@@ -244,7 +244,8 @@ class FlowWidget(QWidget):
                               cell_w, self._ITEM_H)
                 # Re-elide the main button label when cell width changes
                 if hasattr(w, '_main_btn') and hasattr(w, '_full_text') and hasattr(w, '_side_w'):
-                    label_w = max(10, cell_w - w._side_w - 18)  # 18px = padding + border
+                    left_extra = getattr(w, '_left_extra_w', 0)
+                    label_w = max(10, cell_w - w._side_w - left_extra - 18)  # 18px = padding + border
                     w._main_btn.setText(fm.elidedText(w._full_text, Qt.TextElideMode.ElideRight, label_w))
 
             rows = (n + cols - 1) // cols
@@ -739,6 +740,7 @@ class ProjectFlowApp(QMainWindow):
                     "folder_projects": [],  # List of .projectflow configs from folders
                     "enable_baloo_tags": False,  # Query Baloo for tagged files (KDE only)
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
+                    "project_colors": {},  # {config_path: "#rrggbb"}
                 }
                 self.save_settings()
         except Exception as e:
@@ -1602,6 +1604,46 @@ class ProjectFlowApp(QMainWindow):
         self._proj_project_name.setPlaceholderText(f"Default: {self.get_project_name()}")
         self._proj_project_name.setStyleSheet(input_style)
         form_layout.addRow(name_label, self._proj_project_name)
+
+        # Project Color
+        color_label = QLabel("Project Color:")
+        color_label.setStyleSheet(label_style)
+        color_row = QHBoxLayout()
+        color_row.setSpacing(6)
+        current_color = self.settings.get("project_colors", {}).get(self.current_config_file, "")
+        self._proj_color_btn = QPushButton("Choose Color..." if not current_color else current_color)
+        if current_color:
+            self._proj_color_btn.setStyleSheet(
+                f"background-color: {current_color}; color: {'#000' if self._color_luminance(current_color) > 0.5 else '#fff'}; border: 1px solid {self.t('border')}; border-radius: 4px; padding: 6px;"
+            )
+        else:
+            self._proj_color_btn.setStyleSheet(input_style)
+        self._proj_color_value = current_color  # track chosen color
+        def _pick_project_color():
+            from PyQt6.QtWidgets import QColorDialog
+            from PyQt6.QtGui import QColor
+            initial = QColor(self._proj_color_value) if self._proj_color_value else QColor("#3498db")
+            chosen = QColorDialog.getColor(initial, self)
+            if chosen.isValid():
+                hex_color = chosen.name()
+                self._proj_color_value = hex_color
+                lum = self._color_luminance(hex_color)
+                self._proj_color_btn.setStyleSheet(
+                    f"background-color: {hex_color}; color: {'#000' if lum > 0.5 else '#fff'}; border: 1px solid {self.t('border')}; border-radius: 4px; padding: 6px;"
+                )
+                self._proj_color_btn.setText(hex_color)
+        self._proj_color_btn.clicked.connect(_pick_project_color)
+        color_row.addWidget(self._proj_color_btn)
+        clear_color_btn = QPushButton("Clear")
+        clear_color_btn.setStyleSheet(input_style)
+        def _clear_proj_color():
+            self._proj_color_value = ""
+            self._proj_color_btn.setStyleSheet(input_style)
+            self._proj_color_btn.setText("Choose Color...")
+        clear_color_btn.clicked.connect(_clear_proj_color)
+        color_row.addWidget(clear_color_btn)
+        color_row.addStretch()
+        form_layout.addRow(color_label, color_row)
 
         # Default Viewer
         viewer_label = QLabel("Default Viewer:")
@@ -2998,6 +3040,15 @@ class ProjectFlowApp(QMainWindow):
         """Apply settings without closing the dialog"""
         # === Save Project Settings ===
         if hasattr(self, '_proj_default_viewer'):
+            # Project color (stored in global settings, not project config)
+            if hasattr(self, '_proj_color_value'):
+                colors = self.settings.setdefault("project_colors", {})
+                if self._proj_color_value:
+                    colors[self.current_config_file] = self._proj_color_value
+                elif self.current_config_file in colors:
+                    del colors[self.current_config_file]
+                self.save_settings()
+
             # Project name
             self.config_project_name = self._proj_project_name.text().strip() or None
             # Viewer defaults
@@ -4993,6 +5044,12 @@ function filterAliases(q) {{
             self.recent_compact = self.settings.get('recent_compact', True)
         if not hasattr(self, 'pinned_compact'):
             self.pinned_compact = self.settings.get('pinned_compact', True)
+        if not hasattr(self, 'active_color_filter'):
+            self.active_color_filter = None
+        if not hasattr(self, 'color_sort_active'):
+            self.color_sort_active = False
+        if not hasattr(self, 'color_sort_reverse'):
+            self.color_sort_reverse = False
 
         # Shared button styles — same sizing for all three left tab buttons
         self._toggle_btn_style = f"""
@@ -5055,26 +5112,30 @@ function filterAliases(q) {{
         self.folder_projects_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
         header_row.addWidget(self.folder_projects_btn)
 
+        # Color sort button — lives beside the mode buttons on the left
+        self.color_sort_btn = QPushButton("🎨")
+        self.color_sort_btn.setToolTip("Sort all projects by color")
+        self.color_sort_btn.setStyleSheet(self._toggle_btn_style)
+        self.color_sort_btn.clicked.connect(self._toggle_color_sort)
+        header_row.addWidget(self.color_sort_btn)
+
         header_row.addSpacing(6)
 
-        left_line = QFrame()
-        left_line.setFrameShape(QFrame.Shape.HLine)
-        left_line.setStyleSheet(f"background-color: {self.t('border')};")
-        left_line.setFixedHeight(1)
-        header_row.addWidget(left_line, 1)
+        # Inline color swatches — grow between the buttons and the title label
+        self.color_strip_widget = QWidget()
+        self.color_strip_layout = QHBoxLayout(self.color_strip_widget)
+        self.color_strip_layout.setContentsMargins(0, 0, 0, 0)
+        self.color_strip_layout.setSpacing(3)
+        header_row.addWidget(self.color_strip_widget)
+
+        header_row.addSpacing(4)
 
         # Header label (reflects current mode + sub-state)
         self.projects_header_label = QLabel(self._get_projects_title())
         self.projects_header_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         header_row.addWidget(self.projects_header_label)
 
-        right_line = QFrame()
-        right_line.setFrameShape(QFrame.Shape.HLine)
-        right_line.setStyleSheet(f"background-color: {self.t('border')};")
-        right_line.setFixedHeight(1)
-        header_row.addWidget(right_line, 1)
-
-        header_row.addSpacing(6)
+        header_row.addStretch(1)
 
         # Right: Archived (hides itself when active)
         self.archive_projects_btn = QPushButton("Archived")
@@ -5087,6 +5148,7 @@ function filterAliases(q) {{
         self._update_project_tab_buttons()
 
         parent_layout.addLayout(header_row)
+        self._update_color_strip()
 
         # Container for project buttons (content changes based on mode)
         self.projects_container = QWidget()
@@ -5134,9 +5196,14 @@ function filterAliases(q) {{
             self.settings['projects_mode'] = mode
             self.save_settings()
 
+        # Clicking a mode button always clears color filter/sort
+        self.active_color_filter = None
+        self.color_sort_active = False
+
         self.projects_header_label.setText(self._get_projects_title())
 
         self._update_project_tab_buttons()
+        self._update_color_strip()
         self.archive_projects_btn.setVisible(self.projects_mode != 'archive')
 
         self.populate_projects()
@@ -5195,6 +5262,14 @@ function filterAliases(q) {{
                         child.widget().deleteLater()
             if item.widget():
                 item.widget().deleteLater()
+
+        # Color filter/sort overrides normal mode
+        if self.active_color_filter:
+            self._populate_color_filtered_projects(self.active_color_filter)
+            return
+        if self.color_sort_active:
+            self._populate_color_sorted_projects()
+            return
 
         if self.projects_mode == 'recent':
             self._populate_recent_projects()
@@ -5547,8 +5622,179 @@ function filterAliases(q) {{
                 menu.addSeparator()
             archive_action = menu.addAction("Archive project")
             archive_action.triggered.connect(lambda: self.archive_project(config_path))
+            menu.addSeparator()
+            color_action = menu.addAction("🎨 Set Color...")
+            color_action.triggered.connect(lambda: self._set_project_color_dialog(config_path))
+            if config_path in self.settings.get("project_colors", {}):
+                clear_color_action = menu.addAction("Clear Color")
+                clear_color_action.triggered.connect(lambda: self._clear_project_color(config_path))
 
         menu.exec(btn.mapToGlobal(pos))
+
+    # ── Color coding helpers ──────────────────────────────────────────────────
+
+    def _color_hue(self, hex_str):
+        """Return HSL hue (0.0–1.0) for sorting colors in rainbow order."""
+        import colorsys
+        hex_str = hex_str.lstrip('#')
+        r = int(hex_str[0:2], 16) / 255
+        g = int(hex_str[2:4], 16) / 255
+        b = int(hex_str[4:6], 16) / 255
+        h, _l, _s = colorsys.rgb_to_hls(r, g, b)
+        return h
+
+    def _color_luminance(self, hex_str):
+        """Return perceived luminance (0.0–1.0) to pick contrasting text color."""
+        hex_str = hex_str.lstrip('#')
+        r = int(hex_str[0:2], 16) / 255
+        g = int(hex_str[2:4], 16) / 255
+        b = int(hex_str[4:6], 16) / 255
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def _set_project_color_dialog(self, config_path):
+        """Open a color picker and assign the chosen color to a project."""
+        from PyQt6.QtWidgets import QColorDialog
+        from PyQt6.QtGui import QColor
+        current = self.settings.get("project_colors", {}).get(config_path, "")
+        initial = QColor(current) if current else QColor("#3498db")
+        chosen = QColorDialog.getColor(initial, self)
+        if chosen.isValid():
+            self._set_project_color(config_path, chosen.name())
+
+    def _set_project_color(self, config_path, color_hex):
+        """Assign a color to a project and refresh UI."""
+        colors = self.settings.setdefault("project_colors", {})
+        colors[config_path] = color_hex
+        self.save_settings()
+        self._update_color_strip()
+        self.populate_projects()
+
+    def _clear_project_color(self, config_path):
+        """Remove a project's color and refresh UI."""
+        colors = self.settings.get("project_colors", {})
+        removed_color = colors.pop(config_path, None)
+        # If the cleared color was the active filter and no other project still uses it, reset
+        if removed_color and self.active_color_filter == removed_color:
+            if removed_color not in colors.values():
+                self.active_color_filter = None
+        self.save_settings()
+        self._update_color_strip()
+        self.populate_projects()
+
+    def _filter_by_color(self, color_hex):
+        """Toggle color filter; clicking active color clears it."""
+        if self.active_color_filter == color_hex:
+            self.active_color_filter = None
+            self.color_sort_active = False
+            self.projects_header_label.setText(self._get_projects_title())
+        else:
+            self.active_color_filter = color_hex
+            self.color_sort_active = False
+            self.projects_header_label.setText("Color filter")
+        self._update_color_strip()
+        self.populate_projects()
+
+    def _toggle_color_sort(self):
+        """Activate or reverse color sort; deactivates any color filter."""
+        self.active_color_filter = None
+        if not self.color_sort_active:
+            self.color_sort_active = True
+            self.color_sort_reverse = False
+            self.projects_header_label.setText("By color")
+        else:
+            self.color_sort_reverse = not self.color_sort_reverse
+            self.projects_header_label.setText("By color (reversed)" if self.color_sort_reverse else "By color")
+        self._update_color_strip()
+        self.populate_projects()
+
+    def _update_color_strip(self):
+        """Rebuild the inline color swatches in the header row."""
+        # Clear existing widgets
+        while self.color_strip_layout.count():
+            item = self.color_strip_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        project_colors = self.settings.get("project_colors", {})
+        unique_colors = sorted(set(project_colors.values()), key=self._color_hue)
+
+        # Always update the sort button style even when no colors exist
+        sort_active = self.color_sort_active
+        if sort_active:
+            self.color_sort_btn.setStyleSheet(self._tab_active_style)
+            self.color_sort_btn.setText("🎨↑" if self.color_sort_reverse else "🎨↓")
+            self.color_sort_btn.setToolTip("Sorted by color (reversed) — click to reverse again"
+                                           if self.color_sort_reverse else "Sorted by color — click to reverse")
+        else:
+            self.color_sort_btn.setStyleSheet(self._toggle_btn_style)
+            self.color_sort_btn.setText("🎨")
+            self.color_sort_btn.setToolTip("Sort all projects by color")
+
+        if not unique_colors:
+            self.color_strip_widget.setVisible(False)
+            return
+
+        self.color_strip_widget.setVisible(True)
+
+        for color_hex in unique_colors:
+            count = sum(1 for c in project_colors.values() if c == color_hex)
+            swatch = QPushButton()
+            swatch.setFixedHeight(10)
+            swatch.setFixedWidth(72)
+            is_active = (self.active_color_filter == color_hex)
+            border = "2px solid white" if is_active else "1px solid rgba(0,0,0,0.25)"
+            swatch.setStyleSheet(
+                f"QPushButton {{ background-color: {color_hex}; border: {border}; border-radius: 2px; }}"
+                f"QPushButton:hover {{ border: 2px solid white; }}"
+            )
+            swatch.setToolTip(f"{color_hex} — {count} project{'s' if count != 1 else ''}\nClick to filter")
+            swatch.clicked.connect(lambda checked=False, c=color_hex: self._filter_by_color(c))
+            self.color_strip_layout.addWidget(swatch)
+
+
+    def _populate_color_filtered_projects(self, color_hex):
+        """Show only projects whose assigned color matches the filter."""
+        project_colors = self.settings.get("project_colors", {})
+        matching = [p for p, c in project_colors.items() if c == color_hex and os.path.exists(p)]
+        if not matching:
+            label = QLabel("No projects with this color.")
+            label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 20px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.projects_layout.addWidget(label)
+            return
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=3)
+        for config_path in matching:
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
+
+    def _populate_color_sorted_projects(self):
+        """Show all main projects sorted by their assigned color hue, uncolored last."""
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        if not os.path.exists(configs_dir):
+            return
+        config_files = [
+            os.path.join(configs_dir, f)
+            for f in os.listdir(configs_dir)
+            if f.endswith('.json') and '/.archive/' not in os.path.join(configs_dir, f)
+        ]
+        project_colors = self.settings.get("project_colors", {})
+
+        colored = [p for p in config_files if project_colors.get(p)]
+        uncolored = [p for p in config_files if not project_colors.get(p)]
+        colored.sort(key=lambda p: self._color_hue(project_colors[p]), reverse=self.color_sort_reverse)
+        config_files = colored + uncolored  # uncolored always last
+        if not config_files:
+            return
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=3)
+        for config_path in config_files:
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
 
     def archive_project(self, config_path):
         """Archive a project (hide from normal views)"""
@@ -5690,6 +5936,14 @@ function filterAliases(q) {{
         btn_container_layout.setContentsMargins(0, 0, 0, 0)
         btn_container_layout.setSpacing(1)
 
+        # 5px colored left bar if this project has an assigned color
+        _project_color = self.settings.get("project_colors", {}).get(config_path)
+        if _project_color:
+            color_bar = QFrame()
+            color_bar.setFixedWidth(5)
+            color_bar.setStyleSheet(f"background-color: {_project_color}; border: none;")
+            btn_container_layout.addWidget(color_bar)
+
         if flow_managed:
             # FlowWidget will set cell width dynamically; main button expands to fill
             btn_label = display_name  # FlowWidget re-elides on every resize
@@ -5811,6 +6065,7 @@ function filterAliases(q) {{
             btn_container._main_btn = btn
             btn_container._full_text = display_name
             btn_container._side_w = 27 + (27 if has_desktop else 0)  # ↗ + optional ⧉ + spacing
+            btn_container._left_extra_w = 6 if _project_color else 0  # 5px color bar + 1px spacing
 
         return btn_container
 

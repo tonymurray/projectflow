@@ -75,6 +75,7 @@ User preferences are stored in `.projectflow_settings.json`:
 - `editor`: Default code/text editor (default: auto-detected based on desktop environment). Used by `directorydev` handler. Leave empty for auto-detection. Auto-detection: KDE→kate, GNOME→gedit, XFCE→mousepad, etc.
 - `file_manager`: Default file manager (default: auto-detected based on desktop environment). Used by `directorydev` and `dolphin_tabs` handlers. Leave empty for auto-detection. Auto-detection: KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.
 - `default_app`: Default application pre-selected when opening the add-launcher dialog (e.g., `"firefox"`). Empty = first alphabetically.
+- `project_colors`: Dict mapping config file paths to hex color strings (e.g., `{"/path/to/work.json": "#e74c3c"}`). Assigns a visual color to each project; stored in global settings so colors are a UI preference independent of project content.
 
 ### Per-Config Options
 
@@ -367,6 +368,13 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
   - **Main Projects mode**: Shows all projects from the projects/ folder in rows of 10, sorted alphabetically.
   - **Folder Projects mode**: Shows recently used `.projectflow` configs from folders (up to 10). Stored in settings to avoid filesystem scanning.
   - **Archive mode**: Shows archived projects (greyed out). Each has a ↩ restore button. Right-click for restore or permanent delete.
+- **Project color coding**: Assign a color to any project for visual grouping and filtering.
+  - **Assign**: Right-click a project button → "🎨 Set Color..." (opens system color picker), or Settings dialog → Project Defaults tab → "Project Color:" row.
+  - **Visual indicator**: Colored projects display a 5px solid bar on their left edge in the chosen color.
+  - **Color strip**: Once any project has a color, a row of color swatches appears inline in the projects header (between the mode buttons and the title label). Each swatch is 10px tall and clickable.
+  - **Filter by color**: Click a swatch to show only projects with that color; click it again to clear the filter.
+  - **Sort by color**: The 🎨 button (beside the mode buttons) sorts all main projects by color hue (rainbow order), with uncolored projects last. Click again to reverse hue order. Clicking any mode button returns to normal mode.
+  - Colors stored in `project_colors` in `.projectflow_settings.json` (not in the project config files themselves).
 - **Project archiving**: Right-click any project button to archive it. Archived projects are hidden from normal views.
   - Main projects (`projects/*.json`) are moved to `projects/.archive/` on archive; moved back on restore.
   - Folder projects (`.projectflow`) are never moved — archiving removes them from `folder_projects` and adds to `archived_folder_projects` in settings.
