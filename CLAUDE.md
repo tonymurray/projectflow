@@ -64,6 +64,7 @@ User preferences are stored in `.projectflow_settings.json`:
 - `folder_projects`: List of up to 20 recently used `.projectflow` configs from folders (shown in separate "Folder Projects" section)
 - `archived_folder_projects`: List of `.projectflow` paths that have been archived (hidden from Folder Projects; restored by moving back to `folder_projects`)
 - `pinned_projects`: List of projects pinned to the front of the quick-access bar (drag to reorder/pin, ↺ to reset)
+- `color_order`: Ordered list of color hex strings set by dragging swatches in the color strip. Drives the 🎨 sort order. Auto-pruned when colors are removed.
 - `theme`: Color theme - `"light"`, `"dark"`, or `"system"` (default: `"system"` - follows desktop preference)
 - `joplin_token`: Joplin Web Clipper API token (enables manual sync button in notepad toolbar)
 - `notes_folder`: Path where notes are stored as markdown files (default: `notes/` in project dir). Set to `"~/Nextcloud/Notes/ProjectFlow/"` for Nextcloud sync
@@ -370,9 +371,12 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 - **Project color coding**: Assign a color to any project for visual grouping and filtering.
   - **Assign**: Right-click a project button → "🎨 Set Color..." (opens system color picker), or Settings dialog → Project Defaults tab → "Project Color:" row.
   - **Visual indicator**: Colored projects display a 5px solid bar on their left edge in the chosen color.
-  - **Color strip**: Once any project has a color, a row of color swatches appears inline in the projects header (between the mode buttons and the title label). Each swatch is 10px tall and clickable.
+  - **Color strip**: A row of color swatches appears inline in the projects header (between the mode buttons and the title label). Each swatch is 10px tall and clickable. A striped "no color" swatch is always shown at the end.
   - **Filter by color**: Click a swatch to show only projects with that color; click it again to clear the filter.
-  - **Sort by color**: The 🎨 button (beside the mode buttons) sorts all main projects by color hue (rainbow order), with uncolored projects last. Click again to reverse hue order. Clicking any mode button returns to normal mode.
+  - **Filter uncolored**: Click the striped swatch at the end of the strip to show only projects with no color assigned.
+  - **Sort by color**: The 🎨 button (beside the mode buttons) sorts all main projects by the custom swatch order, with uncolored projects last. Click again to reverse. Clicking any mode button returns to normal mode.
+  - **Drag-to-reorder swatches**: Drag color swatches left or right to set a custom priority order (e.g. red = urgent first). This order drives the 🎨 color sort and persists in `settings["color_order"]`. Newly added colors are appended in hue order until manually repositioned. Stale colors (no longer assigned to any project) are automatically pruned.
+  - **Color picker pre-fill**: The color picker's custom color slots are pre-filled with all currently assigned project colors (in swatch order) so you can easily reuse existing palette colors.
   - Color stored as `"project_color": "#rrggbb"` directly in the project's own JSON/`.projectflow` config file — travels with the project and syncs via Nextcloud.
 - **Project archiving**: Right-click any project button to archive it. Archived projects are hidden from normal views.
   - Main projects (`projects/*.json`) are moved to `projects/.archive/` on archive; moved back on restore.

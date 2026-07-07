@@ -134,6 +134,48 @@ class DraggableConfigButton(QPushButton):
         super().mouseReleaseEvent(event)
 
 
+class DraggableColorSwatch(QPushButton):
+    """A color swatch that supports drag-and-drop reordering within the color strip."""
+    MIME_TYPE = "application/x-projectflow-color"
+
+    def __init__(self, color_hex, app, parent=None):
+        super().__init__(parent)
+        self.color_hex = color_hex
+        self.app = app
+        self._drag_start = None
+        self.setAcceptDrops(True)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or not self._drag_start:
+            return
+        if (event.pos() - self._drag_start).manhattanLength() < 6:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(self.MIME_TYPE, self.color_hex.encode())
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(self.MIME_TYPE):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        dragged = event.mimeData().data(self.MIME_TYPE).data().decode()
+        if dragged != self.color_hex:
+            self.app._reorder_colors(dragged, self.color_hex)
+        event.acceptProposedAction()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
+
 class ConfigBarWidget(QWidget):
     """Widget that contains config buttons and handles drop events for reordering"""
 
@@ -740,6 +782,7 @@ class ProjectFlowApp(QMainWindow):
                     "folder_projects": [],  # List of .projectflow configs from folders
                     "enable_baloo_tags": False,  # Query Baloo for tagged files (KDE only)
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
+                    "color_order": [],  # user-ordered list of color hex strings for swatch priority
                 }
                 self.save_settings()
         except Exception as e:
@@ -1621,6 +1664,11 @@ class ProjectFlowApp(QMainWindow):
         def _pick_project_color():
             from PyQt6.QtWidgets import QColorDialog
             from PyQt6.QtGui import QColor
+            used_colors = list(dict.fromkeys(
+                self._sorted_colors(list(set(getattr(self, '_color_cache', {}).values())))
+            ))
+            for i, hex_color in enumerate(used_colors[:16]):
+                QColorDialog.setCustomColor(i, QColor(hex_color))
             initial = QColor(self._proj_color_value) if self._proj_color_value else QColor("#3498db")
             chosen = QColorDialog.getColor(initial, self)
             if chosen.isValid():
@@ -5049,6 +5097,8 @@ function filterAliases(q) {{
             self.pinned_compact = self.settings.get('pinned_compact', True)
         if not hasattr(self, 'active_color_filter'):
             self.active_color_filter = None
+        if not hasattr(self, 'filter_uncolored'):
+            self.filter_uncolored = False
         if not hasattr(self, 'color_sort_active'):
             self.color_sort_active = False
         if not hasattr(self, 'color_sort_reverse'):
@@ -5201,6 +5251,7 @@ function filterAliases(q) {{
 
         # Clicking a mode button always clears color filter/sort
         self.active_color_filter = None
+        self.filter_uncolored = False
         self.color_sort_active = False
 
         self.projects_header_label.setText(self._get_projects_title())
@@ -5270,6 +5321,9 @@ function filterAliases(q) {{
         self._build_color_cache()
 
         # Color filter/sort overrides normal mode
+        if self.filter_uncolored:
+            self._populate_uncolored_projects()
+            return
         if self.active_color_filter:
             self._populate_color_filtered_projects(self.active_color_filter)
             return
@@ -5639,6 +5693,34 @@ function filterAliases(q) {{
 
     # ── Color coding helpers ──────────────────────────────────────────────────
 
+    def _sorted_colors(self, unique_colors):
+        """Return unique_colors sorted by color_order, then hue for any not yet ordered."""
+        order = self.settings.get("color_order", [])
+        def key(c):
+            try:
+                return (0, order.index(c))
+            except ValueError:
+                return (1, self._color_hue(c))
+        return sorted(unique_colors, key=key)
+
+    def _reorder_colors(self, moved_hex, target_hex):
+        """Move moved_hex to just before target_hex in color_order, then save and refresh."""
+        current_unique = list(set(getattr(self, '_color_cache', {}).values()))
+        order = list(self.settings.get("color_order", []))
+        # Ensure every live color is in the list (new colors may not be yet)
+        for c in self._sorted_colors(current_unique):
+            if c not in order:
+                order.append(c)
+        if moved_hex in order:
+            order.remove(moved_hex)
+        idx = order.index(target_hex) if target_hex in order else len(order)
+        order.insert(idx, moved_hex)
+        self.settings["color_order"] = order
+        self.save_settings()
+        self._update_color_strip()
+        if self.color_sort_active:
+            self.populate_projects()
+
     def _build_color_cache(self):
         """Scan all known project files and cache their project_color values."""
         cache = {}
@@ -5689,6 +5771,12 @@ function filterAliases(q) {{
         """Open a color picker and assign the chosen color to a project."""
         from PyQt6.QtWidgets import QColorDialog
         from PyQt6.QtGui import QColor
+        # Pre-fill the dialog's custom color slots with currently used project colors
+        used_colors = list(dict.fromkeys(  # preserve order, deduplicate
+            self._sorted_colors(list(set(getattr(self, '_color_cache', {}).values())))
+        ))
+        for i, hex_color in enumerate(used_colors[:16]):
+            QColorDialog.setCustomColor(i, QColor(hex_color))
         current = getattr(self, '_color_cache', {}).get(config_path, "")
         initial = QColor(current) if current else QColor("#3498db")
         chosen = QColorDialog.getColor(initial, self)
@@ -5736,14 +5824,25 @@ function filterAliases(q) {{
             self.projects_header_label.setText(self._get_projects_title())
         else:
             self.active_color_filter = color_hex
+            self.filter_uncolored = False
             self.color_sort_active = False
             self.projects_header_label.setText("Color filter")
+        self._update_color_strip()
+        self.populate_projects()
+
+    def _filter_by_no_color(self):
+        """Toggle filter that shows only projects with no color assigned."""
+        self.filter_uncolored = not self.filter_uncolored
+        self.active_color_filter = None
+        self.color_sort_active = False
+        self.projects_header_label.setText("No color" if self.filter_uncolored else self._get_projects_title())
         self._update_color_strip()
         self.populate_projects()
 
     def _toggle_color_sort(self):
         """Activate or reverse color sort; deactivates any color filter."""
         self.active_color_filter = None
+        self.filter_uncolored = False
         if not self.color_sort_active:
             self.color_sort_active = True
             self.color_sort_reverse = False
@@ -5763,7 +5862,15 @@ function filterAliases(q) {{
                 item.widget().deleteLater()
 
         project_colors = getattr(self, '_color_cache', {})
-        unique_colors = sorted(set(project_colors.values()), key=self._color_hue)
+        live_colors = set(project_colors.values())
+
+        # Prune any colors from color_order that no longer have assigned projects
+        color_order = [c for c in self.settings.get("color_order", []) if c in live_colors]
+        if color_order != self.settings.get("color_order", []):
+            self.settings["color_order"] = color_order
+            self.save_settings()
+
+        unique_colors = self._sorted_colors(list(live_colors))
 
         # Always update the sort button style even when no colors exist
         sort_active = self.color_sort_active
@@ -5777,15 +5884,11 @@ function filterAliases(q) {{
             self.color_sort_btn.setText("🎨")
             self.color_sort_btn.setToolTip("Sort all projects by color")
 
-        if not unique_colors:
-            self.color_strip_widget.setVisible(False)
-            return
-
         self.color_strip_widget.setVisible(True)
 
         for color_hex in unique_colors:
             count = sum(1 for c in project_colors.values() if c == color_hex)
-            swatch = QPushButton()
+            swatch = DraggableColorSwatch(color_hex, self)
             swatch.setFixedHeight(10)
             swatch.setFixedWidth(72)
             is_active = (self.active_color_filter == color_hex)
@@ -5794,10 +5897,52 @@ function filterAliases(q) {{
                 f"QPushButton {{ background-color: {color_hex}; border: {border}; border-radius: 2px; }}"
                 f"QPushButton:hover {{ border: 2px solid white; }}"
             )
-            swatch.setToolTip(f"{color_hex} — {count} project{'s' if count != 1 else ''}\nClick to filter")
+            swatch.setToolTip(f"{color_hex} — {count} project{'s' if count != 1 else ''}\nClick to filter · Drag to reorder")
             swatch.clicked.connect(lambda checked=False, c=color_hex: self._filter_by_color(c))
             self.color_strip_layout.addWidget(swatch)
 
+        # Persistent "no color" swatch — always present when strip is visible
+        no_color_btn = QPushButton()
+        no_color_btn.setFixedHeight(10)
+        no_color_btn.setFixedWidth(72)
+        is_nc_active = self.filter_uncolored
+        nc_border = "2px solid white" if is_nc_active else f"1px solid {self.t('border_dark')}"
+        no_color_btn.setStyleSheet(
+            f"QPushButton {{ "
+            f"background: repeating-linear-gradient(45deg, "
+            f"{self.t('border_dark')} 0px, {self.t('border_dark')} 3px, "
+            f"{self.t('bg_secondary')} 3px, {self.t('bg_secondary')} 8px);"
+            f"border: {nc_border}; border-radius: 2px; }}"
+            f"QPushButton:hover {{ border: 2px solid white; }}"
+        )
+        no_color_btn.setToolTip("Show projects with no color assigned\nClick to filter")
+        no_color_btn.clicked.connect(self._filter_by_no_color)
+        self.color_strip_layout.addWidget(no_color_btn)
+
+    def _populate_uncolored_projects(self):
+        """Show only projects with no color assigned."""
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        project_colors = getattr(self, '_color_cache', {})
+        uncolored = []
+        if os.path.exists(configs_dir):
+            for f in sorted(os.listdir(configs_dir)):
+                if f.endswith('.json') and not f.startswith('.'):
+                    p = os.path.join(configs_dir, f)
+                    if '/.archive/' not in p and not project_colors.get(p):
+                        uncolored.append(p)
+        if not uncolored:
+            label = QLabel("All projects have a color assigned.")
+            label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 20px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.projects_layout.addWidget(label)
+            return
+        _cols = self.settings.get("projects_per_row", 10)
+        _spacing = self.settings.get("projects_spacing", 5)
+        flow_widget = FlowWidget(target_cols=_cols, hspacing=_spacing, vspacing=3)
+        for config_path in uncolored:
+            btn_container = self._create_config_button(config_path, is_pinned=False, draggable=False)
+            flow_widget.addWidget(btn_container)
+        self.projects_layout.addWidget(flow_widget)
 
     def _populate_color_filtered_projects(self, color_hex):
         """Show only projects whose assigned color matches the filter."""
@@ -5829,10 +5974,16 @@ function filterAliases(q) {{
         ]
         project_colors = getattr(self, '_color_cache', {})
 
-        colored = [p for p in config_files if project_colors.get(p)]
+        # Bucket projects by color in custom priority order (drag-to-reorder)
+        unique_colors = list(set(project_colors.values()))
+        ordered_colors = self._sorted_colors(unique_colors)
+        result = []
+        for color in ordered_colors:
+            result += [p for p in config_files if project_colors.get(p) == color]
         uncolored = [p for p in config_files if not project_colors.get(p)]
-        colored.sort(key=lambda p: self._color_hue(project_colors[p]), reverse=self.color_sort_reverse)
-        config_files = colored + uncolored  # uncolored always last
+        if self.color_sort_reverse:
+            result = list(reversed(result))
+        config_files = result + uncolored  # uncolored always last regardless of reverse
         if not config_files:
             return
         _cols = self.settings.get("projects_per_row", 10)
