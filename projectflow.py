@@ -740,7 +740,6 @@ class ProjectFlowApp(QMainWindow):
                     "folder_projects": [],  # List of .projectflow configs from folders
                     "enable_baloo_tags": False,  # Query Baloo for tagged files (KDE only)
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
-                    "project_colors": {},  # {config_path: "#rrggbb"}
                 }
                 self.save_settings()
         except Exception as e:
@@ -1610,7 +1609,7 @@ class ProjectFlowApp(QMainWindow):
         color_label.setStyleSheet(label_style)
         color_row = QHBoxLayout()
         color_row.setSpacing(6)
-        current_color = self.settings.get("project_colors", {}).get(self.current_config_file, "")
+        current_color = getattr(self, 'config_project_color', None) or ""
         self._proj_color_btn = QPushButton("Choose Color..." if not current_color else current_color)
         if current_color:
             self._proj_color_btn.setStyleSheet(
@@ -3040,14 +3039,9 @@ class ProjectFlowApp(QMainWindow):
         """Apply settings without closing the dialog"""
         # === Save Project Settings ===
         if hasattr(self, '_proj_default_viewer'):
-            # Project color (stored in global settings, not project config)
+            # Project color (stored in the project config file)
             if hasattr(self, '_proj_color_value'):
-                colors = self.settings.setdefault("project_colors", {})
-                if self._proj_color_value:
-                    colors[self.current_config_file] = self._proj_color_value
-                elif self.current_config_file in colors:
-                    del colors[self.current_config_file]
-                self.save_settings()
+                self.config_project_color = self._proj_color_value or None
 
             # Project name
             self.config_project_name = self._proj_project_name.text().strip() or None
@@ -3215,6 +3209,12 @@ class ProjectFlowApp(QMainWindow):
                 config_data["browser_new_tab"] = self.config_browser_new_tab
             elif "browser_new_tab" in config_data:
                 del config_data["browser_new_tab"]
+
+            # Update project color
+            if self.config_project_color:
+                config_data["project_color"] = self.config_project_color
+            elif "project_color" in config_data:
+                del config_data["project_color"]
 
             # Update column headers and columns (single column only)
             config_data["column_headers"] = self.COLUMN_HEADERS
@@ -3528,6 +3528,8 @@ StartupNotify=true
                 self.config_project_name = config_data.get('project_name', None)
                 # Load per-project browser new-tab override
                 self.config_browser_new_tab = config_data.get('browser_new_tab', None)
+                # Load per-project color for the projects section
+                self.config_project_color = config_data.get('project_color', None)
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -3548,6 +3550,7 @@ StartupNotify=true
                 self.config_browser_new_tab = None
                 self.config_notes_file = None
                 self.config_project_name = None
+                self.config_project_color = None
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -5263,6 +5266,9 @@ function filterAliases(q) {{
             if item.widget():
                 item.widget().deleteLater()
 
+        # Build color cache from project files before rendering any buttons
+        self._build_color_cache()
+
         # Color filter/sort overrides normal mode
         if self.active_color_filter:
             self._populate_color_filtered_projects(self.active_color_filter)
@@ -5625,13 +5631,41 @@ function filterAliases(q) {{
             menu.addSeparator()
             color_action = menu.addAction("🎨 Set Color...")
             color_action.triggered.connect(lambda: self._set_project_color_dialog(config_path))
-            if config_path in self.settings.get("project_colors", {}):
+            if config_path in getattr(self, '_color_cache', {}):
                 clear_color_action = menu.addAction("Clear Color")
                 clear_color_action.triggered.connect(lambda: self._clear_project_color(config_path))
 
         menu.exec(btn.mapToGlobal(pos))
 
     # ── Color coding helpers ──────────────────────────────────────────────────
+
+    def _build_color_cache(self):
+        """Scan all known project files and cache their project_color values."""
+        cache = {}
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        # Main projects directory
+        if os.path.exists(configs_dir):
+            for fname in os.listdir(configs_dir):
+                if fname.endswith('.json'):
+                    path = os.path.join(configs_dir, fname)
+                    try:
+                        with open(path) as f:
+                            color = json.load(f).get("project_color")
+                        if color:
+                            cache[path] = color
+                    except Exception:
+                        pass
+        # Folder projects (.projectflow files)
+        for path in self.settings.get("folder_projects", []) + self.settings.get("archived_folder_projects", []):
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        color = json.load(f).get("project_color")
+                    if color:
+                        cache[path] = color
+                except Exception:
+                    pass
+        self._color_cache = cache
 
     def _color_hue(self, hex_str):
         """Return HSL hue (0.0–1.0) for sorting colors in rainbow order."""
@@ -5655,31 +5689,44 @@ function filterAliases(q) {{
         """Open a color picker and assign the chosen color to a project."""
         from PyQt6.QtWidgets import QColorDialog
         from PyQt6.QtGui import QColor
-        current = self.settings.get("project_colors", {}).get(config_path, "")
+        current = getattr(self, '_color_cache', {}).get(config_path, "")
         initial = QColor(current) if current else QColor("#3498db")
         chosen = QColorDialog.getColor(initial, self)
         if chosen.isValid():
             self._set_project_color(config_path, chosen.name())
 
+    def _write_project_color(self, config_path, color_hex_or_none):
+        """Patch project_color into a config JSON file directly."""
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+            if color_hex_or_none:
+                data["project_color"] = color_hex_or_none
+            else:
+                data.pop("project_color", None)
+            with open(config_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            # Keep instance var in sync if this is the current project
+            if config_path == self.current_config_file:
+                self.config_project_color = color_hex_or_none
+        except Exception as e:
+            print(f"Error writing project color: {e}")
+
     def _set_project_color(self, config_path, color_hex):
         """Assign a color to a project and refresh UI."""
-        colors = self.settings.setdefault("project_colors", {})
-        colors[config_path] = color_hex
-        self.save_settings()
-        self._update_color_strip()
-        self.populate_projects()
+        self._write_project_color(config_path, color_hex)
+        self.populate_projects()  # rebuilds cache + buttons + strip
 
     def _clear_project_color(self, config_path):
         """Remove a project's color and refresh UI."""
-        colors = self.settings.get("project_colors", {})
-        removed_color = colors.pop(config_path, None)
-        # If the cleared color was the active filter and no other project still uses it, reset
-        if removed_color and self.active_color_filter == removed_color:
-            if removed_color not in colors.values():
+        old_color = getattr(self, '_color_cache', {}).get(config_path)
+        self._write_project_color(config_path, None)
+        # If the cleared color was the active filter and nothing else uses it, reset
+        if old_color and self.active_color_filter == old_color:
+            remaining = {c for p, c in getattr(self, '_color_cache', {}).items() if p != config_path}
+            if old_color not in remaining:
                 self.active_color_filter = None
-        self.save_settings()
-        self._update_color_strip()
-        self.populate_projects()
+        self.populate_projects()  # rebuilds cache + buttons + strip
 
     def _filter_by_color(self, color_hex):
         """Toggle color filter; clicking active color clears it."""
@@ -5715,7 +5762,7 @@ function filterAliases(q) {{
             if item.widget():
                 item.widget().deleteLater()
 
-        project_colors = self.settings.get("project_colors", {})
+        project_colors = getattr(self, '_color_cache', {})
         unique_colors = sorted(set(project_colors.values()), key=self._color_hue)
 
         # Always update the sort button style even when no colors exist
@@ -5754,7 +5801,7 @@ function filterAliases(q) {{
 
     def _populate_color_filtered_projects(self, color_hex):
         """Show only projects whose assigned color matches the filter."""
-        project_colors = self.settings.get("project_colors", {})
+        project_colors = getattr(self, '_color_cache', {})
         matching = [p for p, c in project_colors.items() if c == color_hex and os.path.exists(p)]
         if not matching:
             label = QLabel("No projects with this color.")
@@ -5780,7 +5827,7 @@ function filterAliases(q) {{
             for f in os.listdir(configs_dir)
             if f.endswith('.json') and '/.archive/' not in os.path.join(configs_dir, f)
         ]
-        project_colors = self.settings.get("project_colors", {})
+        project_colors = getattr(self, '_color_cache', {})
 
         colored = [p for p in config_files if project_colors.get(p)]
         uncolored = [p for p in config_files if not project_colors.get(p)]
@@ -5937,7 +5984,7 @@ function filterAliases(q) {{
         btn_container_layout.setSpacing(1)
 
         # 5px colored left bar if this project has an assigned color
-        _project_color = self.settings.get("project_colors", {}).get(config_path)
+        _project_color = getattr(self, '_color_cache', {}).get(config_path)
         if _project_color:
             color_bar = QFrame()
             color_bar.setFixedWidth(5)
