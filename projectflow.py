@@ -5319,6 +5319,7 @@ function filterAliases(q) {{
 
         # Build color cache from project files before rendering any buttons
         self._build_color_cache()
+        self._update_color_strip()
 
         # Color filter/sort overrides normal mode
         if self.filter_uncolored:
@@ -5864,11 +5865,13 @@ function filterAliases(q) {{
         project_colors = getattr(self, '_color_cache', {})
         live_colors = set(project_colors.values())
 
-        # Prune any colors from color_order that no longer have assigned projects
-        color_order = [c for c in self.settings.get("color_order", []) if c in live_colors]
-        if color_order != self.settings.get("color_order", []):
-            self.settings["color_order"] = color_order
-            self.save_settings()
+        # Prune stale colors only when the cache has been built (non-empty live_colors
+        # doesn't mean no colors exist — guard by checking _color_cache was set)
+        if hasattr(self, '_color_cache'):
+            color_order = [c for c in self.settings.get("color_order", []) if c in live_colors]
+            if color_order != self.settings.get("color_order", []):
+                self.settings["color_order"] = color_order
+                self.save_settings()
 
         unique_colors = self._sorted_colors(list(live_colors))
 
