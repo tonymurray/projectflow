@@ -5922,6 +5922,20 @@ function filterAliases(q) {{
         no_color_btn.clicked.connect(self._filter_by_no_color)
         self.color_strip_layout.addWidget(no_color_btn)
 
+        # Persistent "archive" swatch — shortcut to archive mode
+        archive_swatch = QPushButton()
+        archive_swatch.setFixedHeight(10)
+        archive_swatch.setFixedWidth(72)
+        is_arch_active = (self.projects_mode == 'archive')
+        arch_border = "2px solid white" if is_arch_active else f"1px solid {self.t('border_dark')}"
+        archive_swatch.setStyleSheet(
+            f"QPushButton {{ background-color: #cccccc; border: {arch_border}; border-radius: 2px; }}"
+            f"QPushButton:hover {{ border: 2px solid white; }}"
+        )
+        archive_swatch.setToolTip("Show archived projects\nClick to view archive")
+        archive_swatch.clicked.connect(lambda: self.switch_projects_mode('archive'))
+        self.color_strip_layout.addWidget(archive_swatch)
+
     def _populate_uncolored_projects(self):
         """Show only projects with no color assigned."""
         configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
