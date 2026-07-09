@@ -34,6 +34,7 @@ _terminal_config = {
 # Editor and file manager configuration (set by projectflow.py at runtime)
 _editor_config = None
 _file_manager_config = None
+_fm_always_tabs_config = False
 
 
 def set_terminal_config(terminal, workdir_builder, shell_builder):
@@ -53,6 +54,12 @@ def set_file_manager_config(file_manager):
     """Set the file manager configuration. Called by projectflow.py at startup."""
     global _file_manager_config
     _file_manager_config = file_manager
+
+
+def set_fm_always_tabs_config(value):
+    """Set whether the file manager always opens with a home tab first."""
+    global _fm_always_tabs_config
+    _fm_always_tabs_config = bool(value)
 
 
 def _get_editor():
@@ -315,7 +322,13 @@ def handle_directorydev_action(expanded_path, action):
     npm_cmd = parts[1] if len(parts) > 1 else "dev"
 
     if action in ("dolphin", "file_manager"):
-        subprocess.Popen([_get_file_manager(), project_path], start_new_session=True)
+        fm = _get_file_manager()
+        if _fm_always_tabs_config:
+            home = os.path.expanduser("~")
+            paths = [home, project_path] if project_path != home else [project_path]
+            subprocess.Popen([fm] + paths, start_new_session=True)
+        else:
+            subprocess.Popen([fm, project_path], start_new_session=True)
     elif action == "terminal":
         cmd = _build_terminal_workdir_cmd(project_path)
         subprocess.Popen(cmd, start_new_session=True)

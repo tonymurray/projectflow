@@ -782,6 +782,7 @@ class ProjectFlowApp(QMainWindow):
                     "folder_projects": [],  # List of .projectflow configs from folders
                     "enable_baloo_tags": False,  # Query Baloo for tagged files (KDE only)
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
+                    "fm_always_tabs": False,  # Open file manager with home tab + target tab
                     "color_order": [],  # user-ordered list of color hex strings for swatch priority
                 }
                 self.save_settings()
@@ -1149,6 +1150,18 @@ class ProjectFlowApp(QMainWindow):
         detected_fm = self.detect_default_file_manager()
         self._settings_file_manager.setToolTip(f"File manager for directorydev handler. Leave empty to auto-detect (currently: {detected_fm})")
         layout.addRow(fm_label, self._settings_file_manager)
+
+        # File manager tabs
+        fm_tabs_label = QLabel("File Manager Tabs:")
+        fm_tabs_label.setStyleSheet(label_style)
+        self._settings_fm_always_tabs = QCheckBox("Always open with home folder as first tab")
+        self._settings_fm_always_tabs.setChecked(self.settings.get("fm_always_tabs", False))
+        self._settings_fm_always_tabs.setStyleSheet(f"color: {self.t('fg_primary')};")
+        self._settings_fm_always_tabs.setToolTip(
+            "When enabled, opening a folder in the file manager adds ~/\n"
+            "as a first tab so you always have home + target open together."
+        )
+        layout.addRow(fm_tabs_label, self._settings_fm_always_tabs)
 
         # Notes Folder
         notes_label = QLabel("Notes Folder:")
@@ -3159,6 +3172,7 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["notes_folder"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
+            self.settings["fm_always_tabs"] = self._settings_fm_always_tabs.isChecked()
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
             self.settings["projects_per_row"] = self._settings_projects_per_row.value()
             self.settings["projects_spacing"] = self._settings_projects_spacing.value()
@@ -3189,6 +3203,8 @@ class ProjectFlowApp(QMainWindow):
                     self.handlers_module.set_editor_config(self.get_configured_editor())
                 if hasattr(self.handlers_module, 'set_file_manager_config'):
                     self.handlers_module.set_file_manager_config(self.get_configured_file_manager())
+                if hasattr(self.handlers_module, 'set_fm_always_tabs_config'):
+                    self.handlers_module.set_fm_always_tabs_config(self.settings.get("fm_always_tabs", False))
 
             # Apply theme change if needed
             if new_theme != old_theme:
@@ -4526,6 +4542,8 @@ function filterAliases(q) {{
                 # Configure file manager for complex handlers
                 if hasattr(handlers_module, 'set_file_manager_config'):
                     handlers_module.set_file_manager_config(self.get_configured_file_manager())
+                if hasattr(handlers_module, 'set_fm_always_tabs_config'):
+                    handlers_module.set_fm_always_tabs_config(self.settings.get("fm_always_tabs", False))
 
             except Exception as e:
                 print(f"Error loading launch_handlers.py: {e}")
@@ -4679,6 +4697,16 @@ function filterAliases(q) {{
         if not fm:
             fm = self.detect_default_file_manager()
         return fm
+
+    def _open_file_manager(self, path):
+        """Open a path in the configured file manager, with optional home tab."""
+        fm = self.get_configured_file_manager()
+        if self.settings.get("fm_always_tabs", False):
+            home = os.path.expanduser("~")
+            paths = [home, path] if path != home else [path]
+            subprocess.Popen([fm] + paths, start_new_session=True)
+        else:
+            subprocess.Popen([fm, path], start_new_session=True)
 
     def get_configured_terminal(self):
         """Get the configured terminal, with auto-detection fallback."""
@@ -10539,6 +10567,13 @@ Project created: {date_str}
             # Expand ~ to home directory
             expanded_path = os.path.expanduser(path)
 
+            # 0. File manager: use configured FM with optional home-tab behaviour
+            if app in ("file_manager", "dolphin"):
+                self._open_file_manager(expanded_path)
+                self.status_label.setText(f"✓ Opened in file manager: {path}")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                return
+
             # 1. Check built-in smart defaults first (browser, file_manager, editor, default)
             if app in BUILTIN_HANDLERS:
                 cmd = BUILTIN_HANDLERS[app](expanded_path)
@@ -10681,10 +10716,10 @@ Project created: {date_str}
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
                 return
 
-            # 7. Special handling for kate with directories (use dolphin instead)
+            # 7. Special handling for kate with directories (use file manager instead)
             if app == "kate" and os.path.isdir(expanded_path):
-                subprocess.Popen(["dolphin", expanded_path], start_new_session=True)
-                self.status_label.setText(f"✓ Opened folder in Dolphin: {path}")
+                self._open_file_manager(expanded_path)
+                self.status_label.setText(f"✓ Opened folder in file manager: {path}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
                 return
 

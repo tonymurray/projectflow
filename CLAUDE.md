@@ -75,6 +75,7 @@ User preferences are stored in `.projectflow_settings.json`:
 - `terminal`: External terminal application (default: auto-detected based on desktop environment). Used by terminal-related handlers and the Console viewer's "External" button. Leave empty for auto-detection.
 - `editor`: Default code/text editor (default: auto-detected based on desktop environment). Used by `directorydev` handler. Leave empty for auto-detection. Auto-detection: KDE→kate, GNOME→gedit, XFCE→mousepad, etc.
 - `file_manager`: Default file manager (default: auto-detected based on desktop environment). Used by `directorydev` and `dolphin_tabs` handlers. Leave empty for auto-detection. Auto-detection: KDE→dolphin, GNOME→nautilus, XFCE→thunar, etc.
+- `fm_always_tabs`: When `true`, every file manager launch opens with `~/` as the first tab and the target path as the second tab (default: `false`). Applies to `file_manager`, `dolphin`, `directorydev`, and kate-fallback launches. Configurable via Settings → Advanced → "File Manager Tabs" checkbox.
 - `default_app`: Default application pre-selected when opening the add-launcher dialog (e.g., `"firefox"`). Empty = first alphabetically.
 
 ### Per-Config Options
