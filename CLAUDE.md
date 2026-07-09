@@ -389,6 +389,7 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 - **Category headers**: Clickable "Open All" buttons for each category (light blue #3498db)
 - **Item buttons**: Individual launchers with application icons. Drag to reorder within category or drag to a different category to move it (saves to config immediately).
 - **Quick-add**: "+ Add" button in the launcher column header opens the add-launcher dialog targeting the first category. No need to enter edit mode. Default application is configurable via `default_app` setting.
+- **Launcher search**: A search box in the launcher header (left of the Edit/Add buttons) filters visible items as you type. Matches against display name, path, and app/command name (case-insensitive). Categories with no matching items are hidden entirely. Clearing the box restores all items. Hidden automatically when in edit mode. Implemented via widget visibility toggling (no rebuild); references stored in `self._launcher_search_refs`.
 - **Viewer tab buttons**: Folder, Web, PDF, Image, Examples, Console — each shows a system theme icon (falls back to text-only if icon not available on the desktop).
 - **Edit mode**: "✏️ Edit" button toggles edit mode — shows "Add Entry" buttons per category, "Add Category" at bottom, and "Project Details" for the full settings editor.
 - **Title bar search**: Click the project title to enter search mode. Type to filter configs with autocomplete dropdown (case-insensitive substring match). Press Enter to switch to the first/selected match, or click elsewhere to cancel.

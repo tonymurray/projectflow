@@ -6429,6 +6429,7 @@ function filterAliases(q) {{
         # Layout: Launchers (COLUMN_1) | Viewer | Notepad
         # Always show all three panels
         all_columns = [self.COLUMN_1]
+        self._launcher_search_refs = []
 
         for col_idx, column_categories in enumerate(all_columns):
             # Create a vertical layout for this entire column
@@ -6469,8 +6470,29 @@ function filterAliases(q) {{
                         }}
                     """
 
-                    # Stretch pushes buttons to the right
-                    header_layout.addStretch()
+                    if self.edit_mode:
+                        # Stretch pushes buttons to the right in edit mode
+                        header_layout.addStretch()
+                    else:
+                        # Search box expands to fill space left of the buttons
+                        self._launcher_search_box = QLineEdit()
+                        self._launcher_search_box.setPlaceholderText("🔍  Search…")
+                        self._launcher_search_box.setMinimumHeight(self.d('header_btn_height'))
+                        self._launcher_search_box.setClearButtonEnabled(True)
+                        self._launcher_search_box.setStyleSheet(f"""
+                            QLineEdit {{
+                                background-color: {self.t('bg_secondary')};
+                                color: {self.t('fg_primary')};
+                                border: 1px solid {self.t('border')};
+                                border-radius: 3px;
+                                padding: 2px 4px;
+                            }}
+                            QLineEdit:focus {{
+                                border-color: {self.t('border_dark')};
+                            }}
+                        """)
+                        self._launcher_search_box.textChanged.connect(self._filter_launchers)
+                        header_layout.addWidget(self._launcher_search_box, 1)
 
                     # Edit button (✏️ in normal mode, 💾 Save in edit mode)
                     edit_btn = QPushButton("  💾 Save" if self.edit_mode else "  ✏️  Edit")
@@ -6519,6 +6541,10 @@ function filterAliases(q) {{
                     group_container_layout = QVBoxLayout(group_container)
                     group_container_layout.setSpacing(0)
                     group_container_layout.setContentsMargins(0, 0, 0, 0)
+
+                    if col_idx == 0:
+                        category_ref = {'container': group_container, 'category_name': category_name, 'items': []}
+                        self._launcher_search_refs.append(category_ref)
 
                     # Create category header (editable in edit mode)
                     if self.edit_mode:
@@ -6938,6 +6964,17 @@ function filterAliases(q) {{
                                 else:
                                     drop_zone_layout.addWidget(btn)
                                     category_drop_zone.add_item(btn, idx)
+
+                    # Populate search refs from drop zone (normal mode only)
+                    if col_idx == 0 and not self.edit_mode:
+                        for w, i in category_drop_zone.item_widgets:
+                            it = items[i]
+                            category_ref['items'].append({
+                                'widget': w,
+                                'display_name': it[0],
+                                'path': it[1],
+                                'app': it[2] if len(it) > 2 else 'kate',
+                            })
 
                     # Add the drop zone to group layout (always — drag works in both modes)
                     group_layout.addWidget(category_drop_zone)
@@ -8137,9 +8174,22 @@ function filterAliases(q) {{
     def toggle_edit_mode(self):
         """Toggle between view mode and edit mode"""
         self.edit_mode = not self.edit_mode
-
-        # Refresh the UI to show/hide edit controls
         self.refresh_projects()
+
+    def _filter_launchers(self, query):
+        """Show/hide launcher items and categories based on search text."""
+        q = query.strip().lower()
+        for ref in getattr(self, '_launcher_search_refs', []):
+            any_visible = False
+            for item in ref['items']:
+                match = (not q
+                         or q in item['display_name'].lower()
+                         or q in item['path'].lower()
+                         or q in item['app'].lower())
+                item['widget'].setVisible(match)
+                if match:
+                    any_visible = True
+            ref['container'].setVisible(not q or any_visible)
 
     def _wire_launcher_context_menu(self, btn, col_idx, category_name, item_idx):
         """Attach a right-click Edit/Delete menu to a launcher button."""
