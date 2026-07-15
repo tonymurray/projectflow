@@ -5105,6 +5105,32 @@ function filterAliases(q) {{
         self.status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         title_bar.addWidget(self.status_label)
 
+        # Edit Project button on far right
+        _in_edit = getattr(self, 'edit_mode', False)
+        self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  ✏️  Edit Project")
+        self.edit_project_btn.setCheckable(True)
+        self.edit_project_btn.setChecked(_in_edit)
+        self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts and launchers")
+        self.edit_project_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_green_1')};
+                color: {self.t('fg_on_dark')};
+                font-weight: bold;
+                border-radius: 3px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_green_2')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:checked {{
+                background-color: {self.t('bg_success')};
+            }}
+        """)
+        self.edit_project_btn.clicked.connect(self.toggle_edit_mode)
+        title_bar.addWidget(self.edit_project_btn)
+
         parent_layout.addLayout(title_bar)
 
     def focus_project_search(self):
@@ -5630,6 +5656,11 @@ function filterAliases(q) {{
         btn_container_layout.setContentsMargins(0, 0, 0, 0)
         btn_container_layout.setSpacing(1)
 
+        color_bar = QFrame()
+        color_bar.setFixedWidth(5)
+        color_bar.setStyleSheet("background-color: transparent; border: none;")
+        btn_container_layout.addWidget(color_bar)
+
         btn = QPushButton(display_name)
         btn.setMinimumHeight(26)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -5641,6 +5672,7 @@ function filterAliases(q) {{
                 border-radius: 2px;
                 padding: 4px 8px;
                 font-size: 12px;
+                text-align: left;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_button_hover')};
@@ -6179,13 +6211,13 @@ function filterAliases(q) {{
         btn_container_layout.setContentsMargins(0, 0, 0, 0)
         btn_container_layout.setSpacing(1)
 
-        # 5px colored left bar if this project has an assigned color
+        # 5px colored left bar — always present for uniform text alignment
         _project_color = getattr(self, '_color_cache', {}).get(config_path)
-        if _project_color:
-            color_bar = QFrame()
-            color_bar.setFixedWidth(5)
-            color_bar.setStyleSheet(f"background-color: {_project_color}; border: none;")
-            btn_container_layout.addWidget(color_bar)
+        color_bar = QFrame()
+        color_bar.setFixedWidth(5)
+        _bar_color = _project_color if _project_color else "transparent"
+        color_bar.setStyleSheet(f"background-color: {_bar_color}; border: none;")
+        btn_container_layout.addWidget(color_bar)
 
         if flow_managed:
             # FlowWidget will set cell width dynamically; main button expands to fill
@@ -6218,6 +6250,7 @@ function filterAliases(q) {{
                     border-radius: 2px;
                     padding: 4px 8px;
                     font-size: 12px;
+                    text-align: left;
                     {border_bottom}
                 }}
                 QPushButton:hover {{
@@ -6235,6 +6268,7 @@ function filterAliases(q) {{
                     border-radius: 2px;
                     padding: 4px 8px;
                     font-size: 12px;
+                    text-align: left;
                     {border_bottom}
                 }}
                 QPushButton:hover {{
@@ -6493,16 +6527,6 @@ function filterAliases(q) {{
                         """)
                         self._launcher_search_box.textChanged.connect(self._filter_launchers)
                         header_layout.addWidget(self._launcher_search_box, 1)
-
-                    # Edit button (✏️ in normal mode, 💾 Save in edit mode)
-                    edit_btn = QPushButton("  💾 Save" if self.edit_mode else "  ✏️  Edit")
-                    edit_btn.setMinimumHeight(self.d('header_btn_height'))
-                    edit_btn.setCheckable(True)
-                    edit_btn.setChecked(self.edit_mode)
-                    edit_btn.setToolTip("Save and exit edit mode" if self.edit_mode else "Edit shortcuts and launchers")
-                    edit_btn.setStyleSheet(green_btn_style)
-                    edit_btn.clicked.connect(self.toggle_edit_mode)
-                    header_layout.addWidget(edit_btn)
 
                     if self.edit_mode:
                         # Scan for Docs button
