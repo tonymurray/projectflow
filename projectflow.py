@@ -989,10 +989,12 @@ class ProjectFlowApp(QMainWindow):
 
         # Global settings tabs
         settings_tab = self._create_settings_tab()
+        applications_tab = self._create_applications_tab()
         icons_tab = self._create_icons_tab()
         handlers_tab = self._create_handlers_tab()
 
         tabs.addTab(settings_tab, "Settings")
+        tabs.addTab(applications_tab, "Applications")
         tabs.addTab(icons_tab, "Icons")
         tabs.addTab(handlers_tab, "Launch Handlers")
 
@@ -1017,13 +1019,12 @@ class ProjectFlowApp(QMainWindow):
         dialog.exec()
 
     def _create_settings_tab(self):
-        """Create the settings tab content"""
+        """Create the main Settings tab (theme, startup, launcher defaults, notes, projects layout)"""
         widget = QWidget()
         layout = QFormLayout(widget)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        # Style for inputs
         input_style = f"""
             QLineEdit, QComboBox {{
                 background-color: {self.t('bg_secondary')};
@@ -1037,20 +1038,60 @@ class ProjectFlowApp(QMainWindow):
                 border-color: {self.t('bg_category')};
             }}
         """
-
         label_style = f"color: {self.t('fg_primary')}; font-size: 13px;"
+        action_btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 8px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        # Actions (top)
+        actions_label = QLabel("Actions:")
+        actions_label.setStyleSheet(label_style)
+        actions_layout = QHBoxLayout()
+
+        upgrade_btn = QPushButton("✨ Check for Updates")
+        upgrade_btn.setStyleSheet(action_btn_style)
+        upgrade_btn.setToolTip("Check for updates and upgrade")
+        upgrade_btn.clicked.connect(self.check_for_upgrade)
+        actions_layout.addWidget(upgrade_btn)
+
+        if self.detect_desktop_environment() == 'kde':
+            servicemenu_btn = QPushButton("📂 Install Dolphin Service Menu")
+            servicemenu_btn.setStyleSheet(action_btn_style)
+            servicemenu_btn.setToolTip("Install 'Add to ProjectFlow' right-click menu in Dolphin")
+            servicemenu_btn.clicked.connect(self.install_kde_servicemenu)
+            actions_layout.addWidget(servicemenu_btn)
+
+        scan_aliases_btn = QPushButton("🔍 Scan Projects for Aliases")
+        scan_aliases_btn.setStyleSheet(action_btn_style)
+        scan_aliases_btn.setToolTip("Scan all project files for alias launchers and update projectflow_aliases")
+        scan_aliases_btn.clicked.connect(lambda: self._do_alias_scan())
+        actions_layout.addWidget(scan_aliases_btn)
+
+        actions_layout.addStretch()
+        layout.addRow(actions_label, actions_layout)
+
+        layout.addRow(QLabel(""))
 
         # Theme
         theme_label = QLabel("Theme:")
         theme_label.setStyleSheet(label_style)
         self._settings_theme_combo = QComboBox()
         self._settings_theme_combo.addItems(["system", "light", "dark"])
-        current_theme = self.settings.get("theme", "system")
-        self._settings_theme_combo.setCurrentText(current_theme)
+        self._settings_theme_combo.setCurrentText(self.settings.get("theme", "system"))
         self._settings_theme_combo.setStyleSheet(input_style)
         layout.addRow(theme_label, self._settings_theme_combo)
 
-        # Startup project
+        # Startup
         startup_label = QLabel("Startup:")
         startup_label.setStyleSheet(label_style)
         startup_outer = QHBoxLayout()
@@ -1068,20 +1109,13 @@ class ProjectFlowApp(QMainWindow):
         self._settings_startup_project = QComboBox()
         self._settings_startup_project.setStyleSheet(input_style)
         self._settings_startup_project.setMinimumWidth(160)
-        # Populate with all known projects
         _configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
-        _startup_projects = []
         if os.path.isdir(_configs_dir):
-            _startup_projects = sorted(
-                f for f in os.listdir(_configs_dir)
-                if f.endswith('.json') and not f.startswith('.')
-            )
-        for _p in _startup_projects:
-            self._settings_startup_project.addItem(
-                os.path.splitext(_p)[0].replace('_', ' ').replace('-', ' ').title(),
-                os.path.join(_configs_dir, _p)
-            )
-        # Set current selection
+            for _p in sorted(f for f in os.listdir(_configs_dir) if f.endswith('.json') and not f.startswith('.')):
+                self._settings_startup_project.addItem(
+                    os.path.splitext(_p)[0].replace('_', ' ').replace('-', ' ').title(),
+                    os.path.join(_configs_dir, _p)
+                )
         _saved_specific = self.settings.get("startup_project", "")
         for i in range(self._settings_startup_project.count()):
             if self._settings_startup_project.itemData(i) == _saved_specific:
@@ -1096,110 +1130,27 @@ class ProjectFlowApp(QMainWindow):
         startup_outer.addWidget(self._settings_startup_project)
         layout.addRow(startup_label, startup_outer)
 
-        # PDF Viewer
-        pdf_label = QLabel("PDF Viewer:")
-        pdf_label.setStyleSheet(label_style)
-        pdf_layout = QHBoxLayout()
-        self._settings_pdfviewer = QLineEdit()
-        self._settings_pdfviewer.setText(self.settings.get("pdfviewer", ""))
-        self._settings_pdfviewer.setPlaceholderText("Path to external PDF viewer (optional)")
-        self._settings_pdfviewer.setStyleSheet(input_style)
-        pdf_browse = QPushButton("Browse...")
-        pdf_browse.clicked.connect(lambda: self._browse_file(self._settings_pdfviewer))
-        pdf_layout.addWidget(self._settings_pdfviewer)
-        pdf_layout.addWidget(pdf_browse)
-        layout.addRow(pdf_label, pdf_layout)
-
-        # Note Editor
-        note_label = QLabel("Note Editor:")
-        note_label.setStyleSheet(label_style)
-        self._settings_note_editor = QLineEdit()
-        self._settings_note_editor.setText(self.settings.get("open_note_external", ""))
-        self._settings_note_editor.setPlaceholderText("Command for external editor (e.g., zettlr, code)")
-        self._settings_note_editor.setStyleSheet(input_style)
-        layout.addRow(note_label, self._settings_note_editor)
-
-        # Terminal
-        terminal_label = QLabel("Terminal:")
-        terminal_label.setStyleSheet(label_style)
-        self._settings_terminal = QComboBox()
-        self._settings_terminal.setEditable(True)  # Allow custom entry
-        terminal_options = [
-            "",  # Empty = auto-detect
-            "konsole", "gnome-terminal", "alacritty", "kitty", "wezterm",
-            "terminator", "tilix", "xfce4-terminal", "guake", "tilda",
-            "foot", "ghostty", "warp-terminal", "hyper", "tabby",
-            "urxvt", "xterm"
-        ]
-        self._settings_terminal.addItems(terminal_options)
-        current_terminal = self.settings.get("terminal", "")
-        # Set current value (works for both listed and custom values)
-        idx = self._settings_terminal.findText(current_terminal)
+        # Default Launcher
+        default_app_label = QLabel("Default Launcher:")
+        default_app_label.setStyleSheet(label_style)
+        self._settings_default_app = QComboBox()
+        self._settings_default_app.setEditable(True)
+        app_keys = sorted(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else []
+        self._settings_default_app.addItems([""] + app_keys)
+        current_default_app = self.settings.get("default_app", "")
+        idx = self._settings_default_app.findText(current_default_app)
         if idx >= 0:
-            self._settings_terminal.setCurrentIndex(idx)
+            self._settings_default_app.setCurrentIndex(idx)
         else:
-            self._settings_terminal.setCurrentText(current_terminal)
-        self._settings_terminal.setStyleSheet(input_style)
-        detected = self.detect_default_terminal()
-        self._settings_terminal.setToolTip(f"Terminal used for handlers. Leave empty to auto-detect (currently: {detected})")
-        layout.addRow(terminal_label, self._settings_terminal)
-
-        # Editor
-        editor_label = QLabel("Editor:")
-        editor_label.setStyleSheet(label_style)
-        self._settings_editor = QComboBox()
-        self._settings_editor.setEditable(True)
-        editor_options = [
-            "",  # Empty = auto-detect
-            "code", "codium", "kate", "gedit", "mousepad", "pluma", "xed",
-            "featherpad", "leafpad", "geany", "sublime", "atom",
-            "vim", "nvim", "emacs", "nano"
-        ]
-        self._settings_editor.addItems(editor_options)
-        current_editor = self.settings.get("editor", "")
-        idx = self._settings_editor.findText(current_editor)
-        if idx >= 0:
-            self._settings_editor.setCurrentIndex(idx)
-        else:
-            self._settings_editor.setCurrentText(current_editor)
-        self._settings_editor.setStyleSheet(input_style)
-        detected_editor = self.detect_default_editor()
-        self._settings_editor.setToolTip(f"Editor for directorydev handler. Leave empty to auto-detect (currently: {detected_editor})")
-        layout.addRow(editor_label, self._settings_editor)
-
-        # File Manager
-        fm_label = QLabel("File Manager:")
-        fm_label.setStyleSheet(label_style)
-        self._settings_file_manager = QComboBox()
-        self._settings_file_manager.setEditable(True)
-        fm_options = [
-            "",  # Empty = auto-detect
-            "dolphin", "nautilus", "thunar", "nemo", "caja",
-            "pcmanfm", "pcmanfm-qt", "cosmic-files"
-        ]
-        self._settings_file_manager.addItems(fm_options)
-        current_fm = self.settings.get("file_manager", "")
-        idx = self._settings_file_manager.findText(current_fm)
-        if idx >= 0:
-            self._settings_file_manager.setCurrentIndex(idx)
-        else:
-            self._settings_file_manager.setCurrentText(current_fm)
-        self._settings_file_manager.setStyleSheet(input_style)
-        detected_fm = self.detect_default_file_manager()
-        self._settings_file_manager.setToolTip(f"File manager for directorydev handler. Leave empty to auto-detect (currently: {detected_fm})")
-        layout.addRow(fm_label, self._settings_file_manager)
-
-        # File manager tabs
-        fm_tabs_label = QLabel("File Manager Tabs:")
-        fm_tabs_label.setStyleSheet(label_style)
-        self._settings_fm_always_tabs = QCheckBox("Always open with home folder as first tab")
-        self._settings_fm_always_tabs.setChecked(self.settings.get("fm_always_tabs", False))
-        self._settings_fm_always_tabs.setStyleSheet(f"color: {self.t('fg_primary')};")
-        self._settings_fm_always_tabs.setToolTip(
-            "When enabled, opening a folder in the file manager adds ~/\n"
-            "as a first tab so you always have home + target open together."
-        )
-        layout.addRow(fm_tabs_label, self._settings_fm_always_tabs)
+            self._settings_default_app.setCurrentText(current_default_app)
+        self._settings_default_app.setStyleSheet(input_style)
+        self._settings_default_app.setToolTip("Default application pre-selected when adding a new launcher (empty = first alphabetically)")
+        default_app_row = QHBoxLayout()
+        default_app_row.addWidget(self._settings_default_app)
+        hint_label = QLabel("Pre-selected when adding new launchers")
+        hint_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
+        default_app_row.addWidget(hint_label)
+        layout.addRow(default_app_label, default_app_row)
 
         # Notes Folder
         notes_label = QLabel("Notes Folder:")
@@ -1223,74 +1174,6 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
 
-        # Default Application (for quick-add dialog)
-        default_app_label = QLabel("Default Application:")
-        default_app_label.setStyleSheet(label_style)
-        self._settings_default_app = QComboBox()
-        self._settings_default_app.setEditable(True)
-        app_keys = sorted(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else []
-        self._settings_default_app.addItems([""] + app_keys)
-        current_default_app = self.settings.get("default_app", "")
-        idx = self._settings_default_app.findText(current_default_app)
-        if idx >= 0:
-            self._settings_default_app.setCurrentIndex(idx)
-        else:
-            self._settings_default_app.setCurrentText(current_default_app)
-        self._settings_default_app.setStyleSheet(input_style)
-        self._settings_default_app.setToolTip("Default application pre-selected when adding a new launcher (empty = first alphabetically)")
-        default_app_row = QHBoxLayout()
-        default_app_row.addWidget(self._settings_default_app)
-        hint_label = QLabel("Used when adding new launchers")
-        hint_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
-        default_app_row.addWidget(hint_label)
-        layout.addRow(default_app_label, default_app_row)
-
-        # Browser Links
-        browser_label = QLabel("Browser Links:")
-        browser_label.setStyleSheet(label_style)
-        self._settings_browser_new_tab = QCheckBox("Open links in new tab (uncheck for new window)")
-        self._settings_browser_new_tab.setChecked(self.settings.get('browser_new_tab', True))
-        self._settings_browser_new_tab.setStyleSheet(f"color: {self.t('fg_primary')};")
-        layout.addRow(browser_label, self._settings_browser_new_tab)
-
-        # Projects per row
-        per_row_label = QLabel("Projects per row:")
-        per_row_label.setStyleSheet(label_style)
-        self._settings_projects_per_row = QSpinBox()
-        self._settings_projects_per_row.setRange(3, 20)
-        self._settings_projects_per_row.setValue(self.settings.get("projects_per_row", 10))
-        self._settings_projects_per_row.setToolTip("Number of project buttons per row in all list views (default: 10)")
-        self._settings_projects_per_row.setStyleSheet(f"""
-            QSpinBox {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 4px;
-                padding: 6px;
-                min-height: 20px;
-            }}
-        """)
-        layout.addRow(per_row_label, self._settings_projects_per_row)
-
-        # Project button spacing
-        spacing_label = QLabel("Button spacing:")
-        spacing_label.setStyleSheet(label_style)
-        self._settings_projects_spacing = QSpinBox()
-        self._settings_projects_spacing.setRange(2, 15)
-        self._settings_projects_spacing.setValue(self.settings.get("projects_spacing", 5))
-        self._settings_projects_spacing.setToolTip("Horizontal gap between project buttons in pixels (default: 5)")
-        self._settings_projects_spacing.setStyleSheet(f"""
-            QSpinBox {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 4px;
-                padding: 6px;
-                min-height: 20px;
-            }}
-        """)
-        layout.addRow(spacing_label, self._settings_projects_spacing)
-
         # Joplin Token
         joplin_label = QLabel("Joplin Token:")
         joplin_label.setStyleSheet(label_style)
@@ -1301,54 +1184,42 @@ class ProjectFlowApp(QMainWindow):
         self._settings_joplin.setStyleSheet(input_style)
         layout.addRow(joplin_label, self._settings_joplin)
 
-        # Spacer
-        layout.addRow(QLabel(""))
-
-        # Actions section
-        actions_label = QLabel("Actions:")
-        actions_label.setStyleSheet(label_style)
-
-        actions_layout = QHBoxLayout()
-        action_btn_style = f"""
-            QPushButton {{
-                background-color: {self.t('bg_button')};
+        # Projects per row
+        spinbox_style = f"""
+            QSpinBox {{
+                background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
                 border-radius: 4px;
-                padding: 8px 12px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
+                padding: 6px;
+                min-height: 20px;
             }}
         """
+        per_row_label = QLabel("Projects per row:")
+        per_row_label.setStyleSheet(label_style)
+        self._settings_projects_per_row = QSpinBox()
+        self._settings_projects_per_row.setRange(3, 20)
+        self._settings_projects_per_row.setValue(self.settings.get("projects_per_row", 10))
+        self._settings_projects_per_row.setToolTip("Number of project buttons per row in all list views (default: 10)")
+        self._settings_projects_per_row.setStyleSheet(spinbox_style)
+        layout.addRow(per_row_label, self._settings_projects_per_row)
 
-        # Upgrade button
-        upgrade_btn = QPushButton("✨ Check for Updates")
-        upgrade_btn.setStyleSheet(action_btn_style)
-        upgrade_btn.setToolTip("Check for updates and upgrade")
-        upgrade_btn.clicked.connect(self.check_for_upgrade)
-        actions_layout.addWidget(upgrade_btn)
+        spacing_label = QLabel("Button spacing:")
+        spacing_label.setStyleSheet(label_style)
+        self._settings_projects_spacing = QSpinBox()
+        self._settings_projects_spacing.setRange(2, 15)
+        self._settings_projects_spacing.setValue(self.settings.get("projects_spacing", 5))
+        self._settings_projects_spacing.setToolTip("Horizontal gap between project buttons in pixels (default: 5)")
+        self._settings_projects_spacing.setStyleSheet(spinbox_style)
+        layout.addRow(spacing_label, self._settings_projects_spacing)
 
-        # Install KDE service menu button (only show on KDE)
-        if self.detect_desktop_environment() == 'kde':
-            servicemenu_btn = QPushButton("📂 Install Dolphin Service Menu")
-            servicemenu_btn.setStyleSheet(action_btn_style)
-            servicemenu_btn.setToolTip("Install 'Add to ProjectFlow' right-click menu in Dolphin")
-            servicemenu_btn.clicked.connect(self.install_kde_servicemenu)
-            actions_layout.addWidget(servicemenu_btn)
-
-        actions_layout.addStretch()
-        layout.addRow(actions_label, actions_layout)
-
-        # Path Mappings section
+        # Path Mappings
         mappings_label = QLabel("Path Mappings:")
         mappings_label.setStyleSheet(label_style)
         mappings_label.setToolTip(
             "Remap path prefixes when switching machines (e.g. SSHFS mounts).\n"
             "Enable per-project via the ⇄ button in the title bar."
         )
-
         mappings_outer = QVBoxLayout()
         mappings_outer.setSpacing(4)
 
@@ -1383,14 +1254,11 @@ class ProjectFlowApp(QMainWindow):
                 background-color: {self.t('bg_primary')};
             }}
         """)
-
-        # Populate from settings
         for m in self.settings.get('path_mappings', []):
             row = self._path_mappings_table.rowCount()
             self._path_mappings_table.insertRow(row)
             self._path_mappings_table.setItem(row, 0, QTableWidgetItem(m.get('from', '')))
             self._path_mappings_table.setItem(row, 1, QTableWidgetItem(m.get('to', '')))
-
         mappings_outer.addWidget(self._path_mappings_table)
 
         mappings_btn_layout = QHBoxLayout()
@@ -1404,22 +1272,139 @@ class ProjectFlowApp(QMainWindow):
         mappings_btn_layout.addWidget(remove_mapping_btn)
         mappings_btn_layout.addStretch()
         mappings_outer.addLayout(mappings_btn_layout)
-
         layout.addRow(mappings_label, mappings_outer)
 
-        # Aliases section
-        aliases_label = QLabel("Aliases:")
-        aliases_label.setStyleSheet(label_style)
-        aliases_layout = QHBoxLayout()
+        return widget
 
-        scan_aliases_btn = QPushButton("🔍 Scan All Projects for Aliases")
-        scan_aliases_btn.setStyleSheet(action_btn_style)
-        scan_aliases_btn.setToolTip("Scan all project files for alias launchers and update projectflow_aliases")
-        scan_aliases_btn.clicked.connect(lambda: self._do_alias_scan())
-        aliases_layout.addWidget(scan_aliases_btn)
+    def _create_applications_tab(self):
+        """Create the Applications tab (external apps used by launchers and viewers)"""
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
 
-        aliases_layout.addStretch()
-        layout.addRow(aliases_label, aliases_layout)
+        input_style = f"""
+            QLineEdit, QComboBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+            QLineEdit:focus, QComboBox:focus {{
+                border-color: {self.t('bg_category')};
+            }}
+        """
+        label_style = f"color: {self.t('fg_primary')}; font-size: 13px;"
+
+        # PDF Viewer
+        pdf_label = QLabel("PDF Viewer:")
+        pdf_label.setStyleSheet(label_style)
+        pdf_layout = QHBoxLayout()
+        self._settings_pdfviewer = QLineEdit()
+        self._settings_pdfviewer.setText(self.settings.get("pdfviewer", ""))
+        self._settings_pdfviewer.setPlaceholderText("Path to external PDF viewer (optional)")
+        self._settings_pdfviewer.setStyleSheet(input_style)
+        pdf_browse = QPushButton("Browse...")
+        pdf_browse.clicked.connect(lambda: self._browse_file(self._settings_pdfviewer))
+        pdf_layout.addWidget(self._settings_pdfviewer)
+        pdf_layout.addWidget(pdf_browse)
+        layout.addRow(pdf_label, pdf_layout)
+
+        # Note Editor
+        note_label = QLabel("Note Editor:")
+        note_label.setStyleSheet(label_style)
+        self._settings_note_editor = QLineEdit()
+        self._settings_note_editor.setText(self.settings.get("open_note_external", ""))
+        self._settings_note_editor.setPlaceholderText("Command for external editor (e.g., zettlr, code)")
+        self._settings_note_editor.setStyleSheet(input_style)
+        layout.addRow(note_label, self._settings_note_editor)
+
+        # Terminal
+        terminal_label = QLabel("Terminal:")
+        terminal_label.setStyleSheet(label_style)
+        self._settings_terminal = QComboBox()
+        self._settings_terminal.setEditable(True)
+        self._settings_terminal.addItems([
+            "", "konsole", "gnome-terminal", "alacritty", "kitty", "wezterm",
+            "terminator", "tilix", "xfce4-terminal", "guake", "tilda",
+            "foot", "ghostty", "warp-terminal", "hyper", "tabby", "urxvt", "xterm"
+        ])
+        current_terminal = self.settings.get("terminal", "")
+        idx = self._settings_terminal.findText(current_terminal)
+        if idx >= 0:
+            self._settings_terminal.setCurrentIndex(idx)
+        else:
+            self._settings_terminal.setCurrentText(current_terminal)
+        self._settings_terminal.setStyleSheet(input_style)
+        self._settings_terminal.setToolTip(
+            f"Terminal used for handlers. Leave empty to auto-detect (currently: {self.detect_default_terminal()})"
+        )
+        layout.addRow(terminal_label, self._settings_terminal)
+
+        # Code Editor
+        editor_label = QLabel("Code Editor:")
+        editor_label.setStyleSheet(label_style)
+        self._settings_editor = QComboBox()
+        self._settings_editor.setEditable(True)
+        self._settings_editor.addItems([
+            "", "code", "codium", "kate", "gedit", "mousepad", "pluma", "xed",
+            "featherpad", "leafpad", "geany", "sublime", "atom",
+            "vim", "nvim", "emacs", "nano"
+        ])
+        current_editor = self.settings.get("editor", "")
+        idx = self._settings_editor.findText(current_editor)
+        if idx >= 0:
+            self._settings_editor.setCurrentIndex(idx)
+        else:
+            self._settings_editor.setCurrentText(current_editor)
+        self._settings_editor.setStyleSheet(input_style)
+        self._settings_editor.setToolTip(
+            f"Editor for directorydev handler. Leave empty to auto-detect (currently: {self.detect_default_editor()})"
+        )
+        layout.addRow(editor_label, self._settings_editor)
+
+        # File Manager
+        fm_label = QLabel("File Manager:")
+        fm_label.setStyleSheet(label_style)
+        self._settings_file_manager = QComboBox()
+        self._settings_file_manager.setEditable(True)
+        self._settings_file_manager.addItems([
+            "", "dolphin", "nautilus", "thunar", "nemo", "caja",
+            "pcmanfm", "pcmanfm-qt", "cosmic-files"
+        ])
+        current_fm = self.settings.get("file_manager", "")
+        idx = self._settings_file_manager.findText(current_fm)
+        if idx >= 0:
+            self._settings_file_manager.setCurrentIndex(idx)
+        else:
+            self._settings_file_manager.setCurrentText(current_fm)
+        self._settings_file_manager.setStyleSheet(input_style)
+        self._settings_file_manager.setToolTip(
+            f"File manager for directorydev handler. Leave empty to auto-detect (currently: {self.detect_default_file_manager()})"
+        )
+        layout.addRow(fm_label, self._settings_file_manager)
+
+        # File Manager Tabs
+        fm_tabs_label = QLabel("File Manager Tabs:")
+        fm_tabs_label.setStyleSheet(label_style)
+        self._settings_fm_always_tabs = QCheckBox("Always open with home folder as first tab")
+        self._settings_fm_always_tabs.setChecked(self.settings.get("fm_always_tabs", False))
+        self._settings_fm_always_tabs.setStyleSheet(f"color: {self.t('fg_primary')};")
+        self._settings_fm_always_tabs.setToolTip(
+            "When enabled, opening a folder in the file manager adds ~/\n"
+            "as a first tab so you always have home + target open together."
+        )
+        layout.addRow(fm_tabs_label, self._settings_fm_always_tabs)
+
+        # Browser Links
+        browser_label = QLabel("Browser Links:")
+        browser_label.setStyleSheet(label_style)
+        self._settings_browser_new_tab = QCheckBox("Open links in new tab (uncheck for new window)")
+        self._settings_browser_new_tab.setChecked(self.settings.get('browser_new_tab', True))
+        self._settings_browser_new_tab.setStyleSheet(f"color: {self.t('fg_primary')};")
+        layout.addRow(browser_label, self._settings_browser_new_tab)
 
         return widget
 
