@@ -17,7 +17,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QFileDialog, QGroupBox, QMessageBox, QScrollArea, QFrame, QTextEdit, QToolBar,
     QLineEdit, QComboBox, QTextBrowser, QDialog, QDialogButtonBox, QTabWidget, QFormLayout, QCheckBox,
-    QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QSizePolicy,
+    QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
     QSplitter, QSpinBox
 )
@@ -934,11 +935,7 @@ class ProjectFlowApp(QMainWindow):
         """
 
     def show_project_settings_dialog(self, initial_tab=0):
-        """Show project-specific settings dialog.
-
-        Args:
-            initial_tab: Index of tab to show (0=Project Launchers, 1=Project Defaults)
-        """
+        """Show project-specific settings dialog."""
         # Get project name for title
         project_name = self.get_project_name()
 
@@ -952,12 +949,7 @@ class ProjectFlowApp(QMainWindow):
         tabs = QTabWidget()
         tabs.setStyleSheet(self._get_tab_style())
 
-        # Project-specific tabs
-        project_items_tab = self._create_project_items_tab()
-        project_defaults_tab = self._create_project_defaults_tab()
-
-        tabs.addTab(project_items_tab, "Project Launchers")
-        tabs.addTab(project_defaults_tab, "Project Defaults")
+        tabs.addTab(self._create_project_defaults_tab(), "Project Defaults")
 
         # Set initial tab if specified
         if initial_tab > 0 and initial_tab < tabs.count():
@@ -1057,6 +1049,52 @@ class ProjectFlowApp(QMainWindow):
         self._settings_theme_combo.setCurrentText(current_theme)
         self._settings_theme_combo.setStyleSheet(input_style)
         layout.addRow(theme_label, self._settings_theme_combo)
+
+        # Startup project
+        startup_label = QLabel("Startup:")
+        startup_label.setStyleSheet(label_style)
+        startup_outer = QHBoxLayout()
+        startup_outer.setSpacing(6)
+
+        self._settings_startup_mode = QComboBox()
+        self._settings_startup_mode.addItems(["Last opened project", "Main project", "Specific project"])
+        _mode_map = {"last_used": "Last opened project", "main": "Main project", "specific": "Specific project"}
+        self._settings_startup_mode.setCurrentText(
+            _mode_map.get(self.settings.get("startup_mode", "last_used"), "Last opened project")
+        )
+        self._settings_startup_mode.setStyleSheet(input_style)
+        startup_outer.addWidget(self._settings_startup_mode)
+
+        self._settings_startup_project = QComboBox()
+        self._settings_startup_project.setStyleSheet(input_style)
+        self._settings_startup_project.setMinimumWidth(160)
+        # Populate with all known projects
+        _configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        _startup_projects = []
+        if os.path.isdir(_configs_dir):
+            _startup_projects = sorted(
+                f for f in os.listdir(_configs_dir)
+                if f.endswith('.json') and not f.startswith('.')
+            )
+        for _p in _startup_projects:
+            self._settings_startup_project.addItem(
+                os.path.splitext(_p)[0].replace('_', ' ').replace('-', ' ').title(),
+                os.path.join(_configs_dir, _p)
+            )
+        # Set current selection
+        _saved_specific = self.settings.get("startup_project", "")
+        for i in range(self._settings_startup_project.count()):
+            if self._settings_startup_project.itemData(i) == _saved_specific:
+                self._settings_startup_project.setCurrentIndex(i)
+                break
+        self._settings_startup_project.setEnabled(
+            self._settings_startup_mode.currentText() == "Specific project"
+        )
+        self._settings_startup_mode.currentTextChanged.connect(
+            lambda t: self._settings_startup_project.setEnabled(t == "Specific project")
+        )
+        startup_outer.addWidget(self._settings_startup_project)
+        layout.addRow(startup_label, startup_outer)
 
         # PDF Viewer
         pdf_label = QLabel("PDF Viewer:")
@@ -1303,6 +1341,72 @@ class ProjectFlowApp(QMainWindow):
         actions_layout.addStretch()
         layout.addRow(actions_label, actions_layout)
 
+        # Path Mappings section
+        mappings_label = QLabel("Path Mappings:")
+        mappings_label.setStyleSheet(label_style)
+        mappings_label.setToolTip(
+            "Remap path prefixes when switching machines (e.g. SSHFS mounts).\n"
+            "Enable per-project via the ⇄ button in the title bar."
+        )
+
+        mappings_outer = QVBoxLayout()
+        mappings_outer.setSpacing(4)
+
+        self._path_mappings_table = QTableWidget()
+        self._path_mappings_table.setColumnCount(2)
+        self._path_mappings_table.setHorizontalHeaderLabels(["From (local path)", "To (remote/mounted path)"])
+        self._path_mappings_table.horizontalHeader().setStretchLastSection(True)
+        self._path_mappings_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._path_mappings_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._path_mappings_table.setAlternatingRowColors(True)
+        self._path_mappings_table.setMinimumHeight(90)
+        self._path_mappings_table.setMaximumHeight(140)
+        self._path_mappings_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                gridline-color: {self.t('border')};
+            }}
+            QHeaderView::section {{
+                background-color: {self.t('bg_panel')};
+                color: {self.t('fg_on_dark')};
+                padding: 4px;
+                border: none;
+                font-size: 11px;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QTableWidget::item:alternate {{
+                background-color: {self.t('bg_primary')};
+            }}
+        """)
+
+        # Populate from settings
+        for m in self.settings.get('path_mappings', []):
+            row = self._path_mappings_table.rowCount()
+            self._path_mappings_table.insertRow(row)
+            self._path_mappings_table.setItem(row, 0, QTableWidgetItem(m.get('from', '')))
+            self._path_mappings_table.setItem(row, 1, QTableWidgetItem(m.get('to', '')))
+
+        mappings_outer.addWidget(self._path_mappings_table)
+
+        mappings_btn_layout = QHBoxLayout()
+        add_mapping_btn = QPushButton("+ Add")
+        add_mapping_btn.setStyleSheet(action_btn_style)
+        add_mapping_btn.clicked.connect(self._add_path_mapping_row)
+        remove_mapping_btn = QPushButton("Remove Selected")
+        remove_mapping_btn.setStyleSheet(action_btn_style)
+        remove_mapping_btn.clicked.connect(self._remove_path_mapping_row)
+        mappings_btn_layout.addWidget(add_mapping_btn)
+        mappings_btn_layout.addWidget(remove_mapping_btn)
+        mappings_btn_layout.addStretch()
+        mappings_outer.addLayout(mappings_btn_layout)
+
+        layout.addRow(mappings_label, mappings_outer)
+
         # Aliases section
         aliases_label = QLabel("Aliases:")
         aliases_label.setStyleSheet(label_style)
@@ -1316,42 +1420,6 @@ class ProjectFlowApp(QMainWindow):
 
         aliases_layout.addStretch()
         layout.addRow(aliases_label, aliases_layout)
-
-        return widget
-
-    def _create_project_items_tab(self):
-        """Create the project items tab for editing categories and items"""
-        widget = QWidget()
-        main_layout = QVBoxLayout(widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(6)
-
-        # Toolbar
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(6)
-        scan_btn = QPushButton("🔍 Scan for Docs")
-        scan_btn.setToolTip("Scan project folder for .md and .html files and add them to a Documentation category")
-        scan_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.t('bg_button')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 4px;
-                padding: 5px 10px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{ background-color: {self.t('bg_button_hover')}; }}
-        """)
-        scan_btn.clicked.connect(self._show_doc_scan_dialog)
-        toolbar.addWidget(scan_btn)
-        toolbar.addStretch()
-        main_layout.addLayout(toolbar)
-
-        # Single tree editor for COLUMN_1 (no tabs needed)
-        self._proj_trees = []
-        tree = self._create_column_tree(0, self.COLUMN_1)
-        self._proj_trees.append(tree)
-        main_layout.addWidget(tree, 1)  # Stretch to fill space
 
         return widget
 
@@ -1608,9 +1676,6 @@ class ProjectFlowApp(QMainWindow):
 
             self._save_project_config()
 
-            if hasattr(self, '_proj_trees') and self._proj_trees:
-                self._refresh_column_tree(self._proj_trees[0], 0)
-
             dlg.accept()
             QMessageBox.information(
                 self, "Done",
@@ -1859,202 +1924,6 @@ class ProjectFlowApp(QMainWindow):
 
         return widget
 
-    def _create_column_tree(self, col_idx, column_data):
-        """Create a QTreeWidget for editing a single column's categories and items"""
-        tree = QTreeWidget()
-        tree.setHeaderHidden(True)
-        tree.setDragEnabled(True)
-        tree.setAcceptDrops(True)
-        tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        tree.setDefaultDropAction(Qt.DropAction.MoveAction)
-        tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        tree.setIndentation(20)
-
-        tree.setStyleSheet(f"""
-            QTreeWidget {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_primary')};
-                border: none;
-                outline: none;
-            }}
-            QTreeWidget::item {{
-                padding: 4px 0;
-                border-bottom: 1px solid {self.t('border')};
-            }}
-            QTreeWidget::item:selected {{
-                background-color: {self.t('bg_category')};
-                color: {self.t('fg_on_dark')};
-            }}
-            QTreeWidget::item:hover {{
-                background-color: {self.t('bg_button_hover')};
-            }}
-        """)
-
-        # Store column index
-        tree.setProperty("col_idx", col_idx)
-
-        # Populate tree with categories and items
-        self._populate_column_tree(tree, column_data)
-
-        # Add category button at the top level
-        add_category_item = QTreeWidgetItem(tree)
-        add_category_item.setText(0, "+ Add Category")
-        add_category_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "add_category"})
-        add_category_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-
-        # Connect double-click to edit
-        tree.itemDoubleClicked.connect(lambda item: self._on_tree_item_double_click(tree, item))
-
-        # Connect drop event for reordering
-        tree.model().rowsMoved.connect(lambda: self._on_tree_rows_moved(tree))
-
-        return tree
-
-    def _populate_column_tree(self, tree, column_data):
-        """Populate a tree widget with category and item data"""
-        tree.clear()
-
-        for category_dict in column_data:
-            for category_name, items in category_dict.items():
-                # Create category item
-                category_item = QTreeWidgetItem(tree)
-                category_item.setText(0, f"📁 {category_name}")
-                category_item.setData(0, Qt.ItemDataRole.UserRole, {
-                    "type": "category",
-                    "name": category_name
-                })
-                category_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled |
-                    Qt.ItemFlag.ItemIsSelectable |
-                    Qt.ItemFlag.ItemIsDragEnabled |
-                    Qt.ItemFlag.ItemIsDropEnabled
-                )
-                category_item.setExpanded(True)
-
-                # Add items under category
-                for item_idx, item in enumerate(items):
-                    name = item[0] if len(item) > 0 else ""
-                    path = item[1] if len(item) > 1 else ""
-                    app = item[2] if len(item) > 2 else ""
-
-                    item_widget = QTreeWidgetItem(category_item)
-                    item_widget.setText(0, f"  {name}")
-                    item_widget.setToolTip(0, f"{path} ({app})")
-                    item_widget.setData(0, Qt.ItemDataRole.UserRole, {
-                        "type": "item",
-                        "name": name,
-                        "path": path,
-                        "app": app,
-                        "index": item_idx
-                    })
-                    item_widget.setFlags(
-                        Qt.ItemFlag.ItemIsEnabled |
-                        Qt.ItemFlag.ItemIsSelectable |
-                        Qt.ItemFlag.ItemIsDragEnabled
-                    )
-
-                # Add "Add Item" entry under category
-                add_item = QTreeWidgetItem(category_item)
-                add_item.setText(0, "  + Add Item")
-                add_item.setData(0, Qt.ItemDataRole.UserRole, {
-                    "type": "add_item",
-                    "category": category_name
-                })
-                add_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-
-    def _on_tree_item_double_click(self, tree, item):
-        """Handle double-click on tree items for editing"""
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data:
-            return
-
-        col_idx = tree.property("col_idx")
-        item_type = data.get("type")
-
-        if item_type == "category":
-            self._show_category_edit_dialog(col_idx, data.get("name"), tree)
-        elif item_type == "item":
-            parent = item.parent()
-            if parent:
-                category_data = parent.data(0, Qt.ItemDataRole.UserRole)
-                category_name = category_data.get("name") if category_data else None
-                if category_name:
-                    self._show_item_edit_dialog(col_idx, category_name, data, tree)
-        elif item_type == "add_item":
-            category_name = data.get("category")
-            if category_name:
-                self._show_item_edit_dialog(col_idx, category_name, None, tree)
-        elif item_type == "add_category":
-            self._show_category_edit_dialog(col_idx, None, tree)
-
-    def _show_category_edit_dialog(self, col_idx, category_name, tree):
-        """Show dialog for adding/editing a category"""
-        is_new = category_name is None
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Add Category" if is_new else "Edit Category")
-        dialog.resize(350, 120)
-
-        layout = QFormLayout(dialog)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
-
-        input_style = f"""
-            QLineEdit {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 4px;
-                padding: 6px;
-            }}
-        """
-        label_style = f"color: {self.t('fg_primary')};"
-
-        name_label = QLabel("Category Name:")
-        name_label.setStyleSheet(label_style)
-        name_input = QLineEdit(category_name or "")
-        name_input.setStyleSheet(input_style)
-        name_input.setPlaceholderText("Enter category name")
-        layout.addRow(name_label, name_input)
-
-        # Delete button for existing categories
-        btn_layout = QHBoxLayout()
-        if not is_new:
-            delete_btn = QPushButton("Delete")
-            delete_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.t('bg_danger')};
-                    color: {self.t('fg_on_dark')};
-                    border: none;
-                    border-radius: 4px;
-                    padding: 6px 12px;
-                }}
-                QPushButton:hover {{
-                    background-color: {self.t('bg_danger_hover')};
-                }}
-            """)
-            delete_btn.clicked.connect(lambda: self._delete_category_from_dialog(col_idx, category_name, tree, dialog))
-            btn_layout.addWidget(delete_btn)
-
-        btn_layout.addStretch()
-
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        btn_layout.addWidget(button_box)
-
-        layout.addRow(btn_layout)
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            new_name = name_input.text().strip()
-            if new_name:
-                if is_new:
-                    self._add_category_to_config(col_idx, new_name)
-                else:
-                    self._rename_category_in_config(col_idx, category_name, new_name)
-                self._refresh_column_tree(tree, col_idx)
-
     def _show_item_edit_dialog(self, col_idx, category_name, item_data, tree=None, inline_widget=None):
         """Show dialog for adding/editing an item"""
         is_new = item_data is None
@@ -2202,8 +2071,6 @@ class ProjectFlowApp(QMainWindow):
                     inline_widget.name_edit.setText(new_name)
                     inline_widget.path_edit.setPlainText(new_path)
                     inline_widget.app_edit.setText(new_app)
-                elif tree is not None:
-                    self._refresh_column_tree(tree, col_idx)
                 else:
                     self.refresh_projects()
 
@@ -2276,23 +2143,6 @@ class ProjectFlowApp(QMainWindow):
                 category_dict[new_name] = category_dict.pop(old_name)
                 break
 
-    def _delete_category_from_dialog(self, col_idx, category_name, tree, dialog):
-        """Delete a category after confirmation"""
-        reply = QMessageBox.question(
-            dialog,
-            "Delete Category",
-            f"Delete '{category_name}' and all its items?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            column = self.COLUMN_1
-            for i, category_dict in enumerate(column):
-                if category_name in category_dict:
-                    del column[i]
-                    break
-            dialog.reject()
-            self._refresh_column_tree(tree, col_idx)
-
     def _add_item_to_config(self, col_idx, category_name, name, path, app):
         """Add a new item to a category"""
         column = self.COLUMN_1
@@ -2328,50 +2178,7 @@ class ProjectFlowApp(QMainWindow):
                         del items[item_idx]
                     break
             dialog.reject()
-            if tree is not None:
-                self._refresh_column_tree(tree, col_idx)
-            else:
-                self.refresh_projects()
-
-    def _refresh_column_tree(self, tree, col_idx):
-        """Refresh a column tree with current data"""
-        column = self.COLUMN_1
-        self._populate_column_tree(tree, column)
-
-        # Re-add the "Add Category" item
-        add_category_item = QTreeWidgetItem(tree)
-        add_category_item.setText(0, "+ Add Category")
-        add_category_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "add_category"})
-        add_category_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-
-    def _on_tree_rows_moved(self, tree):
-        """Handle drag-drop reordering in the tree"""
-        # Rebuild column data from tree structure
-        new_column = []
-
-        for i in range(tree.topLevelItemCount()):
-            category_item = tree.topLevelItem(i)
-            data = category_item.data(0, Qt.ItemDataRole.UserRole)
-
-            if data and data.get("type") == "category":
-                category_name = data.get("name")
-                items = []
-
-                for j in range(category_item.childCount()):
-                    child = category_item.child(j)
-                    child_data = child.data(0, Qt.ItemDataRole.UserRole)
-
-                    if child_data and child_data.get("type") == "item":
-                        items.append([
-                            child_data.get("name", ""),
-                            child_data.get("path", ""),
-                            child_data.get("app", "")
-                        ])
-
-                new_column.append({category_name: items})
-
-        # Update the single column
-        self.COLUMN_1 = new_column
+            self.refresh_projects()
 
     def _create_icons_tab(self):
         """Create the icon preferences tab content"""
@@ -3096,6 +2903,24 @@ class ProjectFlowApp(QMainWindow):
         if folder_path:
             line_edit.setText(folder_path)
 
+    def _add_path_mapping_row(self):
+        """Add an empty row to the path mappings table."""
+        if not hasattr(self, '_path_mappings_table'):
+            return
+        row = self._path_mappings_table.rowCount()
+        self._path_mappings_table.insertRow(row)
+        self._path_mappings_table.setItem(row, 0, QTableWidgetItem("~/"))
+        self._path_mappings_table.setItem(row, 1, QTableWidgetItem("~/"))
+        self._path_mappings_table.editItem(self._path_mappings_table.item(row, 0))
+
+    def _remove_path_mapping_row(self):
+        """Remove the selected row from the path mappings table."""
+        if not hasattr(self, '_path_mappings_table'):
+            return
+        selected = self._path_mappings_table.selectedItems()
+        if selected:
+            self._path_mappings_table.removeRow(selected[0].row())
+
     def _apply_settings(self, dialog):
         """Apply settings without closing the dialog"""
         # === Save Project Settings ===
@@ -3133,6 +2958,17 @@ class ProjectFlowApp(QMainWindow):
             new_theme = self._settings_theme_combo.currentText()
             old_theme = self.settings.get("theme", "system")
             self.settings["theme"] = new_theme
+
+            # Save startup mode
+            _mode_text = self._settings_startup_mode.currentText()
+            _mode_val = {"Last opened project": "last_used", "Main project": "main", "Specific project": "specific"}.get(_mode_text, "last_used")
+            self.settings["startup_mode"] = _mode_val
+            if _mode_val == "specific":
+                _sp_data = self._settings_startup_project.currentData()
+                if _sp_data:
+                    self.settings["startup_project"] = _sp_data
+            elif "startup_project" in self.settings:
+                del self.settings["startup_project"]
 
             # Save other settings
             pdfviewer = self._settings_pdfviewer.text().strip()
@@ -3188,6 +3024,21 @@ class ProjectFlowApp(QMainWindow):
                 self.settings["joplin_token"] = joplin_token
             elif "joplin_token" in self.settings:
                 del self.settings["joplin_token"]
+
+            # Save path mappings from the table
+            if hasattr(self, '_path_mappings_table'):
+                mappings = []
+                for row in range(self._path_mappings_table.rowCount()):
+                    from_item = self._path_mappings_table.item(row, 0)
+                    to_item = self._path_mappings_table.item(row, 1)
+                    from_ = from_item.text().strip() if from_item else ""
+                    to_ = to_item.text().strip() if to_item else ""
+                    if from_ and to_:
+                        mappings.append({"from": from_, "to": to_})
+                if mappings:
+                    self.settings["path_mappings"] = mappings
+                elif "path_mappings" in self.settings:
+                    del self.settings["path_mappings"]
 
             self.save_settings()
 
@@ -3279,6 +3130,12 @@ class ProjectFlowApp(QMainWindow):
                 config_data["project_color"] = self.config_project_color
             elif "project_color" in config_data:
                 del config_data["project_color"]
+
+            # Update path mapping flag
+            if getattr(self, 'config_path_mapping', False):
+                config_data["path_mapping"] = True
+            elif "path_mapping" in config_data:
+                del config_data["path_mapping"]
 
             # Update column headers and columns (single column only)
             config_data["column_headers"] = self.COLUMN_HEADERS
@@ -3499,61 +3356,43 @@ StartupNotify=true
 
     def get_config_file_to_use(self):
         """Determine which config file to use based on settings"""
-        # Priority:
-        # 1. Command-line argument
-        # 2. Default config set in settings
-        # 3. First pinned project
-        # 4. Last used config
-        # 5. Standard default (projectflow.json)
-
-        # Check if config file was passed as CLI argument
+        # CLI argument always wins
         if self.config_file_arg:
-            # Support both relative and absolute paths
             if os.path.isabs(self.config_file_arg):
                 config_path = self.config_file_arg
             else:
                 config_path = os.path.join(self.script_dir, self.config_file_arg)
-
             if os.path.exists(config_path):
                 return config_path
-            else:
-                print(f"Warning: Config file '{self.config_file_arg}' not found. Using default config.")
+            print(f"Warning: Config file '{self.config_file_arg}' not found. Using default config.")
 
         configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        startup_mode = self.settings.get("startup_mode", "last_used")
 
-        # Check if default config is set
+        # Specific project
+        if startup_mode == "specific":
+            specific = self.settings.get("startup_project", "")
+            if specific and os.path.exists(specific):
+                return specific
+
+        # Last opened project
+        if startup_mode == "last_used":
+            if self.settings.get("last_used_project") and os.path.exists(self.settings["last_used_project"]):
+                return self.settings["last_used_project"]
+
+        # Main project (explicit or fallback for all modes)
         if self.settings.get("default_project"):
             config_path = os.path.join(configs_dir, self.settings["default_project"])
             if os.path.exists(config_path):
                 return config_path
 
-        # Check for first pinned project
-        pinned = self.settings.get("pinned_projects", [])
-        if pinned:
-            first_pinned = pinned[0]
-            # Handle both relative and absolute paths
-            if os.path.isabs(first_pinned):
-                pinned_path = first_pinned
-            else:
-                pinned_path = os.path.join(configs_dir, first_pinned)
-            if os.path.exists(pinned_path):
-                return pinned_path
-
-        # Check last used config
-        if self.settings.get("last_used_project"):
-            if os.path.exists(self.settings["last_used_project"]):
-                return self.settings["last_used_project"]
-
         # Fall back to standard default
-        default_project = os.path.join(self.script_dir, "projectflow.json")
-
-        # If configs directory exists, look for a default there
         if os.path.exists(configs_dir):
             configs_default = os.path.join(configs_dir, "projectflow.json")
             if os.path.exists(configs_default):
                 return configs_default
 
-        return default_project
+        return os.path.join(self.script_dir, "projectflow.json")
 
     def load_config(self):
         """Load configuration from JSON config file or use defaults"""
@@ -3594,6 +3433,8 @@ StartupNotify=true
                 self.config_browser_new_tab = config_data.get('browser_new_tab', None)
                 # Load per-project color for the projects section
                 self.config_project_color = config_data.get('project_color', None)
+                # Load per-project path mapping toggle
+                self.config_path_mapping = config_data.get('path_mapping', False)
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -3615,6 +3456,7 @@ StartupNotify=true
                 self.config_notes_file = None
                 self.config_project_name = None
                 self.config_project_color = None
+                self.config_path_mapping = False
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -5105,13 +4947,9 @@ function filterAliases(q) {{
         self.status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         title_bar.addWidget(self.status_label)
 
-        # Edit Project button on far right
+        # Edit toolbar on far right — buttons always use the same style
         _in_edit = getattr(self, 'edit_mode', False)
-        self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  ✏️  Edit Project")
-        self.edit_project_btn.setCheckable(True)
-        self.edit_project_btn.setChecked(_in_edit)
-        self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts and launchers")
-        self.edit_project_btn.setStyleSheet(f"""
+        _edit_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_green_1')};
                 color: {self.t('fg_on_dark')};
@@ -5127,9 +4965,56 @@ function filterAliases(q) {{
             QPushButton:checked {{
                 background-color: {self.t('bg_success')};
             }}
-        """)
+        """
+
+        if _in_edit:
+            proj_details_btn = QPushButton("Project Details")
+            proj_details_btn.setToolTip("Open project details editor")
+            proj_details_btn.setStyleSheet(_edit_btn_style)
+            proj_details_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
+            title_bar.addWidget(proj_details_btn)
+
+            scan_docs_btn = QPushButton("🔍 Scan Docs")
+            scan_docs_btn.setToolTip("Scan project folder for documentation files")
+            scan_docs_btn.setStyleSheet(_edit_btn_style)
+            scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
+            title_bar.addWidget(scan_docs_btn)
+
+        self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  ✏️  Edit Project")
+        self.edit_project_btn.setCheckable(True)
+        self.edit_project_btn.setChecked(_in_edit)
+        self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts and launchers")
+        self.edit_project_btn.setStyleSheet(_edit_btn_style)
         self.edit_project_btn.clicked.connect(self.toggle_edit_mode)
         title_bar.addWidget(self.edit_project_btn)
+
+        # Path mapping toggle — only shown when global mappings are configured
+        if self.settings.get('path_mappings'):
+            _mapping_on = getattr(self, 'config_path_mapping', False)
+            _mapping_btn_style = f"""
+                QPushButton {{
+                    background-color: {self.t('bg_green_1') if _mapping_on else self.t('bg_button')};
+                    color: {self.t('fg_on_dark') if _mapping_on else self.t('fg_secondary')};
+                    font-weight: bold;
+                    border-radius: 3px;
+                    border: 1px solid {self.t('border')};
+                    padding: 4px 8px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_green_2')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """
+            mapping_btn = QPushButton("⇄")
+            mapping_btn.setToolTip(
+                "Path mapping ON — paths are remapped via global mappings (click to disable)"
+                if _mapping_on else
+                "Path mapping OFF — paths used as-is (click to enable remapping)"
+            )
+            mapping_btn.setStyleSheet(_mapping_btn_style)
+            mapping_btn.clicked.connect(self._toggle_path_mapping)
+            title_bar.addWidget(mapping_btn)
 
         parent_layout.addLayout(title_bar)
 
@@ -5844,6 +5729,39 @@ function filterAliases(q) {{
         if chosen.isValid():
             self._set_project_color(config_path, chosen.name())
 
+    def _resolve_path(self, path):
+        """Apply global path mappings to a path if mapping is enabled for this project."""
+        if not getattr(self, 'config_path_mapping', False):
+            return path
+        mappings = self.settings.get('path_mappings', [])
+        if not mappings:
+            return path
+        expanded = os.path.expanduser(path)
+        for m in mappings:
+            from_ = os.path.expanduser(m.get('from', ''))
+            to_ = m.get('to', '')
+            if from_ and to_ and expanded.startswith(from_):
+                return to_ + expanded[len(from_):]
+        return path
+
+    def _toggle_path_mapping(self):
+        """Toggle per-project path mapping on/off and persist to config file."""
+        self.config_path_mapping = not getattr(self, 'config_path_mapping', False)
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            if self.config_path_mapping:
+                config_data['path_mapping'] = True
+            else:
+                config_data.pop('path_mapping', None)
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving path_mapping: {e}")
+        self.refresh_projects()
+
     def _write_project_color(self, config_path, color_hex_or_none):
         """Patch project_color into a config JSON file directly."""
         try:
@@ -6504,11 +6422,8 @@ function filterAliases(q) {{
                         }}
                     """
 
-                    if self.edit_mode:
-                        # Stretch pushes buttons to the right in edit mode
-                        header_layout.addStretch()
-                    else:
-                        # Search box expands to fill space left of the buttons
+                    if not self.edit_mode:
+                        # Search box + Add button (hidden in edit mode — controls are in title bar)
                         self._launcher_search_box = QLineEdit()
                         self._launcher_search_box.setPlaceholderText("🔍  Search…")
                         self._launcher_search_box.setMinimumHeight(self.d('header_btn_height'))
@@ -6528,25 +6443,6 @@ function filterAliases(q) {{
                         self._launcher_search_box.textChanged.connect(self._filter_launchers)
                         header_layout.addWidget(self._launcher_search_box, 1)
 
-                    if self.edit_mode:
-                        # Scan for Docs button
-                        scan_docs_btn = QPushButton("🔍 Scan Docs")
-                        scan_docs_btn.setMinimumHeight(self.d('header_btn_height'))
-                        scan_docs_btn.setToolTip("Scan project folder for documentation files")
-                        scan_docs_btn.setStyleSheet(green_btn_style)
-                        scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
-                        header_layout.addWidget(scan_docs_btn)
-
-                        # Project Details button
-                        advanced_btn = QPushButton("Project Details")
-                        advanced_btn.setMaximumWidth(100)
-                        advanced_btn.setMinimumHeight(self.d('header_btn_height'))
-                        advanced_btn.setToolTip("Open project details editor")
-                        advanced_btn.setStyleSheet(green_btn_style)
-                        advanced_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
-                        header_layout.addWidget(advanced_btn)
-                    else:
-                        # Add button (quick-add launcher, only in normal mode)
                         add_btn = QPushButton("  +  Add")
                         add_btn.setMinimumHeight(self.d('header_btn_height'))
                         add_btn.setToolTip("Quick-add a launcher to the first category")
@@ -6554,8 +6450,8 @@ function filterAliases(q) {{
                         add_btn.clicked.connect(self.quick_add_launcher)
                         header_layout.addWidget(add_btn)
 
-                    column_layout.addLayout(header_layout)
-                    column_layout.setContentsMargins(0, 4, 0, 0)  # left, top, right, bottom
+                        column_layout.addLayout(header_layout)
+                        column_layout.setContentsMargins(0, 4, 0, 0)  # left, top, right, bottom
 
             # Process each category within this column
             for category_dict in column_categories:
@@ -10638,6 +10534,8 @@ Project created: {date_str}
     def open_in_app(self, path, app="default"):
         """Open the specified path in the given application"""
         try:
+            # Apply path mappings if enabled for this project (before ~ expansion)
+            path = self._resolve_path(path)
             # Expand ~ to home directory
             expanded_path = os.path.expanduser(path)
 
