@@ -757,7 +757,10 @@ class ProjectFlowApp(QMainWindow):
         # Determine which config file to use
         self.current_config_file = self.get_config_file_to_use()
 
-        # Add to recent projects
+        # Persist initial config as last_used so "Last opened project" startup mode works
+        self.settings["last_used_project"] = self.current_config_file
+
+        # Add to recent projects (also calls save_settings)
         self.add_to_recent_projects(self.current_config_file)
 
         self.load_config()
