@@ -8684,6 +8684,23 @@ function filterAliases(q) {{
         self._kimai_no_project_widget.setVisible(not has_project)
         self._kimai_main_widget.setVisible(has_project)
 
+    @staticmethod
+    def _parse_csv_duration(value):
+        """Parse a CSV Duration field to seconds. Handles int seconds or 'H:MM' / 'H:MM:SS' strings."""
+        s = str(value or '0').strip()
+        if ':' in s:
+            parts = s.split(':')
+            try:
+                h, m = int(parts[0]), int(parts[1])
+                sec = int(parts[2]) if len(parts) > 2 else 0
+                return h * 3600 + m * 60 + sec
+            except (ValueError, IndexError):
+                return 0
+        try:
+            return int(s)
+        except ValueError:
+            return 0
+
     def _kimai_scan_csv_imports(self):
         """Scan the CSV folder for files with rows matching the current project name."""
         csv_folder = os.path.expanduser(self.settings.get('kimai_csv_folder', ''))
@@ -8742,7 +8759,7 @@ function filterAliases(q) {{
             card_layout.setSpacing(2)
 
             # Header row: filename + total + Import button
-            total_s = sum(int(r.get('Duration', 0) or 0) for r in rows)
+            total_s = sum(self._parse_csv_duration(r.get('Duration', 0)) for r in rows)
             total_h, total_m = total_s // 3600, (total_s % 3600) // 60
             dur_str = f"{total_h}h {total_m:02d}m" if total_h else f"{total_m}m"
             n = len(rows)
