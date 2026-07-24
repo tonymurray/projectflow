@@ -8287,6 +8287,23 @@ function filterAliases(q) {{
                 f"Total: {total_h}h {total_m:02d}m  ·  {n} entr{'y' if n == 1 else 'ies'} this {period_label}"
             )
 
+        # Total row at bottom of table
+        if n > 0:
+            total_str = f"{total_h}h {total_m:02d}m"
+            total_row = table.rowCount()
+            table.insertRow(total_row)
+            total_bg = self.t('bg_panel')
+            total_fg = self.t('fg_on_dark')
+            for col, text in enumerate(["Total", "", "", total_str]):
+                item = QTableWidgetItem(text)
+                item.setBackground(QColor(total_bg))
+                item.setForeground(QColor(total_fg))
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                table.setItem(total_row, col, item)
+
         # Load activities into combo box if not yet done
         if hasattr(self, '_time_activity_combo') and self._time_activity_combo.count() == 0:
             self._kimai_load_activities()
