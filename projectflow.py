@@ -8317,22 +8317,14 @@ function filterAliases(q) {{
                 f"Total: {total_h}h {total_m:02d}m  ·  {n} entr{'y' if n == 1 else 'ies'} this {period_label}"
             )
 
-        # Total row at bottom of table
-        if n > 0:
-            total_str = f"{total_h}h {total_m:02d}m"
-            total_row = table.rowCount()
-            table.insertRow(total_row)
-            total_bg = self.t('bg_category')
-            total_fg = self.t('fg_on_dark')
-            for col, text in enumerate(["Total", "", "", total_str]):
-                item = QTableWidgetItem(text)
-                item.setBackground(QColor(total_bg))
-                item.setForeground(QColor(total_fg))
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                table.setItem(total_row, col, item)
+        # Total bar below table
+        if hasattr(self, '_kimai_total_bar'):
+            if n > 0:
+                total_str = f"{total_h}h {total_m:02d}m"
+                self._kimai_total_bar.setText(f"Total  {total_str}")
+                self._kimai_total_bar.setVisible(True)
+            else:
+                self._kimai_total_bar.setVisible(False)
 
         # Load activities into combo box if not yet done
         if hasattr(self, '_time_activity_combo') and self._time_activity_combo.count() == 0:
@@ -8604,6 +8596,15 @@ function filterAliases(q) {{
             }}
         """)
         main_layout.addWidget(self._time_entries_table, 1)
+
+        # Total bar (replaces total table row — separate widget avoids QSS override)
+        self._kimai_total_bar = QLabel("")
+        self._kimai_total_bar.setVisible(False)
+        self._kimai_total_bar.setStyleSheet(
+            f"background-color: {self.t('bg_category')}; color: {self.t('fg_on_dark')};"
+            f" font-weight: bold; font-size: 12px; padding: 3px 6px;"
+        )
+        main_layout.addWidget(self._kimai_total_bar)
 
         # Separator
         sep = QFrame()
