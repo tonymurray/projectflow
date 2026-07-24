@@ -8534,7 +8534,7 @@ function filterAliases(q) {{
             }}
             QHeaderView::section {{
                 background-color: {self.t('bg_panel')};
-                color: {self.t('fg_primary')};
+                color: {self.t('fg_on_dark')};
                 padding: 4px;
                 border: none;
                 border-bottom: 1px solid {self.t('border')};
