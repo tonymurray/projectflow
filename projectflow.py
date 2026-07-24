@@ -7149,7 +7149,7 @@ function filterAliases(q) {{
                     ("console",  "",         "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-                    tab_buttons.append(("time", "⏱", "Kimai time tracker", []))
+                    tab_buttons.insert(0, ("time", "⏱", "Kimai time tracker", []))
 
                 # Normal tab button style
                 tab_btn_style = f"""
@@ -8292,7 +8292,7 @@ function filterAliases(q) {{
             total_str = f"{total_h}h {total_m:02d}m"
             total_row = table.rowCount()
             table.insertRow(total_row)
-            total_bg = self.t('bg_panel')
+            total_bg = self.t('bg_category')
             total_fg = self.t('fg_on_dark')
             for col, text in enumerate(["Total", "", "", total_str]):
                 item = QTableWidgetItem(text)
