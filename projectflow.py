@@ -7149,7 +7149,7 @@ function filterAliases(q) {{
                     ("console",  "",         "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-                    tab_buttons.append(("time", "", "Kimai time tracker", ["preferences-system-time", "clock", "appointment-new"]))
+                    tab_buttons.append(("time", "⏱", "Kimai time tracker", []))
 
                 # Normal tab button style
                 tab_btn_style = f"""
@@ -7220,7 +7220,7 @@ function filterAliases(q) {{
                     # Set style based on whether this is the active mode
                     if mode == self.column2_mode:
                         btn.setStyleSheet(active_tab_style)
-                    elif mode in ('console', 'time'):
+                    elif mode == 'console':
                         btn.setStyleSheet(console_tab_btn_style)
                     else:
                         btn.setStyleSheet(tab_btn_style)
@@ -8157,6 +8157,9 @@ function filterAliases(q) {{
     def _kimai_request(self, method, path, data=None, params=None):
         """Make a Kimai REST API request; return parsed JSON."""
         base_url = self.settings.get('kimai_url', '').rstrip('/')
+        # Normalise: strip trailing /api if user accidentally included it
+        if base_url.endswith('/api'):
+            base_url = base_url[:-4]
         token = self.settings.get('kimai_token', '')
         url = base_url + path
         if params:
@@ -8344,7 +8347,10 @@ function filterAliases(q) {{
         try:
             projects = self._kimai_request('GET', '/api/projects')
         except Exception as e:
-            QMessageBox.warning(self, "Kimai", f"Could not fetch projects:\n{e}")
+            base = self.settings.get('kimai_url', '').rstrip('/')
+            if base.endswith('/api'):
+                base = base[:-4]
+            QMessageBox.warning(self, "Kimai", f"Could not fetch projects:\n{e}\n\nURL tried: {base}/api/projects")
             return
 
         dlg = QDialog(self)
@@ -9537,7 +9543,7 @@ function filterAliases(q) {{
         for mode, btn in self.viewer_tab_buttons.items():
             if mode == self.column2_mode:
                 btn.setStyleSheet(active_style)
-            elif mode in ('console', 'time'):
+            elif mode == 'console':
                 btn.setStyleSheet(console_normal_style)
             else:
                 btn.setStyleSheet(normal_style)
