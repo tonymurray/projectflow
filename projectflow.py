@@ -8298,14 +8298,22 @@ function filterAliases(q) {{
             elif isinstance(act, int) and hasattr(self, '_time_activity_data'):
                 activity_name = self._time_activity_data.get(act, '')
 
+            row_bg = QColor(self.t('bg_primary') if row % 2 else self.t('bg_secondary'))
             desc_item = QTableWidgetItem(desc)
             desc_item.setToolTip(f"{activity_name}  |  {desc}" if activity_name else desc)
+            desc_item.setBackground(row_bg)
+            date_item = QTableWidgetItem(date_str)
+            date_item.setBackground(row_bg)
+            time_item = QTableWidgetItem(time_str)
+            time_item.setBackground(row_bg)
+            dur_item = QTableWidgetItem(dur_str)
+            dur_item.setBackground(row_bg)
             table.setItem(row, 0, desc_item)
-            table.setItem(row, 1, QTableWidgetItem(date_str))
-            table.setItem(row, 2, QTableWidgetItem(time_str))
-            table.setItem(row, 3, QTableWidgetItem(dur_str))
+            table.setItem(row, 1, date_item)
+            table.setItem(row, 2, time_item)
+            table.setItem(row, 3, dur_item)
 
-        # Summary
+        # Summary label
         total_h = total_seconds // 3600
         total_m = (total_seconds % 3600) // 60
         period_label = {'week': 'week', 'month': 'month', '3m': '3 months', '6m': '6 months'}.get(
@@ -8317,14 +8325,26 @@ function filterAliases(q) {{
                 f"Total: {total_h}h {total_m:02d}m  ·  {n} entr{'y' if n == 1 else 'ies'} this {period_label}"
             )
 
-        # Total bar below table
+        # Total row at bottom of table
+        if n > 0:
+            total_str = f"{total_h}h {total_m:02d}m"
+            total_row = table.rowCount()
+            table.insertRow(total_row)
+            total_bg = QColor(self.t('bg_panel'))
+            total_fg = QColor(self.t('fg_on_dark'))
+            for col, text in enumerate(["Total", "", "", total_str]):
+                item = QTableWidgetItem(text)
+                item.setBackground(total_bg)
+                item.setForeground(total_fg)
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                table.setItem(total_row, col, item)
+
+        # Hide the total bar (no longer used)
         if hasattr(self, '_kimai_total_bar'):
-            if n > 0:
-                total_str = f"{total_h}h {total_m:02d}m"
-                self._kimai_total_bar.setText(f"Total  {total_str}")
-                self._kimai_total_bar.setVisible(True)
-            else:
-                self._kimai_total_bar.setVisible(False)
+            self._kimai_total_bar.setVisible(False)
 
         # Load activities into combo box if not yet done
         if hasattr(self, '_time_activity_combo') and self._time_activity_combo.count() == 0:
@@ -8573,7 +8593,7 @@ function filterAliases(q) {{
         self._time_entries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self._time_entries_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._time_entries_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._time_entries_table.setAlternatingRowColors(True)
+        self._time_entries_table.setAlternatingRowColors(False)
         self._time_entries_table.verticalHeader().setVisible(False)
         self._time_entries_table.setStyleSheet(f"""
             QTableWidget {{
@@ -8590,9 +8610,6 @@ function filterAliases(q) {{
                 border: none;
                 border-bottom: 1px solid {self.t('border')};
                 font-size: 11px;
-            }}
-            QTableWidget::item:alternate {{
-                background-color: {self.t('bg_primary')};
             }}
         """)
         main_layout.addWidget(self._time_entries_table, 1)
