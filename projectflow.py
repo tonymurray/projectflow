@@ -4851,6 +4851,9 @@ function filterAliases(q) {{
                     return
                 resource_key = "folder_path"
                 resource_value = self.folder_current_path
+            elif self.column2_mode == "time":
+                resource_key = None
+                resource_value = None
             else:
                 return
 
@@ -4861,7 +4864,8 @@ function filterAliases(q) {{
                     config_data = json.load(f)
 
             # Update the resource and column2_default
-            config_data[resource_key] = resource_value
+            if resource_key:
+                config_data[resource_key] = resource_value
             config_data["column2_default"] = self.column2_mode
 
             # Save back to config
@@ -8551,8 +8555,14 @@ function filterAliases(q) {{
         link_proj_btn.setFixedWidth(28)
         link_proj_btn.setToolTip("Change linked Kimai project")
         link_proj_btn.clicked.connect(self._kimai_link_project_dialog)
+        pin_btn = QPushButton("📌")
+        pin_btn.setStyleSheet(btn_style)
+        pin_btn.setFixedWidth(28)
+        pin_btn.setToolTip("Set time viewer as default for this project")
+        pin_btn.clicked.connect(self.set_viewer_as_default)
         toolbar.addWidget(refresh_btn)
         toolbar.addWidget(link_proj_btn)
+        toolbar.addWidget(pin_btn)
         main_layout.addLayout(toolbar)
 
         # Summary label
