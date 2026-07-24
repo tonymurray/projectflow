@@ -29,6 +29,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import datetime
+import csv as _csv
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
@@ -1449,6 +1450,19 @@ class ProjectFlowApp(QMainWindow):
         self._settings_kimai_token.setEchoMode(QLineEdit.EchoMode.Password)
         self._settings_kimai_token.setStyleSheet(input_style)
         layout.addRow(kimai_token_label, self._settings_kimai_token)
+
+        kimai_csv_label = QLabel("CSV Import Folder:")
+        kimai_csv_label.setStyleSheet(label_style)
+        kimai_csv_row = QHBoxLayout()
+        self._settings_kimai_csv_folder = QLineEdit()
+        self._settings_kimai_csv_folder.setText(self.settings.get("kimai_csv_folder", ""))
+        self._settings_kimai_csv_folder.setPlaceholderText("~/Nextcloud/ProjectFlowDocuments/times/")
+        self._settings_kimai_csv_folder.setStyleSheet(input_style)
+        kimai_csv_browse = QPushButton("Browse…")
+        kimai_csv_browse.clicked.connect(lambda: self._browse_folder(self._settings_kimai_csv_folder))
+        kimai_csv_row.addWidget(self._settings_kimai_csv_folder)
+        kimai_csv_row.addWidget(kimai_csv_browse)
+        layout.addRow(kimai_csv_label, kimai_csv_row)
 
         # === Joplin section ===
         joplin_section = QLabel("Joplin Notes")
@@ -3103,6 +3117,12 @@ class ProjectFlowApp(QMainWindow):
             elif "kimai_token" in self.settings:
                 del self.settings["kimai_token"]
 
+            kimai_csv_folder = self._settings_kimai_csv_folder.text().strip()
+            if kimai_csv_folder:
+                self.settings["kimai_csv_folder"] = kimai_csv_folder
+            elif "kimai_csv_folder" in self.settings:
+                del self.settings["kimai_csv_folder"]
+
             # Save path mappings from the table
             if hasattr(self, '_path_mappings_table'):
                 mappings = []
@@ -3215,12 +3235,17 @@ class ProjectFlowApp(QMainWindow):
             elif "path_mapping" in config_data:
                 del config_data["path_mapping"]
 
-            # Update linked Kimai project ID
+            # Update linked Kimai project ID and name
             kimai_pid = getattr(self, 'config_kimai_project_id', None)
             if kimai_pid:
                 config_data["kimai_project_id"] = kimai_pid
             elif "kimai_project_id" in config_data:
                 del config_data["kimai_project_id"]
+            kimai_pname = getattr(self, 'config_kimai_project_name', None)
+            if kimai_pname:
+                config_data["kimai_project_name"] = kimai_pname
+            elif "kimai_project_name" in config_data:
+                del config_data["kimai_project_name"]
 
             # Update column headers and columns (single column only)
             config_data["column_headers"] = self.COLUMN_HEADERS
@@ -3520,8 +3545,9 @@ StartupNotify=true
                 self.config_project_color = config_data.get('project_color', None)
                 # Load per-project path mapping toggle
                 self.config_path_mapping = config_data.get('path_mapping', False)
-                # Load linked Kimai project ID
+                # Load linked Kimai project ID and name
                 self.config_kimai_project_id = config_data.get('kimai_project_id', None)
+                self.config_kimai_project_name = config_data.get('kimai_project_name', None)
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -8308,6 +8334,9 @@ function filterAliases(q) {{
         if hasattr(self, '_time_activity_combo') and self._time_activity_combo.count() == 0:
             self._kimai_load_activities()
 
+        # Refresh pending CSV imports
+        self._kimai_refresh_csv_section()
+
     def _kimai_submit_entry(self):
         """Read the log-time form and POST a new timesheet entry to Kimai."""
         if not hasattr(self, '_time_description'):
@@ -8419,16 +8448,19 @@ function filterAliases(q) {{
             if row >= 0:
                 pid, pname = project_map[row]
                 target_field.setText(str(pid))
+                return pname
+        return None
 
     def _kimai_link_project_dialog(self):
         """Show the Kimai project picker and save the selection to the current project config."""
         tmp_field = QLineEdit()
         current_id = getattr(self, 'config_kimai_project_id', None)
         tmp_field.setText(str(current_id) if current_id else "")
-        self._kimai_pick_project_into(tmp_field)
+        pname = self._kimai_pick_project_into(tmp_field)
         new_id_text = tmp_field.text().strip()
         if new_id_text.isdigit():
             self.config_kimai_project_id = int(new_id_text)
+            self.config_kimai_project_name = pname
             self._save_project_config()
             self._kimai_load_entries()
 
@@ -8616,12 +8648,176 @@ function filterAliases(q) {{
         self._kimai_status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
         main_layout.addWidget(self._kimai_status_label)
 
+        # CSV import section (shown below Log Time when pending files exist)
+        csv_sep = QFrame()
+        csv_sep.setFrameShape(QFrame.Shape.HLine)
+        csv_sep.setStyleSheet(f"color: {self.t('border')};")
+        main_layout.addWidget(csv_sep)
+
+        self._kimai_csv_title = QLabel("Pending Imports")
+        self._kimai_csv_title.setStyleSheet(
+            f"color: {self.t('fg_secondary')}; font-size: 11px; font-weight: bold;"
+        )
+        self._kimai_csv_title.hide()
+        main_layout.addWidget(self._kimai_csv_title)
+
+        self._kimai_csv_container = QWidget()
+        self._kimai_csv_container_layout = QVBoxLayout(self._kimai_csv_container)
+        self._kimai_csv_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._kimai_csv_container_layout.setSpacing(4)
+        main_layout.addWidget(self._kimai_csv_container)
+
         outer.addWidget(self._kimai_main_widget)
 
         # Initial visibility
         has_project = bool(getattr(self, 'config_kimai_project_id', None))
         self._kimai_no_project_widget.setVisible(not has_project)
         self._kimai_main_widget.setVisible(has_project)
+
+    def _kimai_scan_csv_imports(self):
+        """Scan the CSV folder for files with rows matching the current project name."""
+        csv_folder = os.path.expanduser(self.settings.get('kimai_csv_folder', ''))
+        project_name = getattr(self, 'config_kimai_project_name', None)
+        if not csv_folder or not project_name or not os.path.isdir(csv_folder):
+            return []
+        results = []
+        for fname in sorted(os.listdir(csv_folder)):
+            if not fname.lower().endswith('.csv'):
+                continue
+            fpath = os.path.join(csv_folder, fname)
+            try:
+                with open(fpath, newline='', encoding='utf-8') as f:
+                    rows = [r for r in _csv.DictReader(f)
+                            if r.get('Project', '').strip() == project_name.strip()]
+                if rows:
+                    results.append((fpath, fname, rows))
+            except Exception as e:
+                print(f"Kimai CSV scan: could not read {fname}: {e}")
+        return results
+
+    def _kimai_refresh_csv_section(self):
+        """Rebuild the pending CSV import section in the time viewer."""
+        if not hasattr(self, '_kimai_csv_container'):
+            return
+
+        # Clear existing widgets
+        while self._kimai_csv_container_layout.count():
+            item = self._kimai_csv_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        pending = self._kimai_scan_csv_imports()
+        self._kimai_csv_title.setVisible(bool(pending))
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 3px 8px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        for fpath, fname, rows in pending:
+            card = QWidget()
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(0, 2, 0, 4)
+            card_layout.setSpacing(2)
+
+            # Header row: filename + total + Import button
+            total_s = sum(int(r.get('Duration', 0) or 0) for r in rows)
+            total_h, total_m = total_s // 3600, (total_s % 3600) // 60
+            dur_str = f"{total_h}h {total_m:02d}m" if total_h else f"{total_m}m"
+            n = len(rows)
+
+            header = QHBoxLayout()
+            file_lbl = QLabel(f"{fname}  ·  {n} entr{'y' if n == 1 else 'ies'}, {dur_str}")
+            file_lbl.setStyleSheet(f"color: {self.t('fg_primary')}; font-size: 11px;")
+            import_btn = QPushButton("Import")
+            import_btn.setStyleSheet(btn_style)
+            import_btn.setFixedWidth(60)
+            import_btn.clicked.connect(lambda checked=False, p=fpath, r=rows: self._kimai_import_csv_file(p, r))
+            header.addWidget(file_lbl, 1)
+            header.addWidget(import_btn)
+            card_layout.addLayout(header)
+
+            # Entry rows
+            for row in rows:
+                date = row.get('Date', '')
+                from_t = row.get('From', '')[:5]
+                to_t = row.get('To', '')[:5]
+                desc = row.get('Description', '')
+                act = row.get('Activity', '')
+                row_lbl = QLabel(f"  {date}  {from_t}→{to_t}  {act}  —  {desc}")
+                row_lbl.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+                row_lbl.setWordWrap(True)
+                card_layout.addWidget(row_lbl)
+
+            self._kimai_csv_container_layout.addWidget(card)
+
+    def _kimai_import_csv_file(self, fpath, rows):
+        """POST all rows from a CSV file to Kimai and archive the file on success."""
+        project_id = getattr(self, 'config_kimai_project_id', None)
+        if not project_id:
+            return
+
+        # Build activity name→id lookup
+        act_by_name = {}
+        if hasattr(self, '_time_activity_data'):
+            act_by_name = {v.lower(): k for k, v in self._time_activity_data.items()}
+
+        errors = []
+        for row in rows:
+            try:
+                date = row.get('Date', '')
+                from_t = row.get('From', '')
+                to_t = row.get('To', '')
+                act_name = row.get('Activity', '').strip()
+                desc = row.get('Description', '')
+
+                begin_str = f"{date}T{from_t}" if from_t else ''
+                end_str = f"{date}T{to_t}" if to_t else ''
+
+                activity_id = act_by_name.get(act_name.lower())
+                if not activity_id and self._time_activity_data:
+                    activity_id = next(iter(self._time_activity_data.keys()))
+
+                payload = {
+                    'begin': begin_str,
+                    'end': end_str,
+                    'project': project_id,
+                    'description': desc,
+                }
+                if activity_id:
+                    payload['activity'] = activity_id
+
+                self._kimai_request('POST', '/api/timesheets', data=payload)
+            except Exception as e:
+                errors.append(str(e))
+
+        if errors:
+            self._kimai_status_label.setText(f"Import errors: {'; '.join(errors[:2])}")
+            return
+
+        # Archive the file
+        csv_folder = os.path.expanduser(self.settings.get('kimai_csv_folder', ''))
+        archive_dir = os.path.join(csv_folder, '.archive')
+        os.makedirs(archive_dir, exist_ok=True)
+        dest = os.path.join(archive_dir, os.path.basename(fpath))
+        try:
+            os.rename(fpath, dest)
+        except Exception as e:
+            self._kimai_status_label.setText(f"Imported, but couldn't archive: {e}")
+            return
+
+        self._kimai_status_label.setText(f"Imported and archived {os.path.basename(fpath)}.")
+        self._kimai_load_entries()
 
     def _kimai_set_period(self, period):
         """Switch time period and update button states."""
