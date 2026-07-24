@@ -8697,8 +8697,9 @@ function filterAliases(q) {{
             fpath = os.path.join(csv_folder, fname)
             try:
                 with open(fpath, newline='', encoding='utf-8') as f:
+                    pname_lower = project_name.strip().lower()
                     rows = [r for r in _csv.DictReader(f)
-                            if r.get('Project', '').strip() == project_name.strip()]
+                            if r.get('Project', '').strip().lower() == pname_lower]
                 if rows:
                     results.append((fpath, fname, rows))
             except Exception as e:
