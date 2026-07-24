@@ -20,13 +20,15 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter, QSpinBox
+    QSplitter, QSpinBox, QDateEdit, QTimeEdit
 )
-from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray
+from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
 import re
 import urllib.request
 import urllib.error
+import urllib.parse
+import datetime
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
@@ -993,11 +995,13 @@ class ProjectFlowApp(QMainWindow):
         # Global settings tabs
         settings_tab = self._create_settings_tab()
         applications_tab = self._create_applications_tab()
+        integrations_tab = self._create_integrations_tab()
         icons_tab = self._create_icons_tab()
         handlers_tab = self._create_handlers_tab()
 
         tabs.addTab(settings_tab, "Settings")
         tabs.addTab(applications_tab, "Applications")
+        tabs.addTab(integrations_tab, "Integrations")
         tabs.addTab(icons_tab, "Icons")
         tabs.addTab(handlers_tab, "Launch Handlers")
 
@@ -1176,16 +1180,6 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
-
-        # Joplin Token
-        joplin_label = QLabel("Joplin Token:")
-        joplin_label.setStyleSheet(label_style)
-        self._settings_joplin = QLineEdit()
-        self._settings_joplin.setText(self.settings.get("joplin_token", ""))
-        self._settings_joplin.setPlaceholderText("Joplin Web Clipper API token")
-        self._settings_joplin.setEchoMode(QLineEdit.EchoMode.Password)
-        self._settings_joplin.setStyleSheet(input_style)
-        layout.addRow(joplin_label, self._settings_joplin)
 
         # Projects per row
         spinbox_style = f"""
@@ -1408,6 +1402,67 @@ class ProjectFlowApp(QMainWindow):
         self._settings_browser_new_tab.setChecked(self.settings.get('browser_new_tab', True))
         self._settings_browser_new_tab.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(browser_label, self._settings_browser_new_tab)
+
+        return widget
+
+    def _create_integrations_tab(self):
+        """Create the Integrations tab (Kimai, Joplin)"""
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        input_style = f"""
+            QLineEdit {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+            QLineEdit:focus {{
+                border-color: {self.t('bg_category')};
+            }}
+        """
+        label_style = f"color: {self.t('fg_primary')}; font-size: 13px;"
+        section_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px; padding-top: 8px;"
+
+        # === Kimai section ===
+        kimai_section = QLabel("Kimai Time Tracker")
+        kimai_section.setStyleSheet(section_style)
+        layout.addRow(kimai_section)
+
+        kimai_url_label = QLabel("Server URL:")
+        kimai_url_label.setStyleSheet(label_style)
+        self._settings_kimai_url = QLineEdit()
+        self._settings_kimai_url.setText(self.settings.get("kimai_url", ""))
+        self._settings_kimai_url.setPlaceholderText("https://kimai.example.com")
+        self._settings_kimai_url.setStyleSheet(input_style)
+        layout.addRow(kimai_url_label, self._settings_kimai_url)
+
+        kimai_token_label = QLabel("API Token:")
+        kimai_token_label.setStyleSheet(label_style)
+        self._settings_kimai_token = QLineEdit()
+        self._settings_kimai_token.setText(self.settings.get("kimai_token", ""))
+        self._settings_kimai_token.setPlaceholderText("Bearer token from your Kimai profile")
+        self._settings_kimai_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self._settings_kimai_token.setStyleSheet(input_style)
+        layout.addRow(kimai_token_label, self._settings_kimai_token)
+
+        # === Joplin section ===
+        joplin_section = QLabel("Joplin Notes")
+        joplin_section.setStyleSheet(section_style)
+        layout.addRow(joplin_section)
+
+        joplin_label = QLabel("API Token:")
+        joplin_label.setStyleSheet(label_style)
+        self._settings_joplin = QLineEdit()
+        self._settings_joplin.setText(self.settings.get("joplin_token", ""))
+        self._settings_joplin.setPlaceholderText("Joplin Web Clipper API token")
+        self._settings_joplin.setEchoMode(QLineEdit.EchoMode.Password)
+        self._settings_joplin.setStyleSheet(input_style)
+        layout.addRow(joplin_label, self._settings_joplin)
 
         return widget
 
@@ -1762,7 +1817,7 @@ class ProjectFlowApp(QMainWindow):
         viewer_label = QLabel("Default Viewer:")
         viewer_label.setStyleSheet(label_style)
         self._proj_default_viewer = QComboBox()
-        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "examples", "console"])
+        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "examples", "console", "time"])
         current_viewer = getattr(self, 'config_column2_default', None) or ""
         self._proj_default_viewer.setCurrentText(current_viewer)
         self._proj_default_viewer.setStyleSheet(input_style)
@@ -1870,6 +1925,26 @@ class ProjectFlowApp(QMainWindow):
         self._proj_browser_new_tab.setStyleSheet(input_style)
         self._proj_browser_new_tab.setToolTip("Override global browser link behaviour for this project")
         form_layout.addRow(browser_label, self._proj_browser_new_tab)
+
+        # Kimai Project ID (only shown when Kimai is configured)
+        if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
+            kimai_pid_label = QLabel("Kimai Project ID:")
+            kimai_pid_label.setStyleSheet(label_style)
+            kimai_pid_row = QHBoxLayout()
+            self._proj_kimai_project_id = QLineEdit()
+            current_kid = getattr(self, 'config_kimai_project_id', None)
+            self._proj_kimai_project_id.setText(str(current_kid) if current_kid else "")
+            self._proj_kimai_project_id.setPlaceholderText("Numeric project ID from Kimai")
+            self._proj_kimai_project_id.setStyleSheet(input_style)
+            kimai_pick_btn = QPushButton("Browse…")
+            kimai_pick_btn.setStyleSheet(input_style)
+            kimai_pick_btn.clicked.connect(lambda: self._kimai_pick_project_into(self._proj_kimai_project_id))
+            kimai_pid_row.addWidget(self._proj_kimai_project_id)
+            kimai_pid_row.addWidget(kimai_pick_btn)
+            form_layout.addRow(kimai_pid_label, kimai_pid_row)
+        else:
+            # Widget must always exist so _apply_settings can read it safely
+            self._proj_kimai_project_id = QLineEdit()
 
         main_layout.addLayout(form_layout)
 
@@ -2936,6 +3011,9 @@ class ProjectFlowApp(QMainWindow):
             else:
                 self.config_browser_new_tab = None
 
+            kimai_id_text = self._proj_kimai_project_id.text().strip()
+            self.config_kimai_project_id = int(kimai_id_text) if kimai_id_text.isdigit() else None
+
             # Save config to JSON (columns already updated by tree editing)
             self._save_project_config()
 
@@ -3012,6 +3090,18 @@ class ProjectFlowApp(QMainWindow):
                 self.settings["joplin_token"] = joplin_token
             elif "joplin_token" in self.settings:
                 del self.settings["joplin_token"]
+
+            kimai_url = self._settings_kimai_url.text().strip().rstrip('/')
+            if kimai_url:
+                self.settings["kimai_url"] = kimai_url
+            elif "kimai_url" in self.settings:
+                del self.settings["kimai_url"]
+
+            kimai_token = self._settings_kimai_token.text().strip()
+            if kimai_token:
+                self.settings["kimai_token"] = kimai_token
+            elif "kimai_token" in self.settings:
+                del self.settings["kimai_token"]
 
             # Save path mappings from the table
             if hasattr(self, '_path_mappings_table'):
@@ -3124,6 +3214,13 @@ class ProjectFlowApp(QMainWindow):
                 config_data["path_mapping"] = True
             elif "path_mapping" in config_data:
                 del config_data["path_mapping"]
+
+            # Update linked Kimai project ID
+            kimai_pid = getattr(self, 'config_kimai_project_id', None)
+            if kimai_pid:
+                config_data["kimai_project_id"] = kimai_pid
+            elif "kimai_project_id" in config_data:
+                del config_data["kimai_project_id"]
 
             # Update column headers and columns (single column only)
             config_data["column_headers"] = self.COLUMN_HEADERS
@@ -3423,6 +3520,8 @@ StartupNotify=true
                 self.config_project_color = config_data.get('project_color', None)
                 # Load per-project path mapping toggle
                 self.config_path_mapping = config_data.get('path_mapping', False)
+                # Load linked Kimai project ID
+                self.config_kimai_project_id = config_data.get('kimai_project_id', None)
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -4327,7 +4426,7 @@ function filterAliases(q) {{
 
             # Use config-specified column2 default mode if set
             if hasattr(self, 'config_column2_default') and self.config_column2_default:
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console", "folder"):
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console", "folder", "time"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -7049,6 +7148,8 @@ function filterAliases(q) {{
                     ("examples", "Examples", "Handler examples",   ["help-contents", "help-browser", "accessories-text-editor"]),
                     ("console",  "",         "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                 ]
+                if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
+                    tab_buttons.append(("time", "", "Kimai time tracker", ["preferences-system-time", "clock", "appointment-new"]))
 
                 # Normal tab button style
                 tab_btn_style = f"""
@@ -7119,7 +7220,7 @@ function filterAliases(q) {{
                     # Set style based on whether this is the active mode
                     if mode == self.column2_mode:
                         btn.setStyleSheet(active_tab_style)
-                    elif mode == 'console':
+                    elif mode in ('console', 'time'):
                         btn.setStyleSheet(console_tab_btn_style)
                     else:
                         btn.setStyleSheet(tab_btn_style)
@@ -7414,6 +7515,9 @@ function filterAliases(q) {{
                     else:
                         self.folder_current_path = os.path.expanduser("~")
 
+                # Build Kimai time viewer
+                self._build_time_viewer()
+
                 # Add all containers to stack layout
                 self.column2_stack_layout.addWidget(self.pdf_container)
                 self.column2_stack_layout.addWidget(self.webview_container)
@@ -7422,6 +7526,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.examples_container)
                 self.column2_stack_layout.addWidget(self.console_container)
                 self.column2_stack_layout.addWidget(self.folder_container)
+                self.column2_stack_layout.addWidget(self.time_container)
 
                 # Show correct container based on mode
                 self.pdf_container.hide()
@@ -7431,6 +7536,7 @@ function filterAliases(q) {{
                 self.examples_container.hide()
                 self.console_container.hide()
                 self.folder_container.hide()
+                self.time_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
                 elif self.column2_mode == "webview":
@@ -7448,6 +7554,9 @@ function filterAliases(q) {{
                 elif self.column2_mode == "folder":
                     self.folder_container.show()
                     self.populate_folder_browser(self.folder_current_path)
+                elif self.column2_mode == "time":
+                    self.time_container.show()
+                    self._kimai_load_entries()
 
                 self.column2_layout.addWidget(self.column2_stack, 1)  # stretch factor to fill space
 
@@ -8042,6 +8151,461 @@ function filterAliases(q) {{
             QMessageBox.warning(self, "Joplin Sync", f"Could not connect to Joplin.\nIs it running?\n\nError: {e.reason}")
         except Exception as e:
             QMessageBox.warning(self, "Joplin Sync", f"Sync failed: {e}")
+
+    # ── Kimai integration ─────────────────────────────────────────────────────
+
+    def _kimai_request(self, method, path, data=None, params=None):
+        """Make a Kimai REST API request; return parsed JSON."""
+        base_url = self.settings.get('kimai_url', '').rstrip('/')
+        token = self.settings.get('kimai_token', '')
+        url = base_url + path
+        if params:
+            url += '?' + urllib.parse.urlencode(params)
+        body = json.dumps(data).encode('utf-8') if data is not None else None
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        }
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+
+    def _kimai_load_activities(self):
+        """Fetch activities for the linked Kimai project and populate the combo box."""
+        if not hasattr(self, '_time_activity_combo'):
+            return
+        project_id = getattr(self, 'config_kimai_project_id', None)
+        if not project_id:
+            return
+        try:
+            activities = self._kimai_request('GET', '/api/activities', params={'project': project_id, 'visible': 1})
+            self._time_activity_combo.clear()
+            self._time_activity_data = {}
+            for act in activities:
+                self._time_activity_combo.addItem(act.get('name', ''), act.get('id'))
+                self._time_activity_data[act.get('id')] = act.get('name', '')
+        except Exception as e:
+            print(f"Kimai: could not load activities: {e}")
+
+    def _kimai_load_entries(self, period=None):
+        """Fetch recent time entries for the linked project and refresh the viewer."""
+        if not hasattr(self, '_time_entries_table'):
+            return
+        project_id = getattr(self, 'config_kimai_project_id', None)
+
+        # Show "no project" state
+        if not project_id:
+            if hasattr(self, '_kimai_no_project_widget'):
+                self._kimai_no_project_widget.show()
+            if hasattr(self, '_kimai_main_widget'):
+                self._kimai_main_widget.hide()
+            return
+
+        if hasattr(self, '_kimai_no_project_widget'):
+            self._kimai_no_project_widget.hide()
+        if hasattr(self, '_kimai_main_widget'):
+            self._kimai_main_widget.show()
+
+        if period is not None:
+            self._kimai_period = period
+
+        # Compute date range
+        now = datetime.datetime.now()
+        period_days = {'week': 7, 'month': 30, '3m': 90, '6m': 180}.get(
+            getattr(self, '_kimai_period', 'week'), 7
+        )
+        begin_dt = now - datetime.timedelta(days=period_days)
+        begin_str = begin_dt.strftime('%Y-%m-%dT%H:%M:%S')
+        end_str = now.strftime('%Y-%m-%dT%H:%M:%S')
+
+        try:
+            entries = self._kimai_request('GET', '/api/timesheets', params={
+                'project': project_id,
+                'begin': begin_str,
+                'end': end_str,
+                'size': 25,
+                'page': 1,
+            })
+        except Exception as e:
+            if hasattr(self, '_kimai_summary_label'):
+                self._kimai_summary_label.setText(f"Error: {e}")
+            return
+
+        # Populate table
+        table = self._time_entries_table
+        table.setRowCount(0)
+        total_seconds = 0
+        for entry in entries:
+            row = table.rowCount()
+            table.insertRow(row)
+
+            desc = entry.get('description') or ''
+            begin_raw = entry.get('begin', '')
+            duration_s = entry.get('duration') or 0
+            total_seconds += duration_s
+
+            # Parse begin datetime
+            try:
+                dt = datetime.datetime.fromisoformat(begin_raw)
+                date_str = dt.strftime('%a %-d %b')
+                time_str = dt.strftime('%H:%M')
+            except Exception:
+                date_str = begin_raw[:10] if begin_raw else ''
+                time_str = ''
+
+            dur_h = duration_s // 3600
+            dur_m = (duration_s % 3600) // 60
+            dur_str = f"{dur_h}h {dur_m:02d}m" if dur_h else f"{dur_m}m"
+
+            activity_name = ''
+            act = entry.get('activity')
+            if isinstance(act, dict):
+                activity_name = act.get('name', '')
+            elif isinstance(act, int) and hasattr(self, '_time_activity_data'):
+                activity_name = self._time_activity_data.get(act, '')
+
+            desc_item = QTableWidgetItem(desc)
+            desc_item.setToolTip(f"{activity_name}  |  {desc}" if activity_name else desc)
+            table.setItem(row, 0, desc_item)
+            table.setItem(row, 1, QTableWidgetItem(date_str))
+            table.setItem(row, 2, QTableWidgetItem(time_str))
+            table.setItem(row, 3, QTableWidgetItem(dur_str))
+
+        # Summary
+        total_h = total_seconds // 3600
+        total_m = (total_seconds % 3600) // 60
+        period_label = {'week': 'week', 'month': 'month', '3m': '3 months', '6m': '6 months'}.get(
+            getattr(self, '_kimai_period', 'week'), 'period'
+        )
+        n = len(entries)
+        if hasattr(self, '_kimai_summary_label'):
+            self._kimai_summary_label.setText(
+                f"Total: {total_h}h {total_m:02d}m  ·  {n} entr{'y' if n == 1 else 'ies'} this {period_label}"
+            )
+
+        # Load activities into combo box if not yet done
+        if hasattr(self, '_time_activity_combo') and self._time_activity_combo.count() == 0:
+            self._kimai_load_activities()
+
+    def _kimai_submit_entry(self):
+        """Read the log-time form and POST a new timesheet entry to Kimai."""
+        if not hasattr(self, '_time_description'):
+            return
+        project_id = getattr(self, 'config_kimai_project_id', None)
+        if not project_id:
+            return
+
+        desc = self._time_description.text().strip()
+        if not desc:
+            self._kimai_status_label.setText("Description is required.")
+            return
+
+        activity_id = self._time_activity_combo.currentData()
+        if not activity_id:
+            self._kimai_status_label.setText("Please select an activity.")
+            return
+
+        date_val = self._time_date.date()
+        from_time = self._time_from.time()
+        to_time = self._time_to.time()
+
+        begin_dt = datetime.datetime(
+            date_val.year(), date_val.month(), date_val.day(),
+            from_time.hour(), from_time.minute()
+        )
+        end_dt = datetime.datetime(
+            date_val.year(), date_val.month(), date_val.day(),
+            to_time.hour(), to_time.minute()
+        )
+
+        if end_dt <= begin_dt:
+            self._kimai_status_label.setText("End time must be after start time.")
+            return
+
+        payload = {
+            'begin': begin_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+            'end': end_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+            'project': project_id,
+            'activity': activity_id,
+            'description': desc,
+        }
+
+        try:
+            self._kimai_request('POST', '/api/timesheets', data=payload)
+            self._time_description.clear()
+            self._kimai_status_label.setText("Entry logged.")
+            self._kimai_load_entries()
+        except Exception as e:
+            self._kimai_status_label.setText(f"Error: {e}")
+
+    def _kimai_pick_project_into(self, target_field):
+        """Fetch Kimai projects and show a picker dialog; write selected ID into target_field."""
+        try:
+            projects = self._kimai_request('GET', '/api/projects')
+        except Exception as e:
+            QMessageBox.warning(self, "Kimai", f"Could not fetch projects:\n{e}")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Kimai Project")
+        dlg.resize(400, 350)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+
+        list_widget = QListWidget()
+        list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        project_map = {}
+        for p in projects:
+            pid = p.get('id')
+            name = p.get('name', '')
+            customer = p.get('customer', {})
+            customer_name = customer.get('name', '') if isinstance(customer, dict) else ''
+            display = f"{name}  ({customer_name})" if customer_name else name
+            list_widget.addItem(display)
+            project_map[list_widget.count() - 1] = (pid, name)
+
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("Select")
+        cancel_btn = QPushButton("Cancel")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+        list_widget.itemDoubleClicked.connect(lambda _: dlg.accept())
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            row = list_widget.currentRow()
+            if row >= 0:
+                pid, pname = project_map[row]
+                target_field.setText(str(pid))
+
+    def _kimai_link_project_dialog(self):
+        """Show the Kimai project picker and save the selection to the current project config."""
+        tmp_field = QLineEdit()
+        current_id = getattr(self, 'config_kimai_project_id', None)
+        tmp_field.setText(str(current_id) if current_id else "")
+        self._kimai_pick_project_into(tmp_field)
+        new_id_text = tmp_field.text().strip()
+        if new_id_text.isdigit():
+            self.config_kimai_project_id = int(new_id_text)
+            self._save_project_config()
+            self._kimai_load_entries()
+
+    def _build_time_viewer(self):
+        """Build the Kimai time tracking viewer panel."""
+        self.time_container = QWidget()
+        outer = QVBoxLayout(self.time_container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border-color: {self.t('bg_category')};
+            }}
+        """
+        input_style = f"""
+            QLineEdit, QComboBox, QDateEdit, QTimeEdit {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 6px;
+                font-size: 12px;
+            }}
+        """
+
+        # ── "No project linked" state ─────────────────────────────────────
+        self._kimai_no_project_widget = QWidget()
+        no_proj_layout = QVBoxLayout(self._kimai_no_project_widget)
+        no_proj_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        no_proj_lbl = QLabel("This project isn't linked to Kimai yet.")
+        no_proj_lbl.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 13px;")
+        no_proj_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        link_btn = QPushButton("Link Kimai Project…")
+        link_btn.setStyleSheet(btn_style)
+        link_btn.setFixedWidth(180)
+        link_btn.clicked.connect(self._kimai_link_project_dialog)
+        no_proj_layout.addStretch()
+        no_proj_layout.addWidget(no_proj_lbl)
+        no_proj_layout.addSpacing(12)
+        no_proj_layout.addWidget(link_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        no_proj_layout.addStretch()
+        outer.addWidget(self._kimai_no_project_widget)
+
+        # ── Main content (shown when project is linked) ───────────────────
+        self._kimai_main_widget = QWidget()
+        main_layout = QVBoxLayout(self._kimai_main_widget)
+        main_layout.setContentsMargins(8, 6, 8, 6)
+        main_layout.setSpacing(6)
+
+        # Period toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(4)
+        self._kimai_period = 'week'
+        period_labels = [('week', 'Week'), ('month', 'Month'), ('3m', '3M'), ('6m', '6M')]
+        self._kimai_period_btns = {}
+        for key, label in period_labels:
+            pbtn = QPushButton(label)
+            pbtn.setCheckable(True)
+            pbtn.setChecked(key == 'week')
+            pbtn.setStyleSheet(btn_style)
+            pbtn.setFixedWidth(48)
+            pbtn.clicked.connect(lambda checked=False, k=key: self._kimai_set_period(k))
+            toolbar.addWidget(pbtn)
+            self._kimai_period_btns[key] = pbtn
+        toolbar.addStretch()
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setStyleSheet(btn_style)
+        refresh_btn.setFixedWidth(28)
+        refresh_btn.setToolTip("Refresh entries")
+        refresh_btn.clicked.connect(lambda: self._kimai_load_entries())
+        link_proj_btn = QPushButton("⇄")
+        link_proj_btn.setStyleSheet(btn_style)
+        link_proj_btn.setFixedWidth(28)
+        link_proj_btn.setToolTip("Change linked Kimai project")
+        link_proj_btn.clicked.connect(self._kimai_link_project_dialog)
+        toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(link_proj_btn)
+        main_layout.addLayout(toolbar)
+
+        # Summary label
+        self._kimai_summary_label = QLabel("Loading…")
+        self._kimai_summary_label.setStyleSheet(
+            f"color: {self.t('fg_secondary')}; font-size: 12px; padding: 2px 0;"
+        )
+        main_layout.addWidget(self._kimai_summary_label)
+
+        # Entries table
+        self._time_entries_table = QTableWidget(0, 4)
+        self._time_entries_table.setHorizontalHeaderLabels(["Description", "Date", "Time", "Duration"])
+        self._time_entries_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._time_entries_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._time_entries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._time_entries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._time_entries_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._time_entries_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._time_entries_table.setAlternatingRowColors(True)
+        self._time_entries_table.verticalHeader().setVisible(False)
+        self._time_entries_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                font-size: 12px;
+                gridline-color: {self.t('border')};
+            }}
+            QHeaderView::section {{
+                background-color: {self.t('bg_panel')};
+                color: {self.t('fg_primary')};
+                padding: 4px;
+                border: none;
+                border-bottom: 1px solid {self.t('border')};
+                font-size: 11px;
+            }}
+            QTableWidget::item:alternate {{
+                background-color: {self.t('bg_primary')};
+            }}
+        """)
+        main_layout.addWidget(self._time_entries_table, 1)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {self.t('border')};")
+        main_layout.addWidget(sep)
+
+        # Log time form
+        form_title = QLabel("Log Time")
+        form_title.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px; font-weight: bold;")
+        main_layout.addWidget(form_title)
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
+        self._time_description = QLineEdit()
+        self._time_description.setPlaceholderText("Description…")
+        self._time_description.setStyleSheet(input_style)
+        self._time_activity_combo = QComboBox()
+        self._time_activity_combo.setStyleSheet(input_style)
+        self._time_activity_combo.setFixedWidth(130)
+        row1.addWidget(self._time_description, 1)
+        row1.addWidget(self._time_activity_combo)
+        main_layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+        self._time_date = QDateEdit()
+        self._time_date.setCalendarPopup(True)
+        self._time_date.setDate(QDate.currentDate())
+        self._time_date.setStyleSheet(input_style)
+        self._time_date.setFixedWidth(110)
+        self._time_from = QTimeEdit()
+        self._time_from.setTime(QTime(9, 0))
+        self._time_from.setStyleSheet(input_style)
+        self._time_from.setFixedWidth(75)
+        self._time_to = QTimeEdit()
+        self._time_to.setTime(QTime(10, 0))
+        self._time_to.setStyleSheet(input_style)
+        self._time_to.setFixedWidth(75)
+        log_btn = QPushButton("Log Time")
+        log_btn.setStyleSheet(btn_style)
+        log_btn.clicked.connect(self._kimai_submit_entry)
+        row2.addWidget(self._time_date)
+        row2.addWidget(self._time_from)
+        row2.addWidget(QLabel("→"))
+        row2.addWidget(self._time_to)
+        row2.addStretch()
+        row2.addWidget(log_btn)
+        main_layout.addLayout(row2)
+
+        self._kimai_status_label = QLabel("")
+        self._kimai_status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        main_layout.addWidget(self._kimai_status_label)
+
+        outer.addWidget(self._kimai_main_widget)
+
+        # Initial visibility
+        has_project = bool(getattr(self, 'config_kimai_project_id', None))
+        self._kimai_no_project_widget.setVisible(not has_project)
+        self._kimai_main_widget.setVisible(has_project)
+
+    def _kimai_set_period(self, period):
+        """Switch time period and update button states."""
+        self._kimai_period = period
+        for key, btn in self._kimai_period_btns.items():
+            btn.setChecked(key == period)
+        self._kimai_load_entries()
 
     def open_note_in_external_editor(self):
         """Open the current note's markdown file in an external editor"""
@@ -8884,6 +9448,7 @@ function filterAliases(q) {{
         self.examples_container.hide()
         self.console_container.hide()
         self.folder_container.hide()
+        self.time_container.hide()
 
         # Mode display info
         mode_info = {
@@ -8894,6 +9459,7 @@ function filterAliases(q) {{
             "examples": ("Examples", "Handler Examples", self.examples_container),
             "console": ("Console", "Console", self.console_container),
             "folder": ("Folder", "Folder Browser", self.folder_container),
+            "time": ("Time", "Kimai Time Tracker", self.time_container),
         }
 
         self.column2_mode = mode
@@ -8907,6 +9473,8 @@ function filterAliases(q) {{
             self.load_examples_content()
         elif mode == "folder":
             self.populate_folder_browser(self.folder_current_path)
+        elif mode == "time":
+            self._kimai_load_entries()
 
         # Update tab button styling
         self.update_viewer_tab_styling()
@@ -8969,7 +9537,7 @@ function filterAliases(q) {{
         for mode, btn in self.viewer_tab_buttons.items():
             if mode == self.column2_mode:
                 btn.setStyleSheet(active_style)
-            elif mode == 'console':
+            elif mode in ('console', 'time'):
                 btn.setStyleSheet(console_normal_style)
             else:
                 btn.setStyleSheet(normal_style)
