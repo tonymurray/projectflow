@@ -3665,12 +3665,13 @@ StartupNotify=true
             print(f"Warning: Could not load icon_preferences.json: {e}")
         return self.get_default_app_info()
 
-    def _icon_key_for_app(self, app):
-        """Resolve generic app keys to the configured app name for icon lookup.
+    def _icon_key_for_app(self, app, path=''):
+        """Resolve the best icon_preferences key for a launcher.
 
-        Allows "editor"/"file_manager"/"terminal" launchers to inherit the icon
-        of the actual configured app (e.g. editor=typora → uses typora's icon).
-        Falls back to the original key if the resolved name has no icon entry.
+        Priority:
+        1. Generic app aliases (editor/file_manager/terminal) → configured app name
+        2. File-extension entries (e.g. ".md", ".pdf") when app is "default"
+        3. Original app key as-is
         """
         generic = {
             'editor': self.get_configured_editor,
@@ -3681,6 +3682,10 @@ StartupNotify=true
             resolved = os.path.basename(generic[app]()).split()[0].lower()
             if resolved in self.APP_INFO:
                 return resolved
+        if path and app in ('default', 'browser', 'file_manager', 'editor'):
+            ext = os.path.splitext(path)[1].lower()
+            if ext and ext in self.APP_INFO:
+                return ext
         return app
 
     def get_tag_name_for_config(self):
@@ -6729,8 +6734,8 @@ function filterAliases(q) {{
                             # Get app icon if available — either emoji text or SVG file
                             app_icon = ""
                             svg_icon_path = None
-                            if self._icon_key_for_app(app) in self.APP_INFO:
-                                icon_val = self.APP_INFO[self._icon_key_for_app(app)]["icon"]
+                            if self._icon_key_for_app(app, path) in self.APP_INFO:
+                                icon_val = self.APP_INFO[self._icon_key_for_app(app, path)]["icon"]
                                 # Detect file-path icons (SVG/PNG stored relative to script_dir)
                                 if icon_val.endswith(('.svg', '.png', '.jpg')):
                                     candidate = os.path.join(self.script_dir, icon_val)
@@ -9029,8 +9034,8 @@ function filterAliases(q) {{
         # Launcher button — same icon/style as view mode, still clickable
         app_icon = ""
         svg_icon_path = None
-        if self._icon_key_for_app(app) in self.APP_INFO:
-            icon_val = self.APP_INFO[self._icon_key_for_app(app)]["icon"]
+        if self._icon_key_for_app(app, path) in self.APP_INFO:
+            icon_val = self.APP_INFO[self._icon_key_for_app(app, path)]["icon"]
             if icon_val.endswith(('.svg', '.png', '.jpg')):
                 candidate = os.path.join(self.script_dir, icon_val)
                 if os.path.isfile(candidate):
