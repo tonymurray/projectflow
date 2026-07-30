@@ -487,7 +487,7 @@ def handle_rsync_backup(path, expanded_path):
     backup_dir = _get_rsync_backup_dir(source)
 
     shell_cmd = (
-        f"rsync -avz --delete "
+        f"rsync -avz --delete --info=progress2 "
         f"--backup --backup-dir={shlex.quote(backup_dir)} "
         f"--exclude='.git/' --exclude='build/' --exclude='node_modules/' "
         f"{shlex.quote(source)} {shlex.quote(destination)}"
@@ -534,7 +534,7 @@ def handle_rsync_backup_id(path, expanded_path):
 
     shell_cmd = (
         f'rsync -avz -e "ssh -i {shlex.quote(identity_file)}" '
-        f"--delete --backup --backup-dir={shlex.quote(backup_dir)} "
+        f"--delete --info=progress2 --backup --backup-dir={shlex.quote(backup_dir)} "
         f"--exclude='.git/' --exclude='build/' --exclude='node_modules/' "
         f"{shlex.quote(source)} {shlex.quote(destination)}"
     )
@@ -581,7 +581,7 @@ def handle_rsync_backup_id_port(path, expanded_path):
 
     shell_cmd = (
         f'rsync -avz -e "ssh -i {shlex.quote(identity_file)} -p {port}" '
-        f"--delete --backup --backup-dir={shlex.quote(backup_dir)} "
+        f"--delete --info=progress2 --backup --backup-dir={shlex.quote(backup_dir)} "
         f"--exclude='.git/' --exclude='build/' --exclude='node_modules/' "
         f"{shlex.quote(source)} {shlex.quote(destination)}"
     )
