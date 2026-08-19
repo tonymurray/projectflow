@@ -725,6 +725,15 @@ class ProjectFlowApp(QMainWindow):
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
         )
         self.webview.urlChanged.connect(self.on_webview_url_changed)
+        self.webview.loadFinished.connect(self._on_webview_load_finished)
+
+        # Muya markdown-editor state (see _open_markdown_in_muya_editor)
+        self._muya_editing = False
+        self._muya_path = None
+        self._muya_pending_markdown = None
+        self._muya_autosave_timer = QTimer()
+        self._muya_autosave_timer.setInterval(1200)
+        self._muya_autosave_timer.timeout.connect(self._muya_autosave_tick)
 
         # Debounce timer for alias file writes — prevents a write per keystroke
         # when the user types in the inline path/app fields.
@@ -742,6 +751,15 @@ class ProjectFlowApp(QMainWindow):
 
         # Load settings (like which config to use)
         self.load_settings()
+
+        # Layout mode: "standard" (3-col) or "focus" (2-col with notes as viewer tab).
+        # Per-project — load_config() overrides this once the active project's config is read.
+        self.layout_mode = "standard"
+
+        # Dynamic Group-by-Type launcher view (Documentation/Websites/Resources) — display-only,
+        # never rewrites the project's category structure. See _build_grouped_categories.
+        self.group_by_type = False
+        self._group_view_origin = {}
 
         # MIGRATION (temporary): rename archive files to {name}-archive.md format
         self._migrate_archive_filenames()
@@ -1479,6 +1497,59 @@ class ProjectFlowApp(QMainWindow):
         layout.addRow(joplin_label, self._settings_joplin)
 
         return widget
+
+    def _classify_launcher_item(self, path, app):
+        """Heuristic bucket for the dynamic Group-by-Type view: Documentation / Websites / Resources."""
+        p = str(path)
+        first_token = p.split()[0] if ' ' in p else p
+        if first_token.startswith(('http://', 'https://')) or app in ('firefox', 'chrome'):
+            return 'Websites'
+        ext = os.path.splitext(first_token)[1].lower()
+        if ext in ('.md', '.html', '.htm', '.pdf', '.txt'):
+            return 'Documentation'
+        return 'Resources'
+
+    def _grouping_override_key(self):
+        """Absolute path of the current config — used to scope grouping overrides per project."""
+        if getattr(self, 'current_config_file', None):
+            return os.path.abspath(self.current_config_file)
+        return None
+
+    def _get_grouping_override(self, path):
+        key = self._grouping_override_key()
+        if not key:
+            return None
+        return self.settings.get('grouping_overrides', {}).get(key, {}).get(path)
+
+    def _set_grouping_override(self, path, bucket):
+        key = self._grouping_override_key()
+        if not key:
+            return
+        self.settings.setdefault('grouping_overrides', {}).setdefault(key, {})[path] = bucket
+        self.save_settings()
+
+    def _build_grouped_categories(self):
+        """Non-destructive Documentation/Websites/Resources view over self.COLUMN_1.
+
+        Pools items from every real category by heuristic (or manual override) without
+        ever modifying self.COLUMN_1 or the project's JSON file. Each item's true
+        (category_name, index) is recorded in self._group_view_origin — by object identity,
+        since the same list objects are reused, not copies — so editing/deleting/context-menu
+        actions triggered from this view still act on the real, authored data.
+        """
+        buckets = {'Documentation': [], 'Websites': [], 'Resources': []}
+        self._group_view_origin = {}
+        for cat_dict in self.COLUMN_1:
+            for category_name, items in cat_dict.items():
+                for idx, item in enumerate(items):
+                    if len(item) == 2:
+                        path, app = item[1], "kate"
+                    else:
+                        path, app = item[1], item[2]
+                    bucket = self._get_grouping_override(path) or self._classify_launcher_item(path, app)
+                    buckets[bucket].append(item)
+                    self._group_view_origin[id(item)] = (category_name, idx)
+        return [{name: items} for name, items in buckets.items() if items]
 
     def _scan_for_docs(self, root_path):
         """Walk root_path and return (display_name, abs_path, app) for doc files."""
@@ -3458,11 +3529,136 @@ StartupNotify=true
             print(f"Error saving settings: {e}")
 
     def _save_splitter_state(self):
-        """Persist column splitter positions to settings."""
+        """Persist column splitter positions to settings (mode-specific key)."""
+        if hasattr(self, 'columns_splitter'):
+            state = self.columns_splitter.saveState()
+            key = "splitter_state_focus" if getattr(self, 'layout_mode', 'standard') == 'focus' else "splitter_state"
+            self.settings[key] = bytes(state.toHex()).decode()
+            self.save_settings()
+
+    def toggle_layout_mode(self):
+        """Toggle between Standard (3-col) and Focus (2-col with Notes tab) layouts.
+        Persisted per-project, so each project reopens in whichever layout it was last left in.
+        Focus layout defaults the launcher column to Group-by-Type."""
+        if self.layout_mode == "standard":
+            self._enter_focus_layout()
+        else:
+            self._enter_standard_layout()
+        self.group_by_type = (self.layout_mode == "focus")
+        self._save_layout_mode_to_config()
+        # Rebuild so the launcher column picks up (or drops) Group-by-Type for the new mode.
+        self.refresh_projects()
+
+    def _save_layout_mode_to_config(self):
+        """Persist the current layout mode into the active project's own config file."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            if self.layout_mode == "focus":
+                config_data['layout_mode'] = 'focus'
+            else:
+                config_data.pop('layout_mode', None)
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving layout_mode: {e}")
+
+    def _enter_focus_layout(self):
+        """Switch to Focus layout: hide right notes column, move notes into viewer tab."""
+        if not hasattr(self, 'notes_panel') or not hasattr(self, 'notes_viewer_container'):
+            return
+
+        # Save current standard splitter state before changing it
         if hasattr(self, 'columns_splitter'):
             state = self.columns_splitter.saveState()
             self.settings["splitter_state"] = bytes(state.toHex()).decode()
-            self.save_settings()
+
+        # Reparent the entire notes panel (toolbar + editor + archive bar) into the viewer
+        self.notes_panel.setParent(None)
+        self.notes_viewer_layout.addWidget(self.notes_panel)
+
+        # Collapse and hide the right column
+        if hasattr(self, 'notepad_column_widget'):
+            self.notepad_column_widget.setMinimumWidth(0)
+            self.notepad_column_widget.hide()
+
+        # Apply focus splitter: launcher LEFT (1/3), viewer RIGHT (2/3)
+        # Only move launcher_widget — never reparent column2_widget (contains QWebEngineView
+        # which breaks if reparented due to renderer process binding).
+        if hasattr(self, 'columns_splitter') and hasattr(self, 'launcher_widget'):
+            if getattr(self, 'swap_columns', False):
+                # Standard order: [column2@0(viewer,left), launcher@1, notes@2]
+                # Focus order:    [launcher@0(left), column2@1(viewer,right), notes@2]
+                self.launcher_widget.setParent(None)
+                self.columns_splitter.insertWidget(0, self.launcher_widget)
+            total = self.columns_splitter.width() or 980
+            launcher_w = int(total / 3)
+            viewer_w = total - launcher_w
+            self.columns_splitter.setSizes([launcher_w, viewer_w, 0])
+
+        # Show the Notes viewer tab button
+        if hasattr(self, 'viewer_tab_buttons') and 'notes' in self.viewer_tab_buttons:
+            self.viewer_tab_buttons['notes'].setVisible(True)
+
+        self.layout_mode = "focus"
+
+        # Update toggle button appearance
+        if hasattr(self, 'layout_toggle_btn'):
+            self.layout_toggle_btn.setText("▣")
+            self.layout_toggle_btn.setToolTip("Switch to Standard layout (3 columns)")
+
+    def _enter_standard_layout(self):
+        """Switch to Standard layout: restore right notes column, remove Notes viewer tab."""
+        if not hasattr(self, 'notes_panel') or not hasattr(self, 'notepad_column_widget'):
+            return
+
+        # Save focus splitter state before changing it
+        if hasattr(self, 'columns_splitter'):
+            state = self.columns_splitter.saveState()
+            self.settings["splitter_state_focus"] = bytes(state.toHex()).decode()
+
+        # If the Notes viewer is active, switch away from it first
+        if getattr(self, 'column2_mode', '') == 'notes':
+            self.switch_to_viewer_mode("folder")
+
+        # Reparent notes panel back into the right column
+        self.notes_panel.setParent(None)
+        self.notepad_column_widget.layout().addWidget(self.notes_panel)
+
+        # Restore and show the right column
+        self.notepad_column_widget.setMinimumWidth(150)
+        self.notepad_column_widget.show()
+
+        # Restore original column order if it was reordered for Focus mode
+        if hasattr(self, 'columns_splitter') and hasattr(self, 'launcher_widget'):
+            if getattr(self, 'swap_columns', False):
+                # Focus order:    [launcher@0(left), column2@1(viewer,right), notes@2]
+                # Standard order: [column2@0(viewer,left), launcher@1, notes@2]
+                self.launcher_widget.setParent(None)
+                self.columns_splitter.insertWidget(1, self.launcher_widget)
+
+        # Restore standard splitter state
+        if hasattr(self, 'columns_splitter'):
+            std_state = self.settings.get("splitter_state")
+            if std_state:
+                self.columns_splitter.restoreState(QByteArray.fromHex(std_state.encode()))
+            else:
+                self.columns_splitter.setSizes([1, 1, 1])
+
+        # Hide the Notes viewer tab button
+        if hasattr(self, 'viewer_tab_buttons') and 'notes' in self.viewer_tab_buttons:
+            self.viewer_tab_buttons['notes'].setVisible(False)
+
+        self.layout_mode = "standard"
+
+        # Update toggle button appearance
+        if hasattr(self, 'layout_toggle_btn'):
+            self.layout_toggle_btn.setText("⊞")
+            self.layout_toggle_btn.setToolTip("Switch to Focus layout (launcher + wide viewer)")
 
     def get_config_file_to_use(self):
         """Determine which config file to use based on settings"""
@@ -3506,6 +3702,12 @@ StartupNotify=true
 
     def load_config(self):
         """Load configuration from JSON config file or use defaults"""
+        # Only reset Group-by-Type to its layout-linked default when we're actually switching
+        # to a (possibly different) project — not on every incidental refresh_projects() call
+        # (editing an item, toggling edit mode, etc.), which would otherwise stomp on a manual
+        # Group-by-Type toggle made while staying on the same project.
+        is_project_switch = self.current_config_file != getattr(self, '_group_default_applied_for', None)
+        self._group_default_applied_for = self.current_config_file
         try:
             # Load icon preferences from shared file
             self.APP_INFO = self.load_icon_preferences()
@@ -3548,6 +3750,12 @@ StartupNotify=true
                 # Load linked Kimai project ID and name
                 self.config_kimai_project_id = config_data.get('kimai_project_id', None)
                 self.config_kimai_project_name = config_data.get('kimai_project_name', None)
+                # Load per-project layout mode (standard/focus) — remembers the last layout
+                # this project was viewed in
+                self.layout_mode = config_data.get('layout_mode', 'standard')
+                # Focus layout defaults the launcher column to Group-by-Type
+                if is_project_switch:
+                    self.group_by_type = (self.layout_mode == "focus")
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -3570,6 +3778,9 @@ StartupNotify=true
                 self.config_project_name = None
                 self.config_project_color = None
                 self.config_path_mapping = False
+                self.layout_mode = 'standard'
+                if is_project_switch:
+                    self.group_by_type = False
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -5046,6 +5257,10 @@ function filterAliases(q) {{
         # Build main content
         self.build_main_content(scroll_layout)
 
+        # Apply Focus layout immediately if that was the saved mode
+        if self.layout_mode == "focus":
+            self._enter_focus_layout()
+
     def create_title_bar(self, parent_layout):
         """Create a title bar with project name on left and status on right"""
         title_bar = QHBoxLayout()
@@ -5128,8 +5343,9 @@ function filterAliases(q) {{
         self.edit_project_btn.clicked.connect(self.toggle_edit_mode)
         title_bar.addWidget(self.edit_project_btn)
 
-        # Path mapping toggle — only shown when global mappings are configured
-        if self.settings.get('path_mappings'):
+        # Path mapping toggle — only shown in edit mode when global mappings are configured
+        # (obscure setting; was getting confused with the Focus layout toggle when always visible)
+        if _in_edit and self.settings.get('path_mappings'):
             _mapping_on = getattr(self, 'config_path_mapping', False)
             _mapping_btn_style = f"""
                 QPushButton {{
@@ -5155,6 +5371,17 @@ function filterAliases(q) {{
             mapping_btn.setStyleSheet(_mapping_btn_style)
             mapping_btn.clicked.connect(self._toggle_path_mapping)
             title_bar.addWidget(mapping_btn)
+
+        # Layout toggle button — switches between Standard (3-col) and Focus (2-col) layouts
+        _is_focus = self.layout_mode == "focus"
+        self.layout_toggle_btn = QPushButton("▣" if _is_focus else "⊞")
+        self.layout_toggle_btn.setToolTip(
+            "Switch to Standard layout (3 columns)" if _is_focus
+            else "Switch to Focus layout (launcher + wide viewer)"
+        )
+        self.layout_toggle_btn.setStyleSheet(_edit_btn_style)
+        self.layout_toggle_btn.clicked.connect(self.toggle_layout_mode)
+        title_bar.addWidget(self.layout_toggle_btn)
 
         parent_layout.addLayout(title_bar)
 
@@ -6524,6 +6751,9 @@ function filterAliases(q) {{
         self._launcher_search_refs = []
 
         for col_idx, column_categories in enumerate(all_columns):
+            if col_idx == 0 and self.group_by_type and not self.edit_mode:
+                column_categories = self._build_grouped_categories()
+
             # Create a vertical layout for this entire column
             column_layout = QVBoxLayout()
 
@@ -6582,6 +6812,18 @@ function filterAliases(q) {{
                         """)
                         self._launcher_search_box.textChanged.connect(self._filter_launchers)
                         header_layout.addWidget(self._launcher_search_box, 1)
+
+                        group_btn = QPushButton("🗂️ Group")
+                        group_btn.setMinimumHeight(self.d('header_btn_height'))
+                        group_btn.setToolTip(
+                            "Group launchers by type (Documentation / Websites / Resources) — "
+                            "display only, never changes the project file"
+                        )
+                        group_btn.setCheckable(True)
+                        group_btn.setChecked(self.group_by_type)
+                        group_btn.setStyleSheet(green_btn_style)
+                        group_btn.clicked.connect(self._toggle_group_by_type)
+                        header_layout.addWidget(group_btn)
 
                         add_btn = QPushButton("  +  Add")
                         add_btn.setMinimumHeight(self.d('header_btn_height'))
@@ -6744,8 +6986,19 @@ function filterAliases(q) {{
                                 else:
                                     app_icon = icon_val + " "
 
-                            # Use DraggableItemButton for drag-and-drop reordering
-                            btn = DraggableItemButton(f"{app_icon}{display_name}", col_idx, category_name, idx)
+                            grouped_active = getattr(self, 'group_by_type', False) and not self.edit_mode
+                            if grouped_active:
+                                # Group-by-Type view: items are pooled from every real category, so
+                                # this button's true (category, index) may differ from the visual
+                                # bucket it's rendered under. Look up its real origin for editing —
+                                # and use a plain (non-draggable) button so a drag can never trigger
+                                # handle_item_move_to_category() and silently rewrite the real config.
+                                true_category, true_idx = self._group_view_origin.get(id(item), (category_name, idx))
+                                btn = QPushButton(f"{app_icon}{display_name}")
+                            else:
+                                true_category, true_idx = category_name, idx
+                                # Use DraggableItemButton for drag-and-drop reordering
+                                btn = DraggableItemButton(f"{app_icon}{display_name}", col_idx, category_name, idx)
                             btn.setMinimumHeight(30)
                             btn.setStyleSheet(self.get_item_button_style())
                             if svg_icon_path:
@@ -6756,8 +7009,9 @@ function filterAliases(q) {{
                             )
 
                             # Set tooltip showing the command and path (with drag hint)
-                            btn.setToolTip(f"[{app}] {path}\n(Drag to reorder)")
-                            self._wire_launcher_context_menu(btn, col_idx, category_name, idx)
+                            drag_hint = "" if grouped_active else "\n(Drag to reorder)"
+                            btn.setToolTip(f"[{app}] {path}{drag_hint}")
+                            self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
 
                             # Shared style for small icon buttons beside launchers
                             icon_btn_style = f"""
@@ -6846,21 +7100,21 @@ function filterAliases(q) {{
                                 _exp_lower = _exp_path.lower()
                                 if _exp_lower.endswith('.md') and self._is_local_path(path):
                                     preview_btn = QPushButton("📄")
-                                    preview_btn.setToolTip("Preview as rendered markdown")
+                                    preview_btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in built-in editor")
                                     preview_btn.clicked.connect(
-                                        lambda checked=False, md=_exp_path: self._open_markdown_in_webview(md)
+                                        lambda checked=False, md=_exp_path, a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_in_webview(md)
                                     )
                                 elif _exp_lower.endswith(('.html', '.htm')) and self._is_local_path(path):
                                     preview_btn = QPushButton("🌐")
-                                    preview_btn.setToolTip("Preview in built-in web viewer")
+                                    preview_btn.setToolTip("Preview / open externally")
                                     preview_btn.clicked.connect(
-                                        lambda checked=False, p=_exp_path: self._open_file_in_webview(p)
+                                        lambda checked=False, p=_exp_path, a=app: self.open_in_app(p, a, force_external=True) if self.layout_mode == "focus" else self._open_file_in_webview(p)
                                     )
                                 else:
                                     preview_btn = QPushButton("🌐")
-                                    preview_btn.setToolTip("Preview in webview")
+                                    preview_btn.setToolTip("Preview / open externally")
                                     preview_btn.clicked.connect(
-                                        lambda checked=False, url=path: self.preview_in_webview(url)
+                                        lambda checked=False, url=path, a=app: self.open_in_app(url, a, force_external=True) if self.layout_mode == "focus" else self.preview_in_webview(url)
                                     )
                                 preview_btn.setMaximumWidth(28)
                                 preview_btn.setMinimumHeight(30)
@@ -6912,7 +7166,7 @@ function filterAliases(q) {{
                                     }}
                                 """)
                                 preview_btn.clicked.connect(
-                                    lambda checked=False, img_path=path: self.preview_in_image_viewer(img_path)
+                                    lambda checked=False, img_path=path, a=app: self.open_in_app(img_path, a, force_external=True) if self.layout_mode == "focus" else self.preview_in_image_viewer(img_path)
                                 )
                                 btn_layout.addWidget(preview_btn)
 
@@ -6935,7 +7189,7 @@ function filterAliases(q) {{
                                 preview_btn.setToolTip("Preview in built-in web viewer")
                                 preview_btn.setStyleSheet(icon_btn_style)
                                 preview_btn.clicked.connect(
-                                    lambda checked=False, p=os.path.expanduser(path): self._open_file_in_webview(p)
+                                    lambda checked=False, p=os.path.expanduser(path), a=app: self.open_in_app(p, a, force_external=True) if self.layout_mode == "focus" else self._open_file_in_webview(p)
                                 )
                                 btn_layout.addWidget(preview_btn)
 
@@ -6954,10 +7208,10 @@ function filterAliases(q) {{
                                 preview_btn = QPushButton("📄")
                                 preview_btn.setMaximumWidth(28)
                                 preview_btn.setMinimumHeight(30)
-                                preview_btn.setToolTip("Preview as rendered markdown")
+                                preview_btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in built-in editor")
                                 preview_btn.setStyleSheet(icon_btn_style)
                                 preview_btn.clicked.connect(
-                                    lambda checked=False, md=os.path.expanduser(path): self._open_markdown_in_webview(md)
+                                    lambda checked=False, md=os.path.expanduser(path), a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_in_webview(md)
                                 )
                                 btn_layout.addWidget(preview_btn)
 
@@ -7200,6 +7454,7 @@ function filterAliases(q) {{
                     ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
                     ("examples", "Examples", "Handler examples",   ["help-contents", "help-browser", "accessories-text-editor"]),
                     ("console",  "",         "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
+                    ("notes",    "Notes",    "Project notes",      ["text-editor", "accessories-text-editor"]),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
                     tab_buttons.insert(0, ("time", "⏱", "Kimai time tracker", []))
@@ -7283,6 +7538,9 @@ function filterAliases(q) {{
 
                     header_layout.addWidget(btn)
                     self.viewer_tab_buttons[mode] = btn
+                    # Notes tab only visible in Focus layout
+                    if mode == "notes":
+                        btn.setVisible(self.layout_mode == "focus")
 
                 # Add stretch to push buttons left
                 header_layout.addStretch()
@@ -7571,6 +7829,11 @@ function filterAliases(q) {{
                 # Build Kimai time viewer
                 self._build_time_viewer()
 
+                # Notes viewer container — notes_panel is reparented here in Focus layout
+                self.notes_viewer_container = QWidget()
+                self.notes_viewer_layout = QVBoxLayout(self.notes_viewer_container)
+                self.notes_viewer_layout.setContentsMargins(0, 0, 0, 0)
+
                 # Add all containers to stack layout
                 self.column2_stack_layout.addWidget(self.pdf_container)
                 self.column2_stack_layout.addWidget(self.webview_container)
@@ -7580,6 +7843,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.console_container)
                 self.column2_stack_layout.addWidget(self.folder_container)
                 self.column2_stack_layout.addWidget(self.time_container)
+                self.column2_stack_layout.addWidget(self.notes_viewer_container)
 
                 # Show correct container based on mode
                 self.pdf_container.hide()
@@ -7590,6 +7854,7 @@ function filterAliases(q) {{
                 self.console_container.hide()
                 self.folder_container.hide()
                 self.time_container.hide()
+                self.notes_viewer_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
                 elif self.column2_mode == "webview":
@@ -7610,6 +7875,8 @@ function filterAliases(q) {{
                 elif self.column2_mode == "time":
                     self.time_container.show()
                     self._kimai_load_entries()
+                elif self.column2_mode == "notes":
+                    self.notes_viewer_container.show()
 
                 self.column2_layout.addWidget(self.column2_stack, 1)  # stretch factor to fill space
 
@@ -7629,12 +7896,13 @@ function filterAliases(q) {{
                 if self.image_path:
                     self.load_image(self.image_path)
 
-        # Add notepad panel (always shown)
-        notepad_layout = QVBoxLayout()
-        notepad_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
+        # Add notepad panel — wrapped in notes_panel so it can be reparented in Focus layout
+        self.notes_panel = QWidget()
+        notes_panel_layout = QVBoxLayout(self.notes_panel)
+        notes_panel_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
 
         # Create formatting toolbar (serves as header)
-        self.create_notepad_toolbar(notepad_layout)
+        self.create_notepad_toolbar(notes_panel_layout)
 
         # Create notepad text area with sanitized paste
         self.notepad = CleanTextEdit()
@@ -7673,7 +7941,7 @@ function filterAliases(q) {{
         italic_shortcut = QShortcut(QKeySequence("Ctrl+I"), self.notepad)
         italic_shortcut.activated.connect(self.toggle_italic)
 
-        notepad_layout.addWidget(self.notepad)
+        notes_panel_layout.addWidget(self.notepad, 1)
 
         # Add archive buttons at the bottom right
         archive_bar = QHBoxLayout()
@@ -7726,17 +7994,24 @@ function filterAliases(q) {{
             """)
         archive_bar.addWidget(view_archive_btn)
 
-        notepad_layout.addLayout(archive_bar)
+        notes_panel_layout.addLayout(archive_bar)
 
         # Wrap each column layout in a QWidget (QSplitter requires QWidget children)
         launcher_widget = QWidget()
         launcher_widget.setLayout(launcher_layout)
+        self.launcher_widget = launcher_widget
 
         column2_widget = QWidget()
         column2_widget.setLayout(self.column2_layout)
+        self.column2_widget = column2_widget
 
-        notepad_widget = QWidget()
-        notepad_widget.setLayout(notepad_layout)
+        # Right-column widget holds notes_panel; stored for show/hide toggling in Focus layout
+        self.notepad_column_widget = QWidget()
+        notepad_col_layout = QVBoxLayout(self.notepad_column_widget)
+        notepad_col_layout.setContentsMargins(0, 0, 0, 0)
+        notepad_col_layout.setSpacing(0)
+        notepad_col_layout.addWidget(self.notes_panel)
+        notepad_widget = self.notepad_column_widget
 
         # Build splitter
         self.columns_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -8936,6 +9211,11 @@ function filterAliases(q) {{
         self.edit_mode = not self.edit_mode
         self.refresh_projects()
 
+    def _toggle_group_by_type(self):
+        """Toggle the dynamic Group-by-Type launcher view (display-only, see _build_grouped_categories)."""
+        self.group_by_type = not self.group_by_type
+        self.refresh_projects()
+
     def _filter_launchers(self, query):
         """Show/hide launcher items and categories based on search text."""
         q = query.strip().lower()
@@ -8978,11 +9258,24 @@ function filterAliases(q) {{
         edit_action = menu.addAction("✏️  Edit")
         delete_action = menu.addAction("🗑  Delete")
 
+        move_actions = {}
+        if self.group_by_type:
+            move_menu = menu.addMenu("📁  Move display to")
+            for bucket in ('Documentation', 'Websites', 'Resources'):
+                move_actions[move_menu.addAction(bucket)] = bucket
+
         action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if action == edit_action:
             self._open_item_edit_dialog(col_idx, category_name, item_idx)
         elif action == delete_action:
             self.delete_item(col_idx, category_name, item_idx)
+        elif action in move_actions:
+            for cat_dict in self.COLUMN_1:
+                if category_name in cat_dict and 0 <= item_idx < len(cat_dict[category_name]):
+                    item = cat_dict[category_name][item_idx]
+                    self._set_grouping_override(item[1], move_actions[action])
+                    self.refresh_projects()
+                    break
 
     def _show_category_context_menu(self, btn, col_idx, category_name):
         """Show right-click Rename/Delete menu for a category header."""
@@ -9737,6 +10030,8 @@ function filterAliases(q) {{
         self.console_container.hide()
         self.folder_container.hide()
         self.time_container.hide()
+        if hasattr(self, 'notes_viewer_container'):
+            self.notes_viewer_container.hide()
 
         # Mode display info
         mode_info = {
@@ -9749,6 +10044,11 @@ function filterAliases(q) {{
             "folder": ("Folder", "Folder Browser", self.folder_container),
             "time": ("Time", "Kimai Time Tracker", self.time_container),
         }
+        if hasattr(self, 'notes_viewer_container'):
+            mode_info["notes"] = ("Notes", "Project Notes", self.notes_viewer_container)
+
+        if mode not in mode_info:
+            mode = "folder"
 
         self.column2_mode = mode
         btn_text, header_text, container = mode_info[mode]
@@ -9927,7 +10227,27 @@ function filterAliases(q) {{
         default_btn.clicked.connect(self.set_viewer_as_default)
         toolbar_layout.addWidget(default_btn)
 
+        # Markdown edit/preview controls — only visible when a .md file is loaded.
+        # Editing is the default mode and autosaves; these just swap to/from the
+        # read-only rendered view.
+        sep_md = QLabel("|")
+        sep_md.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
+        toolbar_layout.addWidget(sep_md)
+
+        self.md_edit_btn = QPushButton("✏️ Edit")
+        self.md_edit_btn.setStyleSheet(btn_style)
+        self.md_edit_btn.setToolTip("Edit this markdown file (autosaves)")
+        self.md_edit_btn.clicked.connect(lambda: self._open_markdown_in_muya_editor())
+        toolbar_layout.addWidget(self.md_edit_btn)
+
+        self.md_preview_btn = QPushButton("👁 Preview")
+        self.md_preview_btn.setStyleSheet(btn_style)
+        self.md_preview_btn.setToolTip("Save and switch to the read-only rendered preview")
+        self.md_preview_btn.clicked.connect(self._muya_switch_to_preview)
+        toolbar_layout.addWidget(self.md_preview_btn)
+
         parent_layout.addWidget(toolbar_widget)
+        self._update_md_edit_buttons()
 
     def webview_back(self):
         """Go back in webview history"""
@@ -9951,7 +10271,10 @@ function filterAliases(q) {{
         """Navigate to home URL from config"""
         if self.webview and hasattr(self, 'config_webview_url') and self.config_webview_url:
             self.webview_md_path = None
+            self._muya_editing = False
+            self._muya_autosave_timer.stop()
             self.webview.setUrl(QUrl(self.config_webview_url))
+            self._update_md_edit_buttons()
 
     def webview_navigate(self):
         """Navigate to URL in URL bar"""
@@ -9961,7 +10284,10 @@ function filterAliases(q) {{
                 if not url.startswith(('http://', 'https://', 'file://')):
                     url = 'https://' + url
                 self.webview_md_path = None
+                self._muya_editing = False
+                self._muya_autosave_timer.stop()
                 self.webview.setUrl(QUrl(url))
+                self._update_md_edit_buttons()
 
     def on_webview_url_changed(self, url):
         """Handle URL changes in webview"""
@@ -9983,7 +10309,11 @@ function filterAliases(q) {{
         # Load the URL
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
+        self.webview_md_path = None
+        self._muya_editing = False
+        self._muya_autosave_timer.stop()
         self.webview.setUrl(QUrl(url))
+        self._update_md_edit_buttons()
 
     def preview_in_image_viewer(self, path):
         """Preview an image in the image viewer panel"""
@@ -10513,10 +10843,18 @@ function filterAliases(q) {{
             return
         if self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
+        self.webview_md_path = None
+        self._muya_editing = False
+        self._muya_autosave_timer.stop()
         self.webview.setUrl(QUrl.fromLocalFile(path))
+        self._update_md_edit_buttons()
 
     def _open_markdown_in_webview(self, path):
-        """Render a markdown file as themed HTML in the built-in webview panel"""
+        """Open a markdown file — defaults to the live, auto-saving Muya editor."""
+        self._open_markdown_in_muya_editor(path)
+
+    def _open_markdown_preview(self, path):
+        """Render a markdown file as themed, read-only HTML in the built-in webview panel"""
         if not self.webview:
             return
         try:
@@ -10554,7 +10892,112 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
         self.webview_md_path = path
+        self._muya_editing = False
         self.webview.setHtml(styled, QUrl.fromLocalFile(path))
+        self._update_md_edit_buttons()
+
+    def _on_webview_load_finished(self, ok):
+        """Fires for every webview navigation. Injects pending Muya editor content once loaded."""
+        if ok and self._muya_pending_markdown is not None:
+            js = f"window.__initMuya({json.dumps(self._muya_pending_markdown)})"
+            self.webview.page().runJavaScript(js)
+            self._muya_pending_markdown = None
+
+    def _open_markdown_in_muya_editor(self, path=None):
+        """Switch the webview into the Muya WYSIWYG markdown editor for the given file."""
+        path = path or self.webview_md_path
+        if not path or not self.webview:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.status_label.setText(f"✗ Could not open {os.path.basename(path)}: {e}")
+            return
+
+        editor_dir = os.path.join(self.script_dir, "assets", "muya")
+        editor_html = os.path.join(editor_dir, "editor.html")
+        if not os.path.exists(editor_html):
+            self.status_label.setText("✗ Muya editor assets not found")
+            return
+
+        if self.column2_mode != "webview":
+            self.switch_to_viewer_mode("webview")
+
+        with open(editor_html, 'r', encoding='utf-8') as f:
+            shell_html = f.read()
+        shell_html = shell_html.replace('__PF_BG__', self.t('bg_primary')).replace('__PF_FG__', self.t('fg_primary'))
+
+        self.webview_md_path = path
+        self._muya_path = path
+        self._muya_editing = True
+        self._muya_pending_markdown = content
+        self.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
+        self._update_md_edit_buttons()
+        if not self._muya_autosave_timer.isActive():
+            self._muya_autosave_timer.start()
+
+    def _muya_autosave_tick(self):
+        """Runs every ~1.2s while editing; saves the file if the editor reports unsaved changes."""
+        if not self._muya_editing or not self.webview:
+            self._muya_autosave_timer.stop()
+            return
+
+        def on_dirty(is_dirty):
+            if is_dirty:
+                self._muya_save()
+
+        self.webview.page().runJavaScript(
+            "window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty
+        )
+
+    def _muya_save(self):
+        """Pull the current markdown out of the Muya editor and write it back to disk."""
+        if not self._muya_editing or not self._muya_path or not self.webview:
+            return
+
+        def on_markdown(markdown):
+            if markdown is None:
+                self.status_label.setText("✗ Autosave failed: no content from editor")
+                return
+            try:
+                with open(self._muya_path, 'w', encoding='utf-8') as f:
+                    f.write(markdown)
+                self.webview.page().runJavaScript("window.__muyaClearDirty && window.__muyaClearDirty()")
+                self.status_label.setText(f"✓ Autosaved {os.path.basename(self._muya_path)}")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
+            except OSError as e:
+                self.status_label.setText(f"✗ Autosave failed: {e}")
+
+        self.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
+
+    def _muya_switch_to_preview(self):
+        """Leave the Muya editor (autosaving first) and show the rendered read-only preview."""
+        if not self._muya_path or not self.webview:
+            return
+        path = self._muya_path
+        self._muya_autosave_timer.stop()
+
+        def on_markdown(markdown):
+            if markdown:
+                try:
+                    with open(path, 'w', encoding='utf-8') as f:
+                        f.write(markdown)
+                except OSError as e:
+                    self.status_label.setText(f"✗ Autosave failed: {e}")
+            self._muya_editing = False
+            self._muya_path = None
+            self._open_markdown_preview(path)
+
+        self.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
+
+    def _update_md_edit_buttons(self):
+        """Show Edit or Preview depending on whether a markdown file is loaded and whether we're editing it."""
+        if not hasattr(self, 'md_edit_btn'):
+            return
+        is_md = bool(getattr(self, 'webview_md_path', None))
+        self.md_edit_btn.setVisible(is_md and not self._muya_editing)
+        self.md_preview_btn.setVisible(is_md and self._muya_editing)
 
     def folder_browser_context_menu(self, position):
         """Handle right-click context menu in folder browser"""
@@ -11375,13 +11818,43 @@ Project created: {date_str}
             self.status_label.setText(f"✗ Reload failed: {str(e)}")
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
 
-    def open_in_app(self, path, app="default"):
+    def open_in_app(self, path, app="default", force_external=False):
         """Open the specified path in the given application"""
         try:
             # Apply path mappings if enabled for this project (before ~ expansion)
             path = self._resolve_path(path)
             # Expand ~ to home directory
             expanded_path = os.path.expanduser(path)
+
+            # Focus layout: route viewable content to internal viewer instead of external apps.
+            # force_external=True lets the small icon button bypass this and always launch externally.
+            if self.layout_mode == "focus" and not force_external:
+                ext = os.path.splitext(expanded_path)[1].lower()
+                if app in ("firefox", "chrome") or expanded_path.startswith(("http://", "https://")):
+                    if ext == ".md" and self._is_local_path(path):
+                        self._open_markdown_in_webview(expanded_path)
+                    elif ext in (".html", ".htm") and self._is_local_path(path):
+                        self._open_file_in_webview(expanded_path)
+                    else:
+                        self.preview_in_webview(path)
+                    return
+                if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp') or app in ("gwenview", "gimp", "krita"):
+                    self.preview_in_image_viewer(expanded_path)
+                    return
+                if ext == ".pdf":
+                    self.switch_to_viewer_mode("pdf")
+                    self.load_pdf(expanded_path)
+                    return
+                if ext == ".md" and self._is_local_path(path):
+                    self._open_markdown_in_webview(expanded_path)
+                    return
+                if ext in (".html", ".htm") and self._is_local_path(path):
+                    self._open_file_in_webview(expanded_path)
+                    return
+                if os.path.isdir(expanded_path) and app not in ("terminal", "konsole", "editor", "file_manager", "dolphin", "directorydev"):
+                    self.preview_in_folder_browser(expanded_path)
+                    return
+                # Everything else (terminal, editor, ssh, npm, directorydev) falls through
 
             # 0. File manager: use configured FM with optional home-tab behaviour
             if app in ("file_manager", "dolphin"):

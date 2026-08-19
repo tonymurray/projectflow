@@ -96,6 +96,7 @@ These options can be set in individual config JSON files:
 - `terminal`: Terminal emulator override for this config (e.g., `"gnome-terminal"`, `"alacritty"`). Overrides global terminal setting.
 - `browser_new_tab`: Override global `browser_new_tab` for this project. `true` = new tab, `false` = new window. Omit to inherit global setting.
 - `notes_file`: Path to project-local notes file (e.g., `"./projectflow.md"`). When set, notes are loaded from this file instead of the global notes folder. Supports relative paths resolved from the config file location.
+- `layout_mode`: `"focus"` to reopen this project in Focus layout (see UI Features → Focus Layout). Omitted (or any other value) means Standard layout. Written automatically when the ⊞/▣ title-bar toggle is clicked — not intended for manual editing.
 
 These options can also be set via the 📌 button in each viewer toolbar:
 - Load a PDF, webpage, or image in the central viewer
@@ -372,7 +373,7 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 - **Viewer panel**: Tab buttons at top to switch between viewers (Folder, Web, PDF, Image, Examples, Console). Active viewer is highlighted. Each viewer has its own toolbar with an "External" button to open in a standalone application.
 - **Shortcuts panel**: Single column of categorized launchers with "Open All" buttons per category. Edit/Refresh buttons at top (no header label).
 - **Notepad panel**: Formatting toolbar at top (no header label). Auto-saving notes with markdown formatting.
-- **Folder browser**: Navigate the filesystem, detect project folders with `.projectflow` configs, and create new projects. Folders with existing `.projectflow` show [P] badge and can be opened directly. Clicking `.html`/`.htm` files opens them in the built-in webview; clicking `.md` files renders them as themed HTML in the webview (using Qt's built-in markdown parser — no external deps). All other files open via `xdg-open`.
+- **Folder browser**: Navigate the filesystem, detect project folders with `.projectflow` configs, and create new projects. Folders with existing `.projectflow` show [P] badge and can be opened directly. Clicking `.html`/`.htm` files opens them in the built-in webview; clicking `.md` files opens the built-in Muya markdown editor (see Markdown Editor below). All other files open via `xdg-open`.
 - **Examples viewer**: Displays launch handler documentation from EXAMPLES.html. Uses theme color placeholders (e.g., `{fg_primary}`) that are replaced at runtime. Reload button refreshes content; External button opens the file for editing.
 - **Embedded console**: IPython/qtconsole for quick Python and shell commands (`!ls`, `!git status`). Limitations: no interactive programs (nano, vim) - use External button for full terminal.
   - **Why qtconsole**: Well-established Jupyter project with strong community support. Alternatives considered:
@@ -380,7 +381,7 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
     - `pyqtermwidget` / `qtermwidget` - C++ based, requires compilation, complex bindings
     - `QProcess + QTextEdit` - Simple but no colors, no terminal features
   - Current approach: qtconsole + External button provides best balance of features and reliability
-- **Preview buttons**: Web links (firefox/chrome) show 🌐 button to preview in webview; images (gwenview/gimp/krita) show 🖼️ button to preview in image viewer
+- **Preview buttons**: Web links (firefox/chrome) show 🌐 button to preview in webview; images (gwenview/gimp/krita) show 🖼️ button to preview in image viewer; local `.md` files show 📄 button to open the built-in markdown editor. In Focus layout these buttons invert to "open externally" instead (see Focus Layout below), since the main click already opens internally there.
 - **Projects section**: Unified project switcher with four modes (Recent/Main/Folder/Archive buttons):
   - **Recent mode** (default): Shows pinned + recent main projects (up to 10) with drag-drop reordering. Pinned projects shown with underline. ↺ button resets pinned order.
   - **Main Projects mode**: Shows all projects from the projects/ folder in rows of 10, sorted alphabetically.
@@ -409,9 +410,41 @@ The main button opens all apps at once. Individual icon buttons (🗄️ $_ 💠
 - **Launcher search**: A search box in the launcher header (left of the Edit/Add buttons) filters visible items as you type. Matches against display name, path, and app/command name (case-insensitive). Categories with no matching items are hidden entirely. Clearing the box restores all items. Hidden automatically when in edit mode. Implemented via widget visibility toggling (no rebuild); references stored in `self._launcher_search_refs`.
 - **Viewer tab buttons**: ⏱ Time, Folder, Web, PDF, Image, Examples, Console. ⏱ uses an emoji label (not a system icon) and only appears when `kimai_url` + `kimai_token` are configured. Others show system theme icons with text fallback.
 - **Kimai time viewer (⏱)**: Appears first when Kimai is configured. Shows recent time entries for the linked project in a table (Description/Date/Time/Duration), a period selector (Week/Month/3M/6M), a total-hours summary row, and a Log Time form (description, activity dropdown, date, from/to times). If no project is linked, shows "Link Kimai Project…" button instead. Pending Imports section appears below the log form when CSV files matching the project name exist in `kimai_csv_folder` — shows file details and an [Import] button that POSTs entries to Kimai and archives the CSV. Table header uses `fg_on_dark` on `bg_panel`; total row uses `fg_on_dark` on `bg_category` (readable in both light and dark themes).
-- **Edit mode**: "✏️ Edit" button toggles edit mode — shows "Add Entry" buttons per category, "Add Category" at bottom, and "Project Details" for the full settings editor.
+- **Edit mode**: "✏️ Edit" button toggles edit mode — shows "Add Entry" buttons per category, "Add Category" at bottom, "Project Details" for the full settings editor, "🔍 Scan Docs" (see Per-Config Options), and the "⇄" path-mapping toggle (only shown here — it's an obscure per-project setting, kept out of the normal view to avoid confusion with the Focus layout toggle).
 - **Title bar search**: Click the project title to enter search mode. Type to filter configs with autocomplete dropdown (case-insensitive substring match). Press Enter to switch to the first/selected match, or click elsewhere to cancel.
 - **Archive buttons**: At bottom-right of notepad. "📥 Archive" saves notes with timestamp and clears notepad. "📜 View" opens archive dialog (greyed out when no archive exists).
+
+### Focus Layout
+
+An alternative two-column layout (Launchers | wide Viewer) for documentation-heavy work, toggled via the ⊞/▣ button in the title bar (right side, next to the path-mapping/edit controls).
+
+- **Standard layout** (default): the usual three-column Launchers | Viewer | Notepad.
+- **Focus layout**: Notepad is reparented into a "Notes" viewer tab (alongside Folder/Web/PDF/Image/Examples/Console); the right column collapses/hides; the splitter becomes `[launcher(1/3), viewer(2/3)]`.
+- **Per-project persistence**: the chosen layout is written to the project's own config as `layout_mode` (see Per-Config Options) and restored automatically whenever that project is opened or switched to — implemented in `load_config()`/`toggle_layout_mode()`/`_save_layout_mode_to_config()`.
+- **Interaction inversion**: in Focus layout, clicking a launcher that would normally open externally (web link, image, PDF, local `.md`/`.html`) instead routes into the built-in viewer via `switch_to_viewer_mode()` — implemented as a routing block at the top of `open_in_app()`. The small preview buttons (🌐/🖼️/📄) invert accordingly, becoming "open externally" (pass `force_external=True` to `open_in_app()` to bypass the routing).
+- **Focus layout defaults the launcher column to Group-by-Type** (see below) — set in `load_config()` alongside `layout_mode`, but only when actually switching projects (tracked via `self._group_default_applied_for`) so a manual Group-by-Type toggle during the same session on the same project isn't silently reverted by an unrelated refresh.
+- Splitter sizes are tracked separately per layout (`splitter_state` vs `splitter_state_focus` in settings) so resizing one layout doesn't disturb the other.
+
+### Markdown Editor
+
+Local `.md` files opened via the viewer (launcher click, folder browser, preview buttons, Focus-layout routing) open directly into a live WYSIWYG editor by default, rather than a static preview.
+
+- Built on **Muya** (`@muyajs/core`), the standalone editor engine extracted from the [MarkText](https://github.com/marktext/marktext) project — a framework-agnostic browser library, embedded via `QWebEngineView` since it has no Python/Electron dependency of its own.
+- Vendored as a pre-built UMD bundle under `assets/muya/` (`lib/umd/index.js` + `lib/assets/` + `lib/core.css`, plus `assets-shim.js` which maps the bundle's expected `window.__assets_*` globals to the vendored asset paths — required because the UMD build's browser-global code path expects an asset-loader to have already populated those, unlike its CJS/AMD paths). `assets/muya/editor.html` is the shell page that boots it with the app's theme colors substituted in (`__PF_BG__`/`__PF_FG__` placeholders).
+- **Autosave**: a `QTimer` (`self._muya_autosave_timer`, ~1.2s interval) polls the editor's own `json-change`-driven dirty flag (`window.__muyaIsDirty()`) while editing and writes to disk via `window.__getMuyaMarkdown()` — no manual save button. Stops automatically when navigating away from the file.
+- **👁 Preview / ✏️ Edit** toggle buttons in the webview toolbar switch to/from the themed read-only rendering (the original Qt-`QTextDocument`-based renderer, now named `_open_markdown_preview()`). Switching to preview flushes the latest editor content first.
+- `_open_markdown_in_webview(path)` is the stable entry point used everywhere in the codebase — it now just calls `_open_markdown_in_muya_editor(path)`. Call `_open_markdown_preview(path)` directly for the read-only view.
+- To regenerate the vendored bundle from source: see `packages/muya` in a checkout of the marktext monorepo, `pnpm --filter @muyajs/core build` (no need to install/build the rest of the monorepo — that requires a C toolchain for Electron native deps that this project doesn't need).
+
+### Group-by-Type Launcher View
+
+A "🗂️ Group" toggle in the launcher column header (next to the search box, view mode only) dynamically regroups every launcher across every category into three sections — **Documentation / Websites / Resources** — without ever modifying the project's category structure or JSON file.
+
+- **Classifier** (`_classify_launcher_item()`): local file with a doc extension (`.md`/`.html`/`.htm`/`.pdf`/`.txt`) → Documentation; `http(s)://` path or `firefox`/`chrome` app → Websites; everything else → Resources.
+- **Non-destructive by design**: `_build_grouped_categories()` pools items from `self.COLUMN_1` into virtual category dicts for rendering only; each item's true `(category_name, index)` is recorded in `self._group_view_origin` (keyed by object identity) so editing/deleting/context-menu actions still act on the real, authored data.
+- **No drag-and-drop in this view**: items render as plain `QPushButton`s instead of `DraggableItemButton`s, because the existing drag machinery (`CategoryDropZone`) moves items between *real* categories on drop — reusing it here would have silently rewritten the config.
+- **Manual correction**: right-click → "📁 Move display to…" lets you override a misclassified item's bucket. The override is stored in `.projectflow_settings.json` under `grouping_overrides[<config path>][<item path>]` — never in the project file — and wins over the heuristic on future loads.
+- Defaults on automatically for projects opened in Focus layout (see above).
 
 ### Theme System
 
@@ -540,6 +573,9 @@ projectflow/
 ├── launch_handlers.py          # Built-in launch handlers (Python)
 ├── launch_handlers_custom.json # User-defined launch handlers (editable via UI)
 ├── icon_preferences.json       # App icon/name mappings
+├── assets/muya/                # Vendored Muya markdown editor bundle (see Markdown Editor)
+│   ├── editor.html              # Editor shell page loaded into QWebEngineView
+│   └── lib/                     # Pre-built UMD bundle + assets + shim (see docs above)
 ├── projects/                   # Project files (synced via Nextcloud)
 │   └── [project].json          # User-specific projects
 ├── notes/                      # Markdown notes (synced via Nextcloud)

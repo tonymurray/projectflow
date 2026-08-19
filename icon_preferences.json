@@ -36,7 +36,7 @@
     "name": "Dolphin Tabs"
   },
   "editor": {
-    "icon": "\u2328\ufe0f",
+    "icon": "\ud83c\udd43",
     "name": "Editor"
   },
   "file_manager": {
@@ -114,5 +114,13 @@
   "inkscape": {
     "icon": "\ud83d\udcd0",
     "name": "Inkscape"
+  },
+  "typora": {
+    "icon": "\ud83c\udd43",
+    "name": "Typora"
+  },
+  ".md": {
+    "icon": "\ud83c\udd43",
+    "name": "Markdown files"
   }
 }

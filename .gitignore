@@ -18,6 +18,9 @@ notes/
 course/
 ErrorCrash.txt
 
+# Scratch clone of the marktext monorepo (reference only, used to build assets/muya/)
+marktext-develop/
+
 # Jupyter/qtconsole runtime config
 .jupyter/
 

@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="./lib/core.css">
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: __PF_BG__;
+    color: __PF_FG__;
+  }
+  #editor { max-width: 900px; margin: 0 auto; padding: 20px 30px 80px; }
+  .ag-editor-container { font-size: 15px; }
+</style>
+</head>
+<body>
+<div id="editor"></div>
+
+<script src="./lib/assets-shim.js"></script>
+<script src="./lib/umd/index.js"></script>
+<script>
+(function () {
+  var M = window['@muyajs/core'];
+
+  M.Muya.use(M.InlineFormatToolbar);
+  M.Muya.use(M.EmojiSelector);
+  M.Muya.use(M.CodeBlockLanguageSelector);
+  M.Muya.use(M.ImageToolBar);
+  M.Muya.use(M.ImageResizeBar);
+  M.Muya.use(M.LinkTools, {
+    jumpClick: function (linkInfo) {
+      var href = linkInfo && linkInfo.href;
+      if (href) window.location.href = 'pfbridge://open-link?url=' + encodeURIComponent(href);
+    }
+  });
+  M.Muya.use(M.ParagraphFrontButton);
+  M.Muya.use(M.ParagraphFrontMenu);
+  M.Muya.use(M.ParagraphQuickInsertMenu);
+  M.Muya.use(M.TableColumnToolbar);
+  M.Muya.use(M.TableDragBar);
+  M.Muya.use(M.TableRowColumMenu);
+  M.Muya.use(M.PreviewToolBar);
+
+  var muya = null;
+  var dirty = false;
+
+  window.__initMuya = function (markdown) {
+    var container = document.getElementById('editor');
+    muya = new M.Muya(container, {
+      markdown: markdown || '',
+      footnote: true,
+    });
+    muya.init();
+    dirty = false;
+    muya.on('json-change', function () { dirty = true; });
+  };
+
+  window.__getMuyaMarkdown = function () {
+    return muya ? muya.getMarkdown() : '';
+  };
+
+  window.__setMuyaMarkdown = function (markdown) {
+    if (muya) {
+      muya.setContent(markdown || '');
+      dirty = false;
+    }
+  };
+
+  window.__muyaIsDirty = function () {
+    return !!dirty;
+  };
+
+  window.__muyaClearDirty = function () {
+    dirty = false;
+  };
+})();
+</script>
+</body>
+</html>
