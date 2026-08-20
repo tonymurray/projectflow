@@ -13,6 +13,9 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 - **Notes panel now uses the live Muya WYSIWYG editor** — the same one already used for standalone `.md` files — instead of the old `QTextEdit`-based rich-text editor and its regex HTML↔Markdown round-trip. Runs on its own persistent, independent `QWebEngineView` (`self.notes_webview`) so it can coexist with whatever's showing in the main viewer.
 - **Typora-style "paper on page" theme** for both the Notes panel and the general markdown viewer: a paper-colored card with a drop shadow floating on a tinted page background, in both light (Documentary-theme colors) and dark (custom dark palette) variants. Paper opacity is 90% in Standard layout, 80% in Focus layout.
 - Viewer column now holds a 600px minimum height, so projects with short launcher lists no longer squish the viewer — the page grows/scrolls instead.
+- **Notes can now be pinned as a project's default viewer** (Focus layout): a 📌 button next to the archive controls sets `column2_default` to Notes, the same way PDF/Web/Image/Console/Folder/Time already could be — open the project and land straight on its notes.
+- **Quick File Browser Panel's expanded/collapsed state is now remembered per project**, the same way `layout_mode`/`group_by_type` already are, instead of always starting collapsed.
+- Icon-grid folder browser (both the main viewer and the launcher panel) now shows the full filename as a tooltip on every item, and grid cells are taller so more of a long name wraps into view before it needs to truncate at all.
 
 ### Changed
 - The main viewer's "Folder" tab has been removed — folder browsing now happens via the new launcher-column Quick File Browser Panel (Focus layout) or as an internal fallback mode; its Home/Refresh/view-toggle controls moved to the new panel's toolbar.
@@ -30,6 +33,7 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 - Fixed `ForceDarkMode` on the main webview getting stuck permanently on after the first switch to dark theme — it was only ever being set `True`, never back to `False`, so plain web pages (and the markdown viewer, which shares the same webview) stayed dark-filtered even after returning to light mode.
 - Fixed the pinned-projects row not correctly re-sizing when the window *shrinks* — its container only reliably re-fires its own resize event when growing, since it's deliberately sized to content rather than stretched. The main window's resize event now explicitly re-triggers it.
 - Fixed a 2px height mismatch between the pinned-projects row and the main projects grid (26px vs. 28px) that made the two rows look slightly misaligned.
+- Fixed a crash when the Quick File Browser Panel starts expanded (now possible since its state persists) on a project's very first-ever load — `populate_folder_browser()` assumed the main Folder-viewer-tab's widgets always existed already, but they're built later in the same pass; all four render targets are now guarded consistently.
 
 ### Removed
 - `CleanTextEdit` (the old sanitizing `QTextEdit` subclass), its formatting toolbar, and all its `QTextCursor`-based formatting handlers (bold/italic/heading/lists/link/etc.) — superseded by the Muya editor, which provides its own in-editor markdown-shortcut typing.

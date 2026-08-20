@@ -3602,6 +3602,26 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving group_by_type: {e}")
 
+    def _save_launcher_folder_panel_to_config(self):
+        """Persist whether the Focus-layout Quick File Browser Panel is expanded into the
+        active project's own config file, so it's remembered next time this project is opened
+        (see _toggle_launcher_folder_panel)."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            if self.launcher_folder_panel_expanded:
+                config_data['launcher_folder_panel_expanded'] = True
+            else:
+                config_data.pop('launcher_folder_panel_expanded', None)
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving launcher_folder_panel_expanded: {e}")
+
     def _enter_focus_layout(self):
         """Switch to Focus layout: hide right notes column, move notes into viewer tab."""
         if not hasattr(self, 'notes_panel') or not hasattr(self, 'notes_viewer_container'):
@@ -3800,7 +3820,9 @@ StartupNotify=true
                         self.group_by_type = bool(config_data['group_by_type'])
                     else:
                         self.group_by_type = (self.layout_mode == "focus")
-                    self.launcher_folder_panel_expanded = False
+                    self.launcher_folder_panel_expanded = bool(
+                        config_data.get('launcher_folder_panel_expanded', False)
+                    )
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -4684,7 +4706,7 @@ function filterAliases(q) {{
 
             # Use config-specified column2 default mode if set
             if hasattr(self, 'config_column2_default') and self.config_column2_default:
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console", "folder", "time"):
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console", "folder", "time", "notes"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -5083,6 +5105,9 @@ function filterAliases(q) {{
                 resource_key = "folder_path"
                 resource_value = self.folder_current_path
             elif self.column2_mode == "time":
+                resource_key = None
+                resource_value = None
+            elif self.column2_mode == "notes":
                 resource_key = None
                 resource_value = None
             else:
@@ -7905,7 +7930,7 @@ function filterAliases(q) {{
                 self.folder_icon_view.setMovement(QListWidget.Movement.Static)
                 self.folder_icon_view.setWrapping(True)
                 self.folder_icon_view.setIconSize(QSize(48, 48))
-                self.folder_icon_view.setGridSize(QSize(96, 90))
+                self.folder_icon_view.setGridSize(QSize(96, 112))
                 self.folder_icon_view.setSpacing(4)
                 self.folder_icon_view.setWordWrap(True)
                 self.folder_icon_view.setUniformItemSizes(True)
@@ -8077,6 +8102,17 @@ function filterAliases(q) {{
             external_btn.setToolTip(f"Open in {external_editor}")
             external_btn.clicked.connect(self.open_note_in_external_editor)
             archive_bar.addWidget(external_btn)
+
+        # Pin Notes as this project's default viewer — only meaningful in Focus layout, where
+        # Notes is a peer of the other viewer tabs (Web/PDF/Image/etc.); in Standard layout
+        # Notes is always the fixed 3rd column regardless of column2_mode/column2_default.
+        if self.layout_mode == "focus":
+            notes_pin_btn = QPushButton("📌")
+            notes_pin_btn.setFixedWidth(28)
+            notes_pin_btn.setStyleSheet(archive_btn_style)
+            notes_pin_btn.setToolTip("Set Notes as default viewer for this project")
+            notes_pin_btn.clicked.connect(self.set_viewer_as_default)
+            archive_bar.addWidget(notes_pin_btn)
 
         archive_bar.addStretch()
 
@@ -10846,7 +10882,7 @@ function filterAliases(q) {{
         self.launcher_folder_icon_view.setMovement(QListWidget.Movement.Static)
         self.launcher_folder_icon_view.setWrapping(True)
         self.launcher_folder_icon_view.setIconSize(QSize(40, 40))
-        self.launcher_folder_icon_view.setGridSize(QSize(80, 76))
+        self.launcher_folder_icon_view.setGridSize(QSize(80, 96))
         self.launcher_folder_icon_view.setSpacing(4)
         self.launcher_folder_icon_view.setWordWrap(True)
         self.launcher_folder_icon_view.setUniformItemSizes(True)
@@ -10990,14 +11026,24 @@ function filterAliases(q) {{
         for e in entries:
             icon = folder_icon if e['kind'] == 'dir' else icon_provider.icon(QFileInfo(e['full_path']))
             item = QListWidgetItem(icon, e['display_name'])
+            # Full name as a tooltip — the grid cell wraps long names but still elides past a
+            # couple of lines, so this is the reliable way to always see the whole filename.
+            tooltip = e['display_name']
             if e['is_project']:
-                item.setToolTip("ProjectFlow project folder")
+                tooltip += "\n(ProjectFlow project folder)"
+            item.setToolTip(tooltip)
             item.setData(Qt.ItemDataRole.UserRole, e['full_path'])
             item.setData(Qt.ItemDataRole.UserRole + 1, e['kind'])
             grid.addItem(item)
 
     def populate_folder_browser(self, path):
-        """Populate the folder browser (both tree and icon views) with contents of the given path"""
+        """Populate the folder browser (both tree and icon views) with contents of the given path.
+
+        Note: the main Folder-viewer-tab widgets (folder_path_label/folder_browser/
+        folder_icon_view) aren't guaranteed to exist yet — the launcher-column Quick File
+        Browser Panel is built earlier in build_main_content() than they are, and can now call
+        this on the very first-ever build if it starts pre-expanded (persisted per project).
+        """
         self.folder_current_path = path
 
         # Update path label (shorten home dir to ~)
@@ -11005,19 +11051,25 @@ function filterAliases(q) {{
         home = os.path.expanduser("~")
         if path.startswith(home):
             display_path = "~" + path[len(home):]
-        self.folder_path_label.setText(display_path)
+        main_path_label = getattr(self, 'folder_path_label', None)
+        if main_path_label is not None:
+            main_path_label.setText(display_path)
         launcher_path_label = getattr(self, 'launcher_folder_path_label', None)
         if launcher_path_label is not None:
             launcher_path_label.setText(display_path)
 
         entries, error = self._scan_folder_entries(path)
+        main_tree = getattr(self, 'folder_browser', None)
+        main_icons = getattr(self, 'folder_icon_view', None)
         launcher_tree = getattr(self, 'launcher_folder_browser', None)
         launcher_icons = getattr(self, 'launcher_folder_icon_view', None)
         if error is not None:
-            self.folder_browser.clear()
-            self.folder_icon_view.clear()
-            self.folder_browser.addTopLevelItem(QTreeWidgetItem([error]))
-            self.folder_icon_view.addItem(QListWidgetItem(error))
+            if main_tree is not None:
+                main_tree.clear()
+                main_tree.addTopLevelItem(QTreeWidgetItem([error]))
+            if main_icons is not None:
+                main_icons.clear()
+                main_icons.addItem(QListWidgetItem(error))
             if launcher_tree is not None:
                 launcher_tree.clear()
                 launcher_tree.addTopLevelItem(QTreeWidgetItem([error]))
@@ -11026,8 +11078,10 @@ function filterAliases(q) {{
                 launcher_icons.addItem(QListWidgetItem(error))
             return
 
-        self._render_folder_tree(entries)
-        self._render_folder_icons(entries)
+        if main_tree is not None:
+            self._render_folder_tree(entries)
+        if main_icons is not None:
+            self._render_folder_icons(entries)
         if launcher_tree is not None:
             self._render_folder_tree(entries, target=launcher_tree)
         if launcher_icons is not None:
@@ -11174,6 +11228,7 @@ function filterAliases(q) {{
     def _toggle_launcher_folder_panel(self):
         """Expand/collapse the quick file-browser panel in the Focus-layout launcher column."""
         self.launcher_folder_panel_expanded = not self.launcher_folder_panel_expanded
+        self._save_launcher_folder_panel_to_config()
         self.refresh_projects()
 
     def _open_file_in_webview(self, path):
