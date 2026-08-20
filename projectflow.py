@@ -49,58 +49,6 @@ BUILTIN_HANDLERS = {
 }
 
 
-class CleanTextEdit(QTextEdit):
-    """QTextEdit subclass that sanitizes pasted HTML to keep only allowed tags"""
-
-    ALLOWED_TAGS = {'b', 'i', 'p', 'br', 'ul', 'ol', 'li', 'strong', 'em',
-                    'h1', 'h2', 'h3', 'h4', 'h5', 'a', 'code'}
-
-    def insertFromMimeData(self, source):
-        """Override paste to sanitize HTML content"""
-        if source.hasHtml():
-            clean_html = self.sanitize_html(source.html())
-            self.insertHtml(clean_html)
-        elif source.hasText():
-            self.insertPlainText(source.text())
-        else:
-            super().insertFromMimeData(source)
-
-    def sanitize_html(self, html):
-        """Remove all HTML tags except allowed ones, strip all attributes except href on <a>"""
-        # First, extract body content if present
-        body_match = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
-        if body_match:
-            html = body_match.group(1)
-
-        # Pattern to match HTML tags
-        tag_pattern = re.compile(r'<(/?)(\w+)([^>]*)>', re.IGNORECASE)
-
-        def replace_tag(match):
-            slash = match.group(1)  # '/' for closing tags, '' for opening
-            tag_name = match.group(2).lower()
-            attributes = match.group(3)
-
-            if tag_name not in self.ALLOWED_TAGS:
-                return ''  # Remove disallowed tags
-
-            # For <a> tags, preserve href attribute only
-            if tag_name == 'a' and not slash:
-                href_match = re.search(r'href\s*=\s*["\']([^"\']*)["\']', attributes, re.IGNORECASE)
-                if href_match:
-                    return f'<a href="{href_match.group(1)}">'
-                return '<a>'
-
-            # For all other allowed tags, strip attributes
-            return f'<{slash}{tag_name}>'
-
-        cleaned = tag_pattern.sub(replace_tag, html)
-
-        # Clean up extra whitespace but preserve intentional line breaks
-        cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
-
-        return cleaned.strip()
-
-
 class DraggableConfigButton(QPushButton):
     """A QPushButton that supports drag-and-drop for reordering"""
 
@@ -710,6 +658,22 @@ class FolderBrowserDelegate(QStyledItemDelegate):
         return QSize(hint.width(), hint.height() + 6)
 
 
+class MuyaSession:
+    """Bundles the state needed to run one Muya WYSIWYG markdown editor instance inside a
+    QWebEngineView: which file it's editing, content pending injection once the page loads,
+    and its own autosave timer. Lets independent Muya-hosting views (the main viewer, the
+    Notes panel) share the same bridge logic (see the _muya_*/_open_path_in_muya_session
+    methods on ProjectFlowApp) without stepping on each other's state."""
+
+    def __init__(self, webview, autosave_interval_ms=1200):
+        self.webview = webview
+        self.editing = False
+        self.path = None
+        self.pending_markdown = None
+        self.autosave_timer = QTimer()
+        self.autosave_timer.setInterval(autosave_interval_ms)
+
+
 class ProjectFlowApp(QMainWindow):
     def __init__(self, config_file_arg=None):
         super().__init__()
@@ -725,15 +689,35 @@ class ProjectFlowApp(QMainWindow):
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
         )
         self.webview.urlChanged.connect(self.on_webview_url_changed)
-        self.webview.loadFinished.connect(self._on_webview_load_finished)
 
-        # Muya markdown-editor state (see _open_markdown_in_muya_editor)
-        self._muya_editing = False
-        self._muya_path = None
-        self._muya_pending_markdown = None
-        self._muya_autosave_timer = QTimer()
-        self._muya_autosave_timer.setInterval(1200)
-        self._muya_autosave_timer.timeout.connect(self._muya_autosave_tick)
+        # Muya markdown-editor session for the main viewer (see _open_markdown_in_muya_editor,
+        # MuyaSession, and the shared _muya_*/_open_path_in_muya_session bridge methods).
+        self._muya_session = MuyaSession(self.webview)
+        self.webview.loadFinished.connect(
+            lambda ok: self._on_muya_webview_load_finished(ok, self._muya_session)
+        )
+        self._muya_session.autosave_timer.timeout.connect(
+            lambda: self._muya_autosave_tick(self._muya_session)
+        )
+
+        # Second, independent Muya-hosting webview dedicated to the Notes panel — created here
+        # (not in build_main_content()) and never recreated on refresh, for the same reason as
+        # self.webview: QWebEngineView breaks if moved via incremental setParent(None) after
+        # being shown, so it must follow the "detach to self before central-widget teardown,
+        # re-add during build_main_content()" pattern in init_ui() (see notes_webview.setParent
+        # there) rather than the notes_panel-style reparenting used elsewhere in Focus/Standard
+        # layout switching.
+        self.notes_webview = QWebEngineView()
+        self.notes_webview.page().profile().setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+        )
+        self._notes_muya_session = MuyaSession(self.notes_webview)
+        self.notes_webview.loadFinished.connect(
+            lambda ok: self._on_muya_webview_load_finished(ok, self._notes_muya_session)
+        )
+        self._notes_muya_session.autosave_timer.timeout.connect(
+            lambda: self._muya_autosave_tick(self._notes_muya_session)
+        )
 
         # Debounce timer for alias file writes — prevents a write per keystroke
         # when the user types in the inline path/app fields.
@@ -795,6 +779,19 @@ class ProjectFlowApp(QMainWindow):
         self.load_notes()
         self.load_launch_handlers()
         self.init_ui()
+
+    def resizeEvent(self, event):
+        """Handle window resize"""
+        super().resizeEvent(event)
+        # Zone 1 (pinned projects row, see _populate_pinned_projects) doesn't reliably receive
+        # its own resize events — it's deliberately sized to content with a trailing stretch so
+        # pins stay left-aligned rather than stretching to fill, which means its own width
+        # rarely changes even as the window does. Force a reflow off the window's resize
+        # instead, so it can't get stuck at a stale/narrow cell width.
+        config_bar_widget = getattr(self, 'config_bar_widget', None)
+        reflow_fn = getattr(config_bar_widget, '_reflow_fn', None) if config_bar_widget else None
+        if reflow_fn:
+            reflow_fn(config_bar_widget.width())
 
     def load_settings(self):
         """Load user settings from JSON file"""
@@ -932,6 +929,17 @@ class ProjectFlowApp(QMainWindow):
 
     def toggle_theme(self):
         """Toggle between light and dark themes"""
+        # The general Muya markdown viewer (_open_markdown_in_muya_editor) isn't covered by
+        # refresh_projects()'s automatic per-theme reload — that mechanism only exists for the
+        # dedicated Notes session (see notes_reload_key in build_main_content()). Its webview
+        # base URL points at assets/muya/, not the .md file itself, so the existing "restore
+        # webview_url on refresh" path never recognizes it as markdown and never re-fires —
+        # and refresh_projects() (via load_notes()) unconditionally clears webview_md_path
+        # regardless, so it must be captured here, before that happens, not read afterward.
+        reopen_md_path = None
+        if getattr(self, '_muya_session', None) and self._muya_session.editing and self.webview_md_path:
+            reopen_md_path = self.webview_md_path
+
         if self.current_theme == "light":
             self.current_theme = "dark"
         else:
@@ -941,6 +949,9 @@ class ProjectFlowApp(QMainWindow):
         self.theme = get_theme(self.current_theme)
         self.apply_global_styles()
         self.refresh_projects()
+
+        if reopen_md_path:
+            self._open_markdown_in_muya_editor(reopen_md_path)
 
     def _get_tab_style(self):
         """Return common tab widget stylesheet"""
@@ -3601,14 +3612,19 @@ StartupNotify=true
             state = self.columns_splitter.saveState()
             self.settings["splitter_state"] = bytes(state.toHex()).decode()
 
-        # Reparent the entire notes panel (toolbar + editor + archive bar) into the viewer
-        self.notes_panel.setParent(None)
-        self.notes_viewer_layout.addWidget(self.notes_panel)
+        # Notes panel placement is decided once, at construction time, inside
+        # build_main_content() (based on self.layout_mode) — no reparenting needed here.
 
-        # Collapse and hide the right column
+        # Override the blanket 150px splitter minimum (set in build_main_content(), so no
+        # column can be drag-collapsed away entirely in Standard layout) so the right column
+        # can actually reach 0 width below. Deliberately NOT calling notepad_column_widget
+        # .hide() here though: at this point it still contains the live, persistent
+        # notes_webview (about to be discarded and rebuilt fresh into notes_viewer_container by
+        # the refresh_projects() call that always follows this method) — hiding it while
+        # notes_webview is still inside leaves the QWebEngineView stuck at a stale tiny size
+        # after the rebuild reparents it. setMinimumWidth() alone doesn't trigger that.
         if hasattr(self, 'notepad_column_widget'):
             self.notepad_column_widget.setMinimumWidth(0)
-            self.notepad_column_widget.hide()
 
         # Apply focus splitter: launcher LEFT (1/3), viewer RIGHT (2/3)
         # Only move launcher_widget — never reparent column2_widget (contains QWebEngineView
@@ -3632,7 +3648,7 @@ StartupNotify=true
 
         # Update toggle button appearance
         if hasattr(self, 'layout_toggle_btn'):
-            self.layout_toggle_btn.setText("▣ Notes")
+            self.layout_toggle_btn.setText("▣ 3 Columns")
             self.layout_toggle_btn.setToolTip("Switch to Standard layout (3 columns)")
 
     def _enter_standard_layout(self):
@@ -3649,9 +3665,8 @@ StartupNotify=true
         if getattr(self, 'column2_mode', '') == 'notes':
             self.switch_to_viewer_mode("folder")
 
-        # Reparent notes panel back into the right column
-        self.notes_panel.setParent(None)
-        self.notepad_column_widget.layout().addWidget(self.notes_panel)
+        # Notes panel placement is decided once, at construction time, inside
+        # build_main_content() (based on self.layout_mode) — no reparenting needed here.
 
         # Restore and show the right column
         self.notepad_column_widget.setMinimumWidth(150)
@@ -4475,61 +4490,62 @@ function filterAliases(q) {{
 
     def archive_notes(self):
         """Archive current notes to the archive file with a dated separator"""
-        if not hasattr(self, 'notepad'):
+        session = self._notes_muya_session
+        if not session.webview:
             return
 
-        # Get current notes content
-        notes_html = self.notepad.toHtml()
-        markdown_content = self.html_to_markdown(notes_html)
+        def on_markdown(markdown_content):
+            markdown_content = markdown_content or ""
 
-        # Don't archive if notes are empty
-        if not markdown_content.strip():
-            QMessageBox.information(self, "Archive Notes", "No notes to archive.")
-            return
+            # Don't archive if notes are empty
+            if not markdown_content.strip():
+                QMessageBox.information(self, "Archive Notes", "No notes to archive.")
+                return
 
-        # Confirm with user
-        reply = QMessageBox.question(
-            self, "Archive Notes",
-            "Archive current notes and clear the notepad?\n\n"
-            "This will append your notes to the archive file with a timestamp.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
+            # Confirm with user
+            reply = QMessageBox.question(
+                self, "Archive Notes",
+                "Archive current notes and clear the notepad?\n\n"
+                "This will append your notes to the archive file with a timestamp.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+            # Create archive folder if needed
+            archive_folder = self.get_archive_folder()
+            os.makedirs(archive_folder, exist_ok=True)
 
-        # Create archive folder if needed
-        archive_folder = self.get_archive_folder()
-        os.makedirs(archive_folder, exist_ok=True)
+            # Create dated separator with human-readable date
+            from datetime import datetime
+            now = datetime.now()
+            day = now.day
+            suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+            human_date = now.strftime(f"%H:%M -- {day}{suffix} %B %Y")
+            separator = f"------------------------------\n{human_date}\n------------------------------\n\n"
 
-        # Create dated separator with human-readable date
-        from datetime import datetime
-        now = datetime.now()
-        day = now.day
-        suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-        human_date = now.strftime(f"%H:%M -- {day}{suffix} %B %Y")
-        separator = f"------------------------------\n{human_date}\n------------------------------\n\n"
+            # Read existing archive content
+            archive_file = self.get_archive_file_path()
+            existing_content = ""
+            if os.path.exists(archive_file):
+                with open(archive_file, 'r', encoding='utf-8') as f:
+                    existing_content = f.read()
 
-        # Read existing archive content
-        archive_file = self.get_archive_file_path()
-        existing_content = ""
-        if os.path.exists(archive_file):
-            with open(archive_file, 'r', encoding='utf-8') as f:
-                existing_content = f.read()
+            # Prepend new content with date header first (newest at top)
+            new_archive = separator + markdown_content + "\n\n" + existing_content
 
-        # Prepend new content with date header first (newest at top)
-        new_archive = separator + markdown_content + "\n\n" + existing_content
+            # Write to archive file
+            with open(archive_file, 'w', encoding='utf-8') as f:
+                f.write(new_archive)
 
-        # Write to archive file
-        with open(archive_file, 'w', encoding='utf-8') as f:
-            f.write(new_archive)
+            # Clear the live editor (also resets its dirty flag) and the saved notes file
+            session.webview.page().runJavaScript("window.__setMuyaMarkdown && window.__setMuyaMarkdown('')")
+            self.save_notes("")
 
-        # Clear the notepad
-        self.notepad.clear()
-        self.save_notes("")
+            QMessageBox.information(self, "Archive Notes", "Notes archived successfully.")
 
-        QMessageBox.information(self, "Archive Notes", "Notes archived successfully.")
+        session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
 
     def view_archive(self):
         """Open a dialog to view the archive for the current config"""
@@ -4581,53 +4597,6 @@ function filterAliases(q) {{
 
         archive_dialog.exec()
 
-    def markdown_to_html(self, markdown):
-        """Convert markdown to HTML for QTextEdit display"""
-        import html as html_module
-
-        text = markdown
-
-        # Convert headings (must do before other processing)
-        for level in range(6, 0, -1):
-            pattern = rf'^({"#" * level})\s+(.+)$'
-            text = re.sub(pattern, rf'<h{level}>\2</h{level}>', text, flags=re.MULTILINE)
-
-        # Convert bold (**text** or __text__)
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
-
-        # Convert italic (*text* or _text_) - but not inside words
-        text = re.sub(r'(?<!\w)\*([^*]+?)\*(?!\w)', r'<i>\1</i>', text)
-        text = re.sub(r'(?<!\w)_([^_]+?)_(?!\w)', r'<i>\1</i>', text)
-
-        # Convert inline code
-        text = re.sub(r'`([^`]+?)`', r'<code style="font-family: monospace; background-color: #2d2d2d; color: #f0f0f0; padding: 2px 5px;">\1</code>', text)
-
-        # Convert emphasis/highlight (==text==) - use span to preserve styling in QTextEdit
-        text = re.sub(r'==(.+?)==', r'<span style="background-color: #9c0c15; color: #f0f0f0; padding: 4px 10px;">\1</span>', text)
-
-        # Convert links [text](url)
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
-
-        # Convert bullet lists (lines starting with - or *)
-        text = re.sub(r'^[\-\*]\s+(.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
-
-        # Convert numbered lists (lines starting with 1. 2. etc)
-        text = re.sub(r'^\d+\.\s+(.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
-
-        # Convert line breaks (two spaces at end of line or double newline)
-        text = re.sub(r'  \n', '<br>', text)
-        text = re.sub(r'\n\n', '</p><p>', text)
-        text = re.sub(r'\n', '<br>', text)
-
-        # Wrap in paragraph tags
-        text = f'<p>{text}</p>'
-
-        # Clean up empty paragraphs
-        text = re.sub(r'<p>\s*</p>', '', text)
-
-        return text
-
     def load_notes(self):
         """Load notes from markdown file, PDF state and webview state from JSON config"""
         self.notes_data = {}
@@ -4656,8 +4625,7 @@ function filterAliases(q) {{
             if os.path.exists(notes_file):
                 with open(notes_file, 'r', encoding='utf-8') as f:
                     markdown_content = f.read()
-                html_content = self.markdown_to_html(markdown_content)
-                self.notes_data = {"content": html_content}
+                self.notes_data = {"content": markdown_content}
 
             # Load PDF/webview state from JSON config
             if os.path.exists(self.current_config_file):
@@ -4675,8 +4643,7 @@ function filterAliases(q) {{
                         with open(notes_file, 'w', encoding='utf-8') as f:
                             f.write(markdown_content)
                         # Load the converted content
-                        html_content = self.markdown_to_html(markdown_content)
-                        self.notes_data = {"content": html_content}
+                        self.notes_data = {"content": markdown_content}
                         # Remove notes from JSON config
                         del config_data["notes"]
                         with open(self.current_config_file, 'w') as f:
@@ -5035,17 +5002,16 @@ function filterAliases(q) {{
 
         return cmd
 
-    def save_notes(self, notes_html=None):
+    def save_notes(self, notes_markdown=None):
         """Save notes to markdown file, PDF/webview state to JSON config"""
         try:
             # Save notes to markdown file if provided
-            if notes_html is not None:
-                markdown_content = self.html_to_markdown(notes_html)
+            if notes_markdown is not None:
                 notes_file = self.get_notes_file_path()
                 folder = self.get_notes_folder()
                 os.makedirs(folder, exist_ok=True)
                 with open(notes_file, 'w', encoding='utf-8') as f:
-                    f.write(markdown_content)
+                    f.write(notes_markdown)
 
             # Save PDF/webview state to JSON config
             config_data = {}
@@ -5261,6 +5227,8 @@ function filterAliases(q) {{
         # will re-parent and show it again as part of the new layout.
         if self.webview is not None:
             self.webview.setParent(self)
+        if self.notes_webview is not None:
+            self.notes_webview.setParent(self)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -5405,7 +5373,7 @@ function filterAliases(q) {{
 
         # Layout toggle button — switches between Standard (3-col) and Focus (2-col) layouts
         _is_focus = self.layout_mode == "focus"
-        self.layout_toggle_btn = QPushButton("▣ Notes" if _is_focus else "⊞ Focus")
+        self.layout_toggle_btn = QPushButton("▣ 3 Columns" if _is_focus else "⊞ Focus")
         self.layout_toggle_btn.setToolTip(
             "Switch to Standard layout (3 columns)" if _is_focus
             else "Switch to Focus layout (launcher + wide viewer)"
@@ -5812,12 +5780,21 @@ function filterAliases(q) {{
             fm = QFontMetrics(QApplication.font())
             for c in _containers:
                 c.setFixedWidth(cell_w)
+                c.setFixedHeight(FlowWidget._ITEM_H)  # match Zone 2's row height exactly
                 if hasattr(c, '_main_btn') and hasattr(c, '_full_text') and hasattr(c, '_side_w'):
                     label_w = max(10, cell_w - c._side_w - 18)
                     c._main_btn.setText(fm.elidedText(
                         c._full_text, Qt.TextElideMode.ElideRight, label_w))
 
         self.config_bar_widget._reflow_fn = _zone1_reflow
+
+        # Also queue a deferred reflow for the next event-loop tick: ConfigBarWidget's own
+        # showEvent/resizeEvent are unreliable triggers here since it's Preferred-width +
+        # sized-to-content with a trailing stretch (deliberately, so pins stay left-aligned)
+        # — its own size rarely changes again after the very first (possibly too-early, before
+        # the parent chain has its final width) layout pass, so it may never re-fire. This
+        # guarantees at least one reflow call after layout has fully settled.
+        QTimer.singleShot(0, lambda: _zone1_reflow(self.config_bar_widget.width()))
 
         config_bar_layout.addStretch()  # keep pins left-aligned, don't stretch to fill
         self.config_bar_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -7650,6 +7627,11 @@ function filterAliases(q) {{
                 self.column2_stack = QWidget()
                 self.column2_stack_layout = QVBoxLayout(self.column2_stack)
                 self.column2_stack_layout.setContentsMargins(0, 0, 0, 0)
+                # Minimum height so the viewer (PDF/web/markdown/etc.) doesn't get squished
+                # short on projects with few launchers — the whole page (inside main_scroll)
+                # grows/scrolls to accommodate this rather than shrinking the viewer to match
+                # a short launcher column.
+                self.column2_stack.setMinimumHeight(600)
 
                 # PDF viewer container
                 self.pdf_container = QWidget()
@@ -7697,14 +7679,19 @@ function filterAliases(q) {{
                 self.create_webview_toolbar(webview_container_layout)
 
                 # Webview is created once in __init__; just re-add it to the new layout.
-                # Dark mode may change between project loads — always (re)apply.
-                if self.current_theme == "dark":
-                    try:
-                        self.webview.settings().setAttribute(
-                            QWebEngineSettings.WebAttribute.ForceDarkMode, True
-                        )
-                    except AttributeError:
-                        pass  # ForceDarkMode requires Qt 6.3+
+                # Dark mode may change between project loads — always (re)apply in both
+                # directions. ForceDarkMode is a persistent WebEngine setting that sticks until
+                # explicitly changed, so only ever setting it True (never False) left it stuck
+                # on permanently once dark mode was toggled on once, even after switching back
+                # to light — affecting both plain web pages and the Muya editor (which shares
+                # this same webview), where it layered an unwanted extra dark filter on top of
+                # the correctly-reloaded light paper CSS.
+                try:
+                    self.webview.settings().setAttribute(
+                        QWebEngineSettings.WebAttribute.ForceDarkMode, self.current_theme == "dark"
+                    )
+                except AttributeError:
+                    pass  # ForceDarkMode requires Qt 6.3+
                 webview_container_layout.addWidget(self.webview, 1)  # stretch to fill space
 
                 browser_name = self.detect_default_browser().capitalize()
@@ -8036,57 +8023,29 @@ function filterAliases(q) {{
                 if self.image_path:
                     self.load_image(self.image_path)
 
-        # Add notepad panel — wrapped in notes_panel so it can be reparented in Focus layout
+        # Notes panel: hosts the persistent Muya editor (self.notes_webview). Placed directly
+        # into whichever container matches the current layout below — no later reparenting
+        # needed (notes_webview's own construction/detach in __init__/init_ui() already
+        # handles it safely; _enter_focus_layout()/_enter_standard_layout() no longer move
+        # anything notes-related).
         self.notes_panel = QWidget()
         notes_panel_layout = QVBoxLayout(self.notes_panel)
         notes_panel_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
+        notes_panel_layout.addWidget(self.notes_webview, 1)
 
-        # Create formatting toolbar (serves as header)
-        self.create_notepad_toolbar(notes_panel_layout)
-
-        # Create notepad text area with sanitized paste
-        self.notepad = CleanTextEdit()
-        self.notepad.setPlaceholderText("Project notes (auto-saved)\n\nUse toolbar for formatting: Bold, Italic, Headings, Lists, Links\nUse 📝 to open in external editor, 📥 to archive")
-        self.notepad.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {self.t('bg_input')};
-                color: {self.t('fg_primary')};
-                border: 2px solid {self.t('border')};
-                border-radius: 5px;
-                padding: 10px;
-                font-family: sans-serif;
-                font-size: 12pt;
-                line-height: 1.4;
-            }}
-        """)
-
-        # Load existing notes (supports both plain text and HTML)
-        if self.notes_data and "content" in self.notes_data:
-            content = self.notes_data["content"]
-            if '<' in content and '>' in content:
-                self.notepad.setHtml(content)
-            else:
-                self.notepad.setPlainText(content)
-
-        # Auto-save on text change
-        self.notepad.textChanged.connect(self.on_notepad_changed)
-
-        # Add Ctrl+Shift+V shortcut for plain text paste
-        paste_plain = QShortcut(QKeySequence("Ctrl+Shift+V"), self.notepad)
-        paste_plain.activated.connect(self.paste_plain_text)
-
-        # Add formatting shortcuts
-        bold_shortcut = QShortcut(QKeySequence("Ctrl+B"), self.notepad)
-        bold_shortcut.activated.connect(self.toggle_bold)
-        italic_shortcut = QShortcut(QKeySequence("Ctrl+I"), self.notepad)
-        italic_shortcut.activated.connect(self.toggle_italic)
-
-        notes_panel_layout.addWidget(self.notepad, 1)
+        # Only reload notes content into the webview when the project, layout, or theme has
+        # actually changed since the last load (the paper CSS depends on layout_mode/
+        # current_theme) — an incidental refresh (editing a launcher, etc.) just re-adds the
+        # already-loaded, already-live webview to its (possibly freshly-rebuilt) container.
+        notes_reload_key = (self.current_config_file, self.layout_mode, self.current_theme)
+        notes_should_reload = getattr(self, '_notes_loaded_for', None) != notes_reload_key
+        self._notes_loaded_for = notes_reload_key
+        if notes_should_reload:
+            self._open_notes_in_muya()
 
         # Add archive buttons at the bottom right
         archive_bar = QHBoxLayout()
         archive_bar.setContentsMargins(0, 5, 0, 0)
-        archive_bar.addStretch()
 
         archive_btn_style = f"""
             QPushButton {{
@@ -8102,6 +8061,24 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """
+
+        # Joplin sync / external editor buttons (only shown if configured)
+        if self.settings.get("joplin_token"):
+            joplin_btn = QPushButton("📓")
+            joplin_btn.setStyleSheet(archive_btn_style)
+            joplin_btn.setToolTip("Sync to Joplin")
+            joplin_btn.clicked.connect(self.sync_to_joplin)
+            archive_bar.addWidget(joplin_btn)
+
+        external_editor = self.settings.get("open_note_external")
+        if external_editor:
+            external_btn = QPushButton("📝")
+            external_btn.setStyleSheet(archive_btn_style)
+            external_btn.setToolTip(f"Open in {external_editor}")
+            external_btn.clicked.connect(self.open_note_in_external_editor)
+            archive_bar.addWidget(external_btn)
+
+        archive_bar.addStretch()
 
         archive_btn = QPushButton("📥 Archive")
         archive_btn.setStyleSheet(archive_btn_style)
@@ -8136,6 +8113,11 @@ function filterAliases(q) {{
 
         notes_panel_layout.addLayout(archive_bar)
 
+        # Place notes_panel into whichever container matches the current layout — decided
+        # once, here, instead of built into the Standard-layout slot and reparented later.
+        if self.layout_mode == "focus":
+            self.notes_viewer_layout.addWidget(self.notes_panel)
+
         # Wrap each column layout in a QWidget (QSplitter requires QWidget children)
         launcher_widget = QWidget()
         launcher_widget.setLayout(launcher_layout)
@@ -8150,7 +8132,8 @@ function filterAliases(q) {{
         notepad_col_layout = QVBoxLayout(self.notepad_column_widget)
         notepad_col_layout.setContentsMargins(0, 0, 0, 0)
         notepad_col_layout.setSpacing(0)
-        notepad_col_layout.addWidget(self.notes_panel)
+        if self.layout_mode != "focus":
+            notepad_col_layout.addWidget(self.notes_panel)
         notepad_widget = self.notepad_column_widget
 
         # Build splitter
@@ -8507,12 +8490,6 @@ function filterAliases(q) {{
         # Reload with the new project
         self.refresh_projects()
 
-    def on_notepad_changed(self):
-        """Handle notepad text changes - auto-save to markdown file"""
-        if hasattr(self, 'notepad'):
-            notes_html = self.notepad.toHtml()
-            self.save_notes(notes_html)
-
     def html_to_markdown(self, html):
         """Convert HTML to markdown"""
         import html as html_module
@@ -8580,8 +8557,9 @@ function filterAliases(q) {{
             QMessageBox.warning(self, "Joplin Sync", "No Joplin token configured in settings.")
             return
 
-        if not hasattr(self, 'notepad'):
-            QMessageBox.warning(self, "Joplin Sync", "No notepad available to sync.")
+        session = self._notes_muya_session
+        if not session.webview:
+            QMessageBox.warning(self, "Joplin Sync", "No notes editor available to sync.")
             return
 
         # Get config name for note title
@@ -8591,34 +8569,33 @@ function filterAliases(q) {{
             config_name = config_name[:-7]
         title = f"ProjectFlow: {config_name.replace('_', ' ').title()}"
 
-        # Convert HTML to markdown
-        html_content = self.notepad.toHtml()
-        markdown_content = self.html_to_markdown(html_content)
+        def on_markdown(markdown_content):
+            markdown_content = markdown_content or ""
+            if not markdown_content.strip():
+                QMessageBox.information(self, "Joplin Sync", "Notes are empty, nothing to sync.")
+                return
 
-        if not markdown_content.strip():
-            QMessageBox.information(self, "Joplin Sync", "Notes are empty, nothing to sync.")
-            return
+            url = f"http://127.0.0.1:41184/notes?token={token}"
+            data = json.dumps({"title": title, "body": markdown_content}).encode('utf-8')
 
-        # Prepare the request
-        url = f"http://127.0.0.1:41184/notes?token={token}"
-        data = json.dumps({"title": title, "body": markdown_content}).encode('utf-8')
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status == 200:
+                        QMessageBox.information(self, "Joplin Sync", f"Notes synced to Joplin as:\n\"{title}\"")
+                    else:
+                        QMessageBox.warning(self, "Joplin Sync", f"Unexpected response: {response.status}")
+            except urllib.error.URLError as e:
+                QMessageBox.warning(self, "Joplin Sync", f"Could not connect to Joplin.\nIs it running?\n\nError: {e.reason}")
+            except Exception as e:
+                QMessageBox.warning(self, "Joplin Sync", f"Sync failed: {e}")
 
-        try:
-            req = urllib.request.Request(
-                url,
-                data=data,
-                headers={'Content-Type': 'application/json'},
-                method='POST'
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    QMessageBox.information(self, "Joplin Sync", f"Notes synced to Joplin as:\n\"{title}\"")
-                else:
-                    QMessageBox.warning(self, "Joplin Sync", f"Unexpected response: {response.status}")
-        except urllib.error.URLError as e:
-            QMessageBox.warning(self, "Joplin Sync", f"Could not connect to Joplin.\nIs it running?\n\nError: {e.reason}")
-        except Exception as e:
-            QMessageBox.warning(self, "Joplin Sync", f"Sync failed: {e}")
+        session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
 
     # ── Kimai integration ─────────────────────────────────────────────────────
 
@@ -9663,132 +9640,6 @@ function filterAliases(q) {{
                 f"Could not save config:\n{self.current_config_file}\n\n{e}"
             )
 
-    def paste_plain_text(self):
-        """Paste clipboard content as plain text (Ctrl+Shift+V)"""
-        if hasattr(self, 'notepad'):
-            clipboard = QApplication.clipboard()
-            self.notepad.insertPlainText(clipboard.text())
-
-    def create_notepad_toolbar(self, parent_layout):
-        """Create a formatting toolbar for the notepad"""
-        toolbar_widget = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar_widget)
-        toolbar_layout.setContentsMargins(0, 0, 0, 5)
-        toolbar_layout.setSpacing(3)
-
-        # Button style
-        btn_style = f"""
-            QPushButton {{
-                background-color: {self.t('bg_button')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 12px;
-                min-width: 24px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
-            }}
-            QPushButton:pressed {{
-                background-color: {self.t('bg_category_hover')};
-            }}
-        """
-
-        # Spacer style
-        spacer_style = f"color: {self.t('border')}; margin: 0 3px;"
-
-        # H1, H2 buttons
-        for level in range(1, 3):
-            h_btn = QPushButton(f"H{level}")
-            h_btn.setStyleSheet(btn_style)
-            h_btn.setToolTip(f"Heading {level}")
-            h_btn.clicked.connect(lambda checked, l=level: self.apply_heading(l))
-            toolbar_layout.addWidget(h_btn)
-
-        # Bold button
-        bold_btn = QPushButton("B")
-        bold_btn.setStyleSheet(btn_style + "QPushButton { font-weight: bold; }")
-        bold_btn.setToolTip("Bold (Ctrl+B)")
-        bold_btn.clicked.connect(self.toggle_bold)
-        toolbar_layout.addWidget(bold_btn)
-
-        # Spacer
-        sep1 = QLabel("|")
-        sep1.setStyleSheet(spacer_style)
-        toolbar_layout.addWidget(sep1)
-
-        # Emphasis/Action button
-        em_btn = QPushButton("!")
-        em_btn.setStyleSheet(btn_style + "QPushButton { font-weight: bold; }")
-        em_btn.setToolTip("Emphasis / Action item")
-        em_btn.clicked.connect(self.toggle_emphasis)
-        toolbar_layout.addWidget(em_btn)
-
-        # Code button
-        code_btn = QPushButton("</>")
-        code_btn.setStyleSheet(btn_style + "QPushButton { font-family: monospace; }")
-        code_btn.setToolTip("Code / Monospace")
-        code_btn.clicked.connect(self.toggle_code)
-        toolbar_layout.addWidget(code_btn)
-
-        # Link button
-        link_btn = QPushButton("🔗")
-        link_btn.setStyleSheet(btn_style)
-        link_btn.setToolTip("Insert/Edit Link")
-        link_btn.clicked.connect(self.insert_link)
-        toolbar_layout.addWidget(link_btn)
-
-        # Spacer
-        sep2 = QLabel("|")
-        sep2.setStyleSheet(spacer_style)
-        toolbar_layout.addWidget(sep2)
-
-        # Numbered list button
-        number_btn = QPushButton("1.")
-        number_btn.setStyleSheet(btn_style)
-        number_btn.setToolTip("Numbered List")
-        number_btn.clicked.connect(self.toggle_numbered_list)
-        toolbar_layout.addWidget(number_btn)
-
-        # Bullet list button
-        bullet_btn = QPushButton("•")
-        bullet_btn.setStyleSheet(btn_style)
-        bullet_btn.setToolTip("Bullet List")
-        bullet_btn.clicked.connect(self.toggle_bullet_list)
-        toolbar_layout.addWidget(bullet_btn)
-
-        # External tools section (Joplin sync, external editor)
-        has_joplin = self.settings.get("joplin_token")
-        has_external_editor = self.settings.get("open_note_external")
-
-        if has_joplin or has_external_editor:
-            sep3 = QLabel("|")
-            sep3.setStyleSheet(spacer_style)
-            toolbar_layout.addWidget(sep3)
-
-        # Joplin sync button (only shown if token is configured)
-        if has_joplin:
-            joplin_btn = QPushButton("📓")
-            joplin_btn.setStyleSheet(btn_style)
-            joplin_btn.setToolTip("Sync to Joplin")
-            joplin_btn.clicked.connect(self.sync_to_joplin)
-            toolbar_layout.addWidget(joplin_btn)
-
-        # External editor button (only shown if open_note_external is configured)
-        if has_external_editor:
-            external_btn = QPushButton("📝")
-            external_btn.setStyleSheet(btn_style)
-            external_btn.setToolTip(f"Open in {has_external_editor}")
-            external_btn.clicked.connect(self.open_note_in_external_editor)
-            toolbar_layout.addWidget(external_btn)
-
-        # Add stretch to push buttons to the left
-        toolbar_layout.addStretch()
-
-        parent_layout.addWidget(toolbar_widget)
-
     def create_pdf_toolbar(self, parent_layout):
         """Create a toolbar for the PDF viewer"""
         toolbar_widget = QWidget()
@@ -10412,8 +10263,8 @@ function filterAliases(q) {{
         """Navigate to home URL from config"""
         if self.webview and hasattr(self, 'config_webview_url') and self.config_webview_url:
             self.webview_md_path = None
-            self._muya_editing = False
-            self._muya_autosave_timer.stop()
+            self._muya_session.editing = False
+            self._muya_session.autosave_timer.stop()
             self.webview.setUrl(QUrl(self.config_webview_url))
             self._update_md_edit_buttons()
 
@@ -10425,8 +10276,8 @@ function filterAliases(q) {{
                 if not url.startswith(('http://', 'https://', 'file://')):
                     url = 'https://' + url
                 self.webview_md_path = None
-                self._muya_editing = False
-                self._muya_autosave_timer.stop()
+                self._muya_session.editing = False
+                self._muya_session.autosave_timer.stop()
                 self.webview.setUrl(QUrl(url))
                 self._update_md_edit_buttons()
 
@@ -10451,8 +10302,8 @@ function filterAliases(q) {{
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
         self.webview_md_path = None
-        self._muya_editing = False
-        self._muya_autosave_timer.stop()
+        self._muya_session.editing = False
+        self._muya_session.autosave_timer.stop()
         self.webview.setUrl(QUrl(url))
         self._update_md_edit_buttons()
 
@@ -11332,8 +11183,8 @@ function filterAliases(q) {{
         if self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
         self.webview_md_path = None
-        self._muya_editing = False
-        self._muya_autosave_timer.stop()
+        self._muya_session.editing = False
+        self._muya_session.autosave_timer.stop()
         self.webview.setUrl(QUrl.fromLocalFile(path))
         self._update_md_edit_buttons()
 
@@ -11380,21 +11231,48 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
         self.webview_md_path = path
-        self._muya_editing = False
+        self._muya_session.editing = False
         self.webview.setHtml(styled, QUrl.fromLocalFile(path))
         self._update_md_edit_buttons()
 
-    def _on_webview_load_finished(self, ok):
-        """Fires for every webview navigation. Injects pending Muya editor content once loaded."""
-        if ok and self._muya_pending_markdown is not None:
-            js = f"window.__initMuya({json.dumps(self._muya_pending_markdown)})"
-            self.webview.page().runJavaScript(js)
-            self._muya_pending_markdown = None
+    def _on_muya_webview_load_finished(self, ok, session):
+        """Fires for every navigation of a Muya-hosting webview. Injects pending content once loaded."""
+        if ok and session.pending_markdown is not None:
+            js = f"window.__initMuya({json.dumps(session.pending_markdown)})"
+            session.webview.page().runJavaScript(js)
+            session.pending_markdown = None
 
-    def _open_markdown_in_muya_editor(self, path=None):
-        """Switch the webview into the Muya WYSIWYG markdown editor for the given file."""
-        path = path or self.webview_md_path
-        if not path or not self.webview:
+    def _load_muya_shell(self, session, path, content, extra_css=""):
+        """Load the Muya editor shell into session.webview with the given content, targeting
+        path as the save destination. Shared by the file-backed and notes-backed openers below.
+        extra_css is injected verbatim into the shell's <style> block (used for the Notes-view
+        paper effect; empty for the plain file editor)."""
+        if not session.webview:
+            return
+        editor_dir = os.path.join(self.script_dir, "assets", "muya")
+        editor_html = os.path.join(editor_dir, "editor.html")
+        if not os.path.exists(editor_html):
+            self.status_label.setText("✗ Muya editor assets not found")
+            return
+
+        with open(editor_html, 'r', encoding='utf-8') as f:
+            shell_html = f.read()
+        shell_html = (
+            shell_html.replace('__PF_BG__', self.t('bg_primary'))
+            .replace('__PF_FG__', self.t('fg_primary'))
+            .replace('__PF_EXTRA_CSS__', extra_css)
+        )
+
+        session.path = path
+        session.editing = True
+        session.pending_markdown = content
+        session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
+        if not session.autosave_timer.isActive():
+            session.autosave_timer.start()
+
+    def _open_path_in_muya_session(self, session, path, extra_css=""):
+        """Load a markdown file into the given MuyaSession's webview and start autosaving it."""
+        if not path or not session.webview:
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -11402,46 +11280,79 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         except OSError as e:
             self.status_label.setText(f"✗ Could not open {os.path.basename(path)}: {e}")
             return
+        self._load_muya_shell(session, path, content, extra_css=extra_css)
 
-        editor_dir = os.path.join(self.script_dir, "assets", "muya")
-        editor_html = os.path.join(editor_dir, "editor.html")
-        if not os.path.exists(editor_html):
-            self.status_label.setText("✗ Muya editor assets not found")
+    def _notes_paper_css(self):
+        """CSS for the 'paper on page' look — a Typora/Documentary-style paper card floating
+        on a tinted page background, with a drop shadow. Used both for the Notes panel and
+        the general Muya markdown-file viewer (e.g. clicking a Documentation launcher item).
+        Light mode uses the user's own Documentary Typora theme colors; dark mode uses their
+        specified dark palette. Paper opacity is higher in Standard layout's narrower
+        3-column view (90%) than in Focus layout's wider 2-column one (80%)."""
+        alpha = 0.80 if self.layout_mode == "focus" else 0.90
+        if self.current_theme == "dark":
+            page_bg = "#141414"
+            paper_rgb = "54, 59, 64"       # #363B40
+            ink = "#DEDEDE"
+            shadow = "0 18px 46px rgba(0, 0, 0, 0.55)"
+            border = "1px solid rgba(255, 255, 255, 0.06)"
+        else:
+            page_bg = "rgb(229, 231, 237)"
+            paper_rgb = "240, 240, 240"    # matches documentary.css --paper base
+            ink = "#263241"
+            shadow = "0 18px 46px rgba(57, 67, 84, 0.12)"
+            border = "1px solid rgba(255, 255, 255, 0.42)"
+        return f"""
+            body {{ background: {page_bg}; color: {ink}; overflow-x: hidden; }}
+            #editor {{
+                box-sizing: border-box;
+                width: 90%;
+                background: rgba({paper_rgb}, {alpha});
+                margin: 24px auto 48px;
+                border-radius: 8px;
+                box-shadow: {shadow};
+                border: {border};
+            }}
+        """
+
+    def _open_notes_in_muya(self):
+        """Load the current project's notes into the persistent Notes-panel Muya session.
+        Content comes from self.notes_data (already read by load_notes()) rather than
+        re-reading the file, since the notes file may not exist yet for a brand-new project."""
+        content = self.notes_data.get("content", "") if self.notes_data else ""
+        self._load_muya_shell(
+            self._notes_muya_session, self.get_notes_file_path(), content,
+            extra_css=self._notes_paper_css()
+        )
+
+    def _open_markdown_in_muya_editor(self, path=None):
+        """Switch the main webview into the Muya WYSIWYG markdown editor for the given file."""
+        path = path or self.webview_md_path
+        if not path or not self.webview:
             return
-
         if self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
-
-        with open(editor_html, 'r', encoding='utf-8') as f:
-            shell_html = f.read()
-        shell_html = shell_html.replace('__PF_BG__', self.t('bg_primary')).replace('__PF_FG__', self.t('fg_primary'))
-
         self.webview_md_path = path
-        self._muya_path = path
-        self._muya_editing = True
-        self._muya_pending_markdown = content
-        self.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
+        self._open_path_in_muya_session(self._muya_session, path, extra_css=self._notes_paper_css())
         self._update_md_edit_buttons()
-        if not self._muya_autosave_timer.isActive():
-            self._muya_autosave_timer.start()
 
-    def _muya_autosave_tick(self):
+    def _muya_autosave_tick(self, session):
         """Runs every ~1.2s while editing; saves the file if the editor reports unsaved changes."""
-        if not self._muya_editing or not self.webview:
-            self._muya_autosave_timer.stop()
+        if not session.editing or not session.webview:
+            session.autosave_timer.stop()
             return
 
         def on_dirty(is_dirty):
             if is_dirty:
-                self._muya_save()
+                self._muya_save(session)
 
-        self.webview.page().runJavaScript(
+        session.webview.page().runJavaScript(
             "window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty
         )
 
-    def _muya_save(self):
-        """Pull the current markdown out of the Muya editor and write it back to disk."""
-        if not self._muya_editing or not self._muya_path or not self.webview:
+    def _muya_save(self, session):
+        """Pull the current markdown out of the given MuyaSession's editor and write it to disk."""
+        if not session.editing or not session.path or not session.webview:
             return
 
         def on_markdown(markdown):
@@ -11449,22 +11360,23 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 self.status_label.setText("✗ Autosave failed: no content from editor")
                 return
             try:
-                with open(self._muya_path, 'w', encoding='utf-8') as f:
+                with open(session.path, 'w', encoding='utf-8') as f:
                     f.write(markdown)
-                self.webview.page().runJavaScript("window.__muyaClearDirty && window.__muyaClearDirty()")
-                self.status_label.setText(f"✓ Autosaved {os.path.basename(self._muya_path)}")
+                session.webview.page().runJavaScript("window.__muyaClearDirty && window.__muyaClearDirty()")
+                self.status_label.setText(f"✓ Autosaved {os.path.basename(session.path)}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
             except OSError as e:
                 self.status_label.setText(f"✗ Autosave failed: {e}")
 
-        self.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
+        session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
 
     def _muya_switch_to_preview(self):
-        """Leave the Muya editor (autosaving first) and show the rendered read-only preview."""
-        if not self._muya_path or not self.webview:
+        """Leave the main webview's Muya editor (autosaving first) and show the rendered read-only preview."""
+        session = self._muya_session
+        if not session.path or not session.webview:
             return
-        path = self._muya_path
-        self._muya_autosave_timer.stop()
+        path = session.path
+        session.autosave_timer.stop()
 
         def on_markdown(markdown):
             if markdown:
@@ -11473,19 +11385,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                         f.write(markdown)
                 except OSError as e:
                     self.status_label.setText(f"✗ Autosave failed: {e}")
-            self._muya_editing = False
-            self._muya_path = None
+            session.editing = False
+            session.path = None
             self._open_markdown_preview(path)
 
-        self.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
+        session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
 
     def _update_md_edit_buttons(self):
         """Show Edit or Preview depending on whether a markdown file is loaded and whether we're editing it."""
         if not hasattr(self, 'md_edit_btn'):
             return
         is_md = bool(getattr(self, 'webview_md_path', None))
-        self.md_edit_btn.setVisible(is_md and not self._muya_editing)
-        self.md_preview_btn.setVisible(is_md and self._muya_editing)
+        self.md_edit_btn.setVisible(is_md and not self._muya_session.editing)
+        self.md_preview_btn.setVisible(is_md and self._muya_session.editing)
 
     def _build_folder_context_menu(self, path, item_type):
         """Build the right-click menu for a folder-browser entry — shared by the tree and icon views."""
@@ -12166,143 +12078,6 @@ Project created: {date_str}
             self.image_zoom = viewport_width / image_width
             self.image_zoom_label.setText(f"{int(self.image_zoom * 100)}%")
             self.render_image()
-
-    def toggle_bold(self):
-        """Toggle bold formatting on selected text"""
-        if hasattr(self, 'notepad'):
-            fmt = self.notepad.currentCharFormat()
-            if fmt.fontWeight() == QFont.Weight.Bold:
-                fmt.setFontWeight(QFont.Weight.Normal)
-            else:
-                fmt.setFontWeight(QFont.Weight.Bold)
-            self.notepad.mergeCurrentCharFormat(fmt)
-            self.notepad.setFocus()
-
-    def toggle_italic(self):
-        """Toggle italic formatting on selected text"""
-        if hasattr(self, 'notepad'):
-            fmt = self.notepad.currentCharFormat()
-            fmt.setFontItalic(not fmt.fontItalic())
-            self.notepad.mergeCurrentCharFormat(fmt)
-            self.notepad.setFocus()
-
-    def toggle_code(self):
-        """Toggle code/monospace formatting on selected text"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            if cursor.hasSelection():
-                selected_text = cursor.selectedText()
-                # Wrap in <code> tags with white on dark styling
-                cursor.insertHtml(f'<code style="font-family: monospace; background-color: #2d2d2d; color: #f0f0f0; padding: 2px 5px;">{selected_text}</code>')
-            self.notepad.setFocus()
-
-    def toggle_emphasis(self):
-        """Toggle emphasis/action formatting on selected text"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            if cursor.hasSelection():
-                selected_text = cursor.selectedText()
-                # Wrap in span with red background highlight
-                cursor.insertHtml(f'<span style="background-color: #9c0c15; color: #f0f0f0; padding: 4px 10px;">{selected_text}</span>')
-            self.notepad.setFocus()
-
-    def apply_heading(self, level):
-        """Apply heading style to current paragraph"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            cursor.select(cursor.SelectionType.BlockUnderCursor)
-
-            # Set heading size based on level (compact sizes for quick notes)
-            sizes = {1: 16, 2: 14}
-            fmt = cursor.charFormat()
-            fmt.setFontPointSize(sizes.get(level, 12))
-            fmt.setFontWeight(QFont.Weight.Bold)
-            cursor.mergeCharFormat(fmt)
-            self.notepad.setFocus()
-
-    def toggle_bullet_list(self):
-        """Toggle bullet list for current paragraph"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            current_list = cursor.currentList()
-
-            if current_list and current_list.format().style() == QTextListFormat.Style.ListDisc:
-                # Remove from list
-                block_fmt = cursor.blockFormat()
-                block_fmt.setIndent(0)
-                cursor.setBlockFormat(block_fmt)
-                # Remove the list
-                cursor.currentList().remove(cursor.block())
-            else:
-                # Create bullet list
-                list_fmt = QTextListFormat()
-                list_fmt.setStyle(QTextListFormat.Style.ListDisc)
-                cursor.createList(list_fmt)
-            self.notepad.setFocus()
-
-    def toggle_numbered_list(self):
-        """Toggle numbered list for current paragraph"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            current_list = cursor.currentList()
-
-            if current_list and current_list.format().style() == QTextListFormat.Style.ListDecimal:
-                # Remove from list
-                block_fmt = cursor.blockFormat()
-                block_fmt.setIndent(0)
-                cursor.setBlockFormat(block_fmt)
-                cursor.currentList().remove(cursor.block())
-            else:
-                # Create numbered list
-                list_fmt = QTextListFormat()
-                list_fmt.setStyle(QTextListFormat.Style.ListDecimal)
-                cursor.createList(list_fmt)
-            self.notepad.setFocus()
-
-    def insert_link(self):
-        """Insert or edit a hyperlink"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            selected_text = cursor.selectedText()
-
-            # Simple dialog to get URL
-            from PyQt6.QtWidgets import QInputDialog
-
-            url, ok = QInputDialog.getText(
-                self, "Insert Link",
-                "Enter URL:",
-                text="https://"
-            )
-
-            if ok and url:
-                if not selected_text:
-                    # If no text selected, use URL as text
-                    selected_text = url
-
-                # Insert the link as HTML
-                link_html = f'<a href="{url}">{selected_text}</a>'
-                cursor.insertHtml(link_html)
-            self.notepad.setFocus()
-
-    def clear_formatting(self):
-        """Clear all formatting from selected text"""
-        if hasattr(self, 'notepad'):
-            cursor = self.notepad.textCursor()
-            if cursor.hasSelection():
-                # Get plain text
-                plain_text = cursor.selectedText()
-                # Create a clean format with default font
-                from PyQt6.QtGui import QTextCharFormat
-                clean_fmt = QTextCharFormat()
-                clean_fmt.setFontWeight(QFont.Weight.Normal)
-                clean_fmt.setFontItalic(False)
-                clean_fmt.setFontUnderline(False)
-                clean_fmt.setFontPointSize(12)
-                clean_fmt.setForeground(Qt.GlobalColor.black)
-                clean_fmt.clearBackground()
-                # Insert with clean format
-                cursor.insertText(plain_text, clean_fmt)
-            self.notepad.setFocus()
 
     def refresh_projects(self, restore_scroll_pos=None):
         """Refresh the project list by reloading the configuration"""

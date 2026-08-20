@@ -244,9 +244,9 @@ User preferences are stored in `.projectflow_settings.json`:
 
 ## Notes and Archive
 
-Notes are stored as markdown files in the configured `notes_folder`:
+Notes are stored as markdown files in the configured `notes_folder`, edited live in the same Muya WYSIWYG editor used for standalone `.md` files, with a Typora-style "paper on page" look:
 - Each project gets its own `.md` file (e.g., `work.json` -> `work.md`)
-- Notes auto-save on every change
+- Notes autosave a few seconds after you stop typing
 - Markdown format enables sync with Nextcloud Notes or any markdown-compatible tool
 
 ### Archive Feature
