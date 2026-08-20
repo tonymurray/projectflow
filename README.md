@@ -8,10 +8,11 @@ A project/activity focused organizer for Linux desktops to collect links to proj
 
 ## Features
 
-- **Three-column layout** with customizable categories, plus a two-column **Focus layout** (launchers + wide viewer) for documentation-heavy work — remembered per project
+- **Three-column layout** with customizable categories, plus a two-column **Focus layout** (launchers + wide viewer) for documentation-heavy work — remembered per project, with a collapsible quick file browser built into the launcher column
 - **Central viewer** toggles between PDF, web browser, image viewer, help, and console
+- **Folder browser** with tree and Dolphin-style icon-grid views, plus right-click "Open in Viewer" actions for images/PDFs/Markdown/HTML
 - **Live markdown editor** with autosave, built on the Muya editor engine
-- **Group-by-Type launcher view** — dynamically sorts launchers into Documentation / Websites / Resources without touching your category layout
+- **Group-by-Type launcher view** — dynamically sorts launchers into Documentation / Websites / Resources without touching your category layout, remembered per project
 - **Quick project switching** via recent projects bar with drag-to-reorder
 - **Edit mode** for adding/modifying entries without editing JSON
 - **Per-project notes** with markdown support and archive feature

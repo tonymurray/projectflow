@@ -10,7 +10,7 @@
 DIMENSIONS = {
     "default": {
         # Header toolbar buttons (Edit/Done, Refresh, PDF/Web/Help/Console toggles)
-        "header_btn_height": 28,
+        "header_btn_height": 26,
         # Section title labels (Shortcuts and Actions, Web view, Notes)
         "header_label_height": 28,
         # Padding inside header labels

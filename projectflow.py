@@ -761,6 +761,13 @@ class ProjectFlowApp(QMainWindow):
         self.group_by_type = False
         self._group_view_origin = {}
 
+        # Folder browser view mode: "tree" (details) or "icons" (Dolphin-style grid) — per-machine preference
+        self.folder_view_mode = self.settings.get("folder_view_mode", "tree")
+
+        # Quick file-browser panel in the Focus-layout launcher column — session-only, starts
+        # collapsed; reset to collapsed on project switch (see load_config's is_project_switch).
+        self.launcher_folder_panel_expanded = False
+
         # MIGRATION (temporary): rename archive files to {name}-archive.md format
         self._migrate_archive_filenames()
 
@@ -809,6 +816,7 @@ class ProjectFlowApp(QMainWindow):
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
                     "fm_always_tabs": False,  # Open file manager with home tab + target tab
                     "color_order": [],  # user-ordered list of color hex strings for swatch priority
+                    "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
                 }
                 self.save_settings()
         except Exception as e:
@@ -3567,6 +3575,22 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving layout_mode: {e}")
 
+    def _save_group_by_type_to_config(self):
+        """Persist the current Group-by-Type choice into the active project's own config file,
+        so it's remembered next time this project is opened (see _toggle_group_by_type)."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            config_data['group_by_type'] = self.group_by_type
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving group_by_type: {e}")
+
     def _enter_focus_layout(self):
         """Switch to Focus layout: hide right notes column, move notes into viewer tab."""
         if not hasattr(self, 'notes_panel') or not hasattr(self, 'notes_viewer_container'):
@@ -3608,7 +3632,7 @@ StartupNotify=true
 
         # Update toggle button appearance
         if hasattr(self, 'layout_toggle_btn'):
-            self.layout_toggle_btn.setText("▣")
+            self.layout_toggle_btn.setText("▣ Notes")
             self.layout_toggle_btn.setToolTip("Switch to Standard layout (3 columns)")
 
     def _enter_standard_layout(self):
@@ -3657,7 +3681,7 @@ StartupNotify=true
 
         # Update toggle button appearance
         if hasattr(self, 'layout_toggle_btn'):
-            self.layout_toggle_btn.setText("⊞")
+            self.layout_toggle_btn.setText("⊞ Focus")
             self.layout_toggle_btn.setToolTip("Switch to Focus layout (launcher + wide viewer)")
 
     def get_config_file_to_use(self):
@@ -3753,9 +3777,15 @@ StartupNotify=true
                 # Load per-project layout mode (standard/focus) — remembers the last layout
                 # this project was viewed in
                 self.layout_mode = config_data.get('layout_mode', 'standard')
-                # Focus layout defaults the launcher column to Group-by-Type
+                # Group-by-Type: remembers this project's last choice (see
+                # _toggle_group_by_type/_save_group_by_type_to_config); if never explicitly
+                # set, Focus layout defaults the launcher column to Group-by-Type
                 if is_project_switch:
-                    self.group_by_type = (self.layout_mode == "focus")
+                    if 'group_by_type' in config_data:
+                        self.group_by_type = bool(config_data['group_by_type'])
+                    else:
+                        self.group_by_type = (self.layout_mode == "focus")
+                    self.launcher_folder_panel_expanded = False
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -3781,6 +3811,7 @@ StartupNotify=true
                 self.layout_mode = 'standard'
                 if is_project_switch:
                     self.group_by_type = False
+                    self.launcher_folder_panel_expanded = False
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -5374,7 +5405,7 @@ function filterAliases(q) {{
 
         # Layout toggle button — switches between Standard (3-col) and Focus (2-col) layouts
         _is_focus = self.layout_mode == "focus"
-        self.layout_toggle_btn = QPushButton("▣" if _is_focus else "⊞")
+        self.layout_toggle_btn = QPushButton("▣ Notes" if _is_focus else "⊞ Focus")
         self.layout_toggle_btn.setToolTip(
             "Switch to Standard layout (3 columns)" if _is_focus
             else "Switch to Focus layout (launcher + wide viewer)"
@@ -6754,6 +6785,28 @@ function filterAliases(q) {{
             if col_idx == 0 and self.group_by_type and not self.edit_mode:
                 column_categories = self._build_grouped_categories()
 
+            # Quick file-browser panel (Focus layout only) replaces the category list while expanded
+            hide_launchers_for_folder_panel = (
+                col_idx == 0 and self.layout_mode == "focus"
+                and self.launcher_folder_panel_expanded and not self.edit_mode
+            )
+            if hide_launchers_for_folder_panel:
+                column_categories = []
+
+            # These widgets only get (re)built below when the panel is actually expanded this
+            # pass. Reset them to None on every other build so stale references to widgets Qt
+            # already destroyed (from a previous build where the panel WAS expanded) never leak
+            # through a getattr(self, 'launcher_folder_x', None) check elsewhere — accessing a
+            # PyQt wrapper for an already-deleted C++ object raises "wrapped C/C++ object has
+            # been deleted", which is exactly the bug this guards against.
+            if col_idx == 0:
+                self.launcher_folder_toggle_btn = None
+                self.launcher_folder_path_label = None
+                self.launcher_folder_browser = None
+                self.launcher_folder_icon_view = None
+                self.launcher_folder_view_stack = None
+                self.launcher_folder_view_toggle_btn = None
+
             # Create a vertical layout for this entire column
             column_layout = QVBoxLayout()
 
@@ -6769,10 +6822,7 @@ function filterAliases(q) {{
                 """
 
                 if col_idx == 0:
-                    # First column: add edit mode and refresh buttons (like column 2 style)
-                    header_layout = QHBoxLayout()
-                    header_layout.setContentsMargins(0, 0, 0, 0)
-                    header_layout.setSpacing(3)
+                    column_layout.setContentsMargins(0, 4, 0, 0)  # left, top, right, bottom
 
                     # Green button style (matching column 2 toggle button)
                     green_btn_style = f"""
@@ -6792,7 +6842,58 @@ function filterAliases(q) {{
                         }}
                     """
 
-                    if not self.edit_mode:
+                    # Quick file-browser toggle (Focus layout only) — collapsed by default;
+                    # expanding replaces the category list with a compact folder browser
+                    # (see _toggle_launcher_folder_panel / _build_launcher_folder_panel)
+                    if self.layout_mode == "focus" and not self.edit_mode:
+                        self.launcher_folder_toggle_btn = QPushButton("")
+                        self.launcher_folder_toggle_btn.setMinimumHeight(self.d('header_btn_height'))
+                        self.launcher_folder_toggle_btn.setToolTip(
+                            "Hide file browser" if self.launcher_folder_panel_expanded
+                            else "Browse files (opens into the viewer)"
+                        )
+                        self.launcher_folder_toggle_btn.setStyleSheet(f"""
+                            QPushButton {{
+                                background-color: {self.t('bg_category')};
+                                border: 2px solid {self.t('bg_category_hover')};
+                                border-radius: 5px;
+                            }}
+                            QPushButton:hover {{
+                                background-color: {self.t('bg_category_hover')};
+                                border: 2px solid {self.t('border_dark')};
+                            }}
+                        """)
+                        toggle_btn_layout = QHBoxLayout(self.launcher_folder_toggle_btn)
+                        toggle_btn_layout.setContentsMargins(10, 0, 10, 0)
+                        toggle_btn_layout.setSpacing(6)
+                        toggle_icon_label = QLabel()
+                        toggle_icon_label.setPixmap(self._folder_icon(self.t('fg_on_dark')).pixmap(16, 16))
+                        toggle_icon_label.setStyleSheet("background: transparent;")
+                        toggle_btn_layout.addWidget(toggle_icon_label)
+                        toggle_text_label = QLabel("File Browser")
+                        toggle_text_label.setStyleSheet(
+                            f"color: {self.t('fg_on_dark')}; font-weight: bold; font-size: 12px; background: transparent;"
+                        )
+                        toggle_btn_layout.addWidget(toggle_text_label)
+                        toggle_btn_layout.addStretch()
+                        toggle_arrow_label = QLabel("▲" if self.launcher_folder_panel_expanded else "◀")
+                        toggle_arrow_label.setStyleSheet(
+                            f"color: {self.t('fg_on_dark')}; font-weight: bold; font-size: 12px; background: transparent;"
+                        )
+                        toggle_btn_layout.addWidget(toggle_arrow_label)
+                        self.launcher_folder_toggle_btn.clicked.connect(self._toggle_launcher_folder_panel)
+                        column_layout.addWidget(self.launcher_folder_toggle_btn)
+                        column_layout.addSpacing(3)
+
+                        if self.launcher_folder_panel_expanded:
+                            self._build_launcher_folder_panel(column_layout)
+
+                    # First column: add edit mode and refresh buttons (like column 2 style)
+                    header_layout = QHBoxLayout()
+                    header_layout.setContentsMargins(0, 0, 0, 0)
+                    header_layout.setSpacing(3)
+
+                    if not self.edit_mode and not hide_launchers_for_folder_panel:
                         # Search box + Add button (hidden in edit mode — controls are in title bar)
                         self._launcher_search_box = QLineEdit()
                         self._launcher_search_box.setPlaceholderText("🔍  Search…")
@@ -6813,7 +6914,7 @@ function filterAliases(q) {{
                         self._launcher_search_box.textChanged.connect(self._filter_launchers)
                         header_layout.addWidget(self._launcher_search_box, 1)
 
-                        group_btn = QPushButton("🗂️ Group")
+                        group_btn = QPushButton("☰ Group")
                         group_btn.setMinimumHeight(self.d('header_btn_height'))
                         group_btn.setToolTip(
                             "Group launchers by type (Documentation / Websites / Resources) — "
@@ -6833,7 +6934,6 @@ function filterAliases(q) {{
                         header_layout.addWidget(add_btn)
 
                         column_layout.addLayout(header_layout)
-                        column_layout.setContentsMargins(0, 4, 0, 0)  # left, top, right, bottom
 
             # Process each category within this column
             for category_dict in column_categories:
@@ -7322,7 +7422,7 @@ function filterAliases(q) {{
                     column_layout.addWidget(group_container)
 
             # Add Tagged Files category at the bottom of Column 1
-            if col_idx == 0:
+            if col_idx == 0 and not hide_launchers_for_folder_panel:
                 tagged_files = self.get_tagged_files()
                 if tagged_files:
                     # Create container for tagged files category
@@ -7448,7 +7548,6 @@ function filterAliases(q) {{
 
                 # Tab button definitions: (mode, label, tooltip, icon_names)
                 tab_buttons = [
-                    ("folder",   "Folder",   "Folder browser",     ["system-file-manager", "folder", "inode-directory"]),
                     ("webview",  "Web",      "Web viewer",         ["internet-web-browser", "web-browser", "globe", "applications-internet"]),
                     ("pdf",      "PDF",      "PDF viewer",         ["application-pdf", "evince", "document-viewer", "x-office-document"]),
                     ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
@@ -7457,7 +7556,7 @@ function filterAliases(q) {{
                     ("notes",    "Notes",    "Project notes",      ["text-editor", "accessories-text-editor"]),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-                    tab_buttons.insert(0, ("time", "⏱", "Kimai time tracker", []))
+                    tab_buttons.insert(0, ("time", "⏱ Time", "Kimai time tracker", []))
 
                 # Normal tab button style
                 tab_btn_style = f"""
@@ -7811,7 +7910,48 @@ function filterAliases(q) {{
                 self.folder_browser.itemClicked.connect(self.on_folder_item_clicked)
                 self.folder_browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 self.folder_browser.customContextMenuRequested.connect(self.folder_browser_context_menu)
-                folder_container_layout.addWidget(self.folder_browser)
+
+                # QListWidget in icon-grid mode — Dolphin-style alternative to the tree above
+                self.folder_icon_view = QListWidget()
+                self.folder_icon_view.setViewMode(QListWidget.ViewMode.IconMode)
+                self.folder_icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
+                self.folder_icon_view.setMovement(QListWidget.Movement.Static)
+                self.folder_icon_view.setWrapping(True)
+                self.folder_icon_view.setIconSize(QSize(48, 48))
+                self.folder_icon_view.setGridSize(QSize(96, 90))
+                self.folder_icon_view.setSpacing(4)
+                self.folder_icon_view.setWordWrap(True)
+                self.folder_icon_view.setUniformItemSizes(True)
+                self.folder_icon_view.setStyleSheet(f"""
+                    QListWidget {{
+                        background-color: {self.t('bg_secondary')};
+                        border: 2px solid {self.t('border')};
+                        border-radius: 5px;
+                        color: {self.t('fg_primary')};
+                        font-size: 11px;
+                    }}
+                    QListWidget::item {{
+                        padding: 4px;
+                        border-radius: 3px;
+                    }}
+                    QListWidget::item:hover {{
+                        background-color: {self.t('bg_button_hover')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                    QListWidget::item:selected {{
+                        background-color: {self.t('bg_category')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """)
+                self.folder_icon_view.itemClicked.connect(self.on_folder_icon_item_clicked)
+                self.folder_icon_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                self.folder_icon_view.customContextMenuRequested.connect(self.folder_icon_view_context_menu)
+
+                self.folder_view_stack = QStackedWidget()
+                self.folder_view_stack.addWidget(self.folder_browser)
+                self.folder_view_stack.addWidget(self.folder_icon_view)
+                self.folder_view_stack.setCurrentIndex(1 if self.folder_view_mode == "icons" else 0)
+                folder_container_layout.addWidget(self.folder_view_stack)
 
                 fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
                 folder_container_layout.addWidget(
@@ -9214,6 +9354,7 @@ function filterAliases(q) {{
     def _toggle_group_by_type(self):
         """Toggle the dynamic Group-by-Type launcher view (display-only, see _build_grouped_categories)."""
         self.group_by_type = not self.group_by_type
+        self._save_group_by_type_to_config()
         self.refresh_projects()
 
     def _filter_launchers(self, query):
@@ -10327,6 +10468,12 @@ function filterAliases(q) {{
         # Load the image
         self.load_image(path)
 
+    def preview_in_pdf_viewer(self, path):
+        """Preview a PDF in the PDF viewer panel"""
+        if self.column2_mode != "pdf":
+            self.switch_to_viewer_mode("pdf")
+        self.load_pdf(path)
+
     def _is_local_path(self, path):
         """Return True if path looks like a local file/folder (not remote/URL/command)"""
         if not path:
@@ -10705,6 +10852,15 @@ function filterAliases(q) {{
         refresh_btn.clicked.connect(self.folder_refresh)
         toolbar_layout.addWidget(refresh_btn)
 
+        # View mode toggle (tree/details vs Dolphin-style icon grid)
+        self.folder_view_toggle_btn = QPushButton("⊞" if self.folder_view_mode == "tree" else "☰")
+        self.folder_view_toggle_btn.setStyleSheet(btn_style)
+        self.folder_view_toggle_btn.setToolTip(
+            "Switch to icon grid view" if self.folder_view_mode == "tree" else "Switch to list view"
+        )
+        self.folder_view_toggle_btn.clicked.connect(self._toggle_folder_view_mode)
+        toolbar_layout.addWidget(self.folder_view_toggle_btn)
+
         # Separator
         sep1 = QLabel("|")
         sep1.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
@@ -10725,33 +10881,178 @@ function filterAliases(q) {{
 
         parent_layout.addWidget(toolbar_widget)
 
-    def populate_folder_browser(self, path):
-        """Populate the folder browser with contents of the given path"""
-        self.folder_browser.clear()
-        self.folder_current_path = path
+    def _build_launcher_folder_panel(self, column_layout):
+        """Build the compact file-browser panel embedded in the Focus-layout launcher column.
 
-        # Update path label (shorten home dir to ~)
-        display_path = path
-        home = os.path.expanduser("~")
-        if path.startswith(home):
-            display_path = "~" + path[len(home):]
-        self.folder_path_label.setText(display_path)
+        A lightweight sibling of the main Folder viewer's tree — shares navigation state
+        (self.folder_current_path) and is kept in sync by populate_folder_browser(), but
+        clicking a file opens it straight into the built-in viewer (see _open_path_in_best_viewer)
+        instead of the tree's default navigate/xdg-open behavior.
+        """
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 4)
+        toolbar_layout.setSpacing(5)
 
+        up_btn = QPushButton("↑")
+        up_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+                min-width: 28px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        up_btn.setToolTip("Go up one directory")
+        up_btn.clicked.connect(self.folder_go_up)
+        toolbar_layout.addWidget(up_btn)
+
+        mini_btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+                min-width: 28px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        home_btn = QPushButton("⌂")
+        home_btn.setStyleSheet(mini_btn_style)
+        home_btn.setToolTip("Go to home directory")
+        home_btn.clicked.connect(self.folder_go_home)
+        toolbar_layout.addWidget(home_btn)
+
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setStyleSheet(mini_btn_style)
+        refresh_btn.setToolTip("Refresh current directory")
+        refresh_btn.clicked.connect(self.folder_refresh)
+        toolbar_layout.addWidget(refresh_btn)
+
+        self.launcher_folder_view_toggle_btn = QPushButton(
+            "☰" if self.folder_view_mode == "icons" else "⊞"
+        )
+        self.launcher_folder_view_toggle_btn.setStyleSheet(mini_btn_style)
+        self.launcher_folder_view_toggle_btn.setToolTip(
+            "Switch to list view" if self.folder_view_mode == "icons" else "Switch to icon grid view"
+        )
+        self.launcher_folder_view_toggle_btn.clicked.connect(self._toggle_folder_view_mode)
+        toolbar_layout.addWidget(self.launcher_folder_view_toggle_btn)
+
+        self.launcher_folder_path_label = QLabel("~")
+        self.launcher_folder_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
+        self.launcher_folder_path_label.setToolTip("Current directory")
+        toolbar_layout.addWidget(self.launcher_folder_path_label, 1)
+
+        column_layout.addWidget(toolbar_widget)
+
+        self.launcher_folder_browser = QTreeWidget()
+        self.launcher_folder_browser.setHeaderHidden(True)
+        self.launcher_folder_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.launcher_folder_browser.setStyleSheet(f"""
+            QTreeWidget {{
+                background-color: {self.t('bg_secondary')};
+                border: 2px solid {self.t('border')};
+                border-radius: 5px;
+                color: {self.t('fg_primary')};
+                font-size: 12px;
+            }}
+            QTreeWidget::item {{
+                padding: 4px 8px;
+            }}
+            QTreeWidget::item:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        self.launcher_folder_browser.setMouseTracking(True)
+        self.launcher_folder_browser.viewport().setMouseTracking(True)
+        self.launcher_folder_browser.setItemDelegate(FolderBrowserDelegate(self))
+        self.launcher_folder_browser.itemClicked.connect(self.on_launcher_folder_item_clicked)
+        self.launcher_folder_browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.launcher_folder_browser.customContextMenuRequested.connect(self.launcher_folder_browser_context_menu)
+
+        self.launcher_folder_icon_view = QListWidget()
+        self.launcher_folder_icon_view.setViewMode(QListWidget.ViewMode.IconMode)
+        self.launcher_folder_icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.launcher_folder_icon_view.setMovement(QListWidget.Movement.Static)
+        self.launcher_folder_icon_view.setWrapping(True)
+        self.launcher_folder_icon_view.setIconSize(QSize(40, 40))
+        self.launcher_folder_icon_view.setGridSize(QSize(80, 76))
+        self.launcher_folder_icon_view.setSpacing(4)
+        self.launcher_folder_icon_view.setWordWrap(True)
+        self.launcher_folder_icon_view.setUniformItemSizes(True)
+        self.launcher_folder_icon_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.launcher_folder_icon_view.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {self.t('bg_secondary')};
+                border: 2px solid {self.t('border')};
+                border-radius: 5px;
+                color: {self.t('fg_primary')};
+                font-size: 11px;
+            }}
+            QListWidget::item {{
+                padding: 4px;
+                border-radius: 3px;
+            }}
+            QListWidget::item:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QListWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        self.launcher_folder_icon_view.itemClicked.connect(self.on_launcher_folder_icon_item_clicked)
+        self.launcher_folder_icon_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.launcher_folder_icon_view.customContextMenuRequested.connect(self.launcher_folder_icon_view_context_menu)
+
+        self.launcher_folder_view_stack = QStackedWidget()
+        self.launcher_folder_view_stack.addWidget(self.launcher_folder_browser)
+        self.launcher_folder_view_stack.addWidget(self.launcher_folder_icon_view)
+        self.launcher_folder_view_stack.setCurrentIndex(1 if self.folder_view_mode == "icons" else 0)
+        column_layout.addWidget(self.launcher_folder_view_stack, 1)
+
+        # populate_folder_browser is otherwise only called when the Folder viewer tab is active
+        # (column2_mode == "folder") — this panel must show content regardless of the active tab.
+        start_path = getattr(self, 'folder_current_path', None) or os.path.expanduser("~")
+        self.populate_folder_browser(start_path)
+
+    def _scan_folder_entries(self, path):
+        """Scan a directory into a widget-agnostic list of entry dicts.
+
+        Single source of truth for dotfile-skipping, dir-then-file sort order,
+        and the .projectflow "[P]" badge, so the tree and icon views can never drift.
+        Returns (entries, error_message) — entries is None on error.
+        """
         try:
-            entries = os.listdir(path)
+            raw_entries = os.listdir(path)
         except PermissionError:
-            error_item = QTreeWidgetItem(["Permission denied"])
-            self.folder_browser.addTopLevelItem(error_item)
-            return
+            return None, "Permission denied"
         except Exception as e:
-            error_item = QTreeWidgetItem([f"Error: {str(e)}"])
-            self.folder_browser.addTopLevelItem(error_item)
-            return
+            return None, f"Error: {str(e)}"
 
-        # Separate and sort directories and files
         dirs = []
         files = []
-        for entry in entries:
+        for entry in raw_entries:
             if entry.startswith('.'):
                 continue  # Skip hidden files
             full_path = os.path.join(path, entry)
@@ -10763,39 +11064,123 @@ function filterAliases(q) {{
         dirs.sort(key=str.lower)
         files.sort(key=str.lower)
 
-        icon_provider = QFileIconProvider()
-        # Try theme icon names in order, then fall back to platform style icon
-        folder_icon = QIcon.fromTheme("folder")
-        if folder_icon.isNull():
-            folder_icon = QIcon.fromTheme("inode-directory")
-        if folder_icon.isNull():
-            folder_icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-
-        # Add directories first
+        result = []
         for d in dirs:
             full_path = os.path.join(path, d)
-            item = QTreeWidgetItem()
-
-            # Check if this folder has .projectflow
-            if os.path.exists(os.path.join(full_path, ".projectflow")):
-                item.setText(0, f"[P] {d}/")
-                item.setToolTip(0, "ProjectFlow project folder")
-            else:
-                item.setText(0, f"{d}/")
-
-            item.setIcon(0, folder_icon)
-            item.setData(0, Qt.ItemDataRole.UserRole, full_path)
-            item.setData(0, Qt.ItemDataRole.UserRole + 1, "dir")
-            self.folder_browser.addTopLevelItem(item)
-
-        # Add files
+            is_project = os.path.exists(os.path.join(full_path, ".projectflow"))
+            display_name = f"[P] {d}/" if is_project else f"{d}/"
+            result.append({
+                'full_path': full_path, 'display_name': display_name,
+                'kind': 'dir', 'is_project': is_project,
+            })
         for f in files:
             full_path = os.path.join(path, f)
-            item = QTreeWidgetItem([f])
-            item.setIcon(0, icon_provider.icon(QFileInfo(full_path)))
-            item.setData(0, Qt.ItemDataRole.UserRole, full_path)
-            item.setData(0, Qt.ItemDataRole.UserRole + 1, "file")
-            self.folder_browser.addTopLevelItem(item)
+            result.append({
+                'full_path': full_path, 'display_name': f,
+                'kind': 'file', 'is_project': False,
+            })
+        return result, None
+
+    def _folder_icon(self, color_hex):
+        """Hand-drawn flat folder icon in the given color — used instead of the system theme's
+        folder icon (which renders yellow/manila on many setups) so it looks consistent everywhere."""
+        cache = self._folder_icon_cache if hasattr(self, '_folder_icon_cache') else {}
+        if not hasattr(self, '_folder_icon_cache'):
+            self._folder_icon_cache = cache
+        if color_hex in cache:
+            return cache[color_hex]
+        size = 64
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color_hex))
+        painter.drawRoundedRect(QRect(8, 16, 24, 10), 2, 2)
+        painter.drawRoundedRect(QRect(8, 22, 48, 30), 4, 4)
+        painter.end()
+        icon = QIcon(pixmap)
+        cache[color_hex] = icon
+        return icon
+
+    def _blue_folder_icon(self):
+        return self._folder_icon("#3498db")
+
+    def _folder_theme_icon(self):
+        """Folder icon shared by all folder browser views (tree, icon grid, launcher panel)."""
+        return self._blue_folder_icon()
+
+    def _render_folder_tree(self, entries, target=None):
+        """Render scanned entries into a tree/details view — self.folder_browser by default,
+        or the given target widget (e.g. the launcher-column mini panel)."""
+        tree = target if target is not None else self.folder_browser
+        tree.clear()
+        icon_provider = QFileIconProvider()
+        folder_icon = self._folder_theme_icon()
+
+        for e in entries:
+            item = QTreeWidgetItem()
+            item.setText(0, e['display_name'])
+            if e['is_project']:
+                item.setToolTip(0, "ProjectFlow project folder")
+            item.setIcon(0, folder_icon if e['kind'] == 'dir' else icon_provider.icon(QFileInfo(e['full_path'])))
+            item.setData(0, Qt.ItemDataRole.UserRole, e['full_path'])
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, e['kind'])
+            tree.addTopLevelItem(item)
+
+    def _render_folder_icons(self, entries, target=None):
+        """Render scanned entries into an icon grid — self.folder_icon_view by default,
+        or the given target widget (e.g. the launcher-column mini panel)."""
+        grid = target if target is not None else self.folder_icon_view
+        grid.clear()
+        icon_provider = QFileIconProvider()
+        folder_icon = self._folder_theme_icon()
+
+        for e in entries:
+            icon = folder_icon if e['kind'] == 'dir' else icon_provider.icon(QFileInfo(e['full_path']))
+            item = QListWidgetItem(icon, e['display_name'])
+            if e['is_project']:
+                item.setToolTip("ProjectFlow project folder")
+            item.setData(Qt.ItemDataRole.UserRole, e['full_path'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, e['kind'])
+            grid.addItem(item)
+
+    def populate_folder_browser(self, path):
+        """Populate the folder browser (both tree and icon views) with contents of the given path"""
+        self.folder_current_path = path
+
+        # Update path label (shorten home dir to ~)
+        display_path = path
+        home = os.path.expanduser("~")
+        if path.startswith(home):
+            display_path = "~" + path[len(home):]
+        self.folder_path_label.setText(display_path)
+        launcher_path_label = getattr(self, 'launcher_folder_path_label', None)
+        if launcher_path_label is not None:
+            launcher_path_label.setText(display_path)
+
+        entries, error = self._scan_folder_entries(path)
+        launcher_tree = getattr(self, 'launcher_folder_browser', None)
+        launcher_icons = getattr(self, 'launcher_folder_icon_view', None)
+        if error is not None:
+            self.folder_browser.clear()
+            self.folder_icon_view.clear()
+            self.folder_browser.addTopLevelItem(QTreeWidgetItem([error]))
+            self.folder_icon_view.addItem(QListWidgetItem(error))
+            if launcher_tree is not None:
+                launcher_tree.clear()
+                launcher_tree.addTopLevelItem(QTreeWidgetItem([error]))
+            if launcher_icons is not None:
+                launcher_icons.clear()
+                launcher_icons.addItem(QListWidgetItem(error))
+            return
+
+        self._render_folder_tree(entries)
+        self._render_folder_icons(entries)
+        if launcher_tree is not None:
+            self._render_folder_tree(entries, target=launcher_tree)
+        if launcher_icons is not None:
+            self._render_folder_icons(entries, target=launcher_icons)
 
     def folder_go_up(self):
         """Navigate to parent directory"""
@@ -10811,11 +11196,28 @@ function filterAliases(q) {{
         """Refresh current directory listing"""
         self.populate_folder_browser(self.folder_current_path)
 
-    def on_folder_item_clicked(self, item, column):
-        """Handle single-click on folder browser item"""
-        path = item.data(0, Qt.ItemDataRole.UserRole)
-        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+    def _toggle_folder_view_mode(self):
+        """Switch the folder browser(s) between tree/details and Dolphin-style icon grid view —
+        applies to both the main Folder viewer and the launcher-column mini panel, whichever exist."""
+        self.folder_view_mode = "icons" if self.folder_view_mode == "tree" else "tree"
+        self.settings["folder_view_mode"] = self.folder_view_mode
+        self.save_settings()
+        index = 1 if self.folder_view_mode == "icons" else 0
+        btn_text = "☰" if self.folder_view_mode == "icons" else "⊞"
+        btn_tooltip = (
+            "Switch to list view" if self.folder_view_mode == "icons" else "Switch to icon grid view"
+        )
+        if getattr(self, 'folder_view_stack', None) is not None:
+            self.folder_view_stack.setCurrentIndex(index)
+            self.folder_view_toggle_btn.setText(btn_text)
+            self.folder_view_toggle_btn.setToolTip(btn_tooltip)
+        if getattr(self, 'launcher_folder_view_stack', None) is not None:
+            self.launcher_folder_view_stack.setCurrentIndex(index)
+            self.launcher_folder_view_toggle_btn.setText(btn_text)
+            self.launcher_folder_view_toggle_btn.setToolTip(btn_tooltip)
 
+    def _handle_folder_item_activation(self, path, item_type):
+        """Open/navigate to a folder-browser entry — shared by the tree and icon views."""
         if not path:
             return
 
@@ -10836,6 +11238,92 @@ function filterAliases(q) {{
                 self._open_markdown_in_webview(path)
             else:
                 subprocess.Popen(["xdg-open", path], start_new_session=True)
+
+    def on_folder_item_clicked(self, item, column):
+        """Handle single-click on a tree-view folder browser item"""
+        self._handle_folder_item_activation(
+            item.data(0, Qt.ItemDataRole.UserRole),
+            item.data(0, Qt.ItemDataRole.UserRole + 1),
+        )
+
+    def on_folder_icon_item_clicked(self, item):
+        """Handle single-click on an icon-grid folder browser item"""
+        self._handle_folder_item_activation(
+            item.data(Qt.ItemDataRole.UserRole),
+            item.data(Qt.ItemDataRole.UserRole + 1),
+        )
+
+    def _open_path_in_best_viewer(self, path):
+        """Open a file in whichever built-in viewer matches its extension, else xdg-open."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp'):
+            self.preview_in_image_viewer(path)
+        elif ext == '.pdf':
+            self.preview_in_pdf_viewer(path)
+        elif ext == '.md':
+            self._open_markdown_in_webview(path)
+        elif ext in ('.html', '.htm'):
+            self._open_file_in_webview(path)
+        else:
+            subprocess.Popen(["xdg-open", path], start_new_session=True)
+
+    def _handle_launcher_folder_item_activation(self, path, item_type):
+        """Open/navigate an entry from the launcher-column quick file-browser panel.
+
+        Unlike the main folder browser's default click (_handle_folder_item_activation),
+        files always route into the best built-in viewer — that's the point of this panel.
+        """
+        if not path:
+            return
+        if item_type == "dir":
+            projectflow_path = os.path.join(path, ".projectflow")
+            if os.path.exists(projectflow_path):
+                self.switch_to_config(projectflow_path)
+            else:
+                self.populate_folder_browser(path)
+        else:
+            self._open_path_in_best_viewer(path)
+
+    def on_launcher_folder_item_clicked(self, item, column):
+        """Handle single-click in the launcher-column quick file-browser panel"""
+        self._handle_launcher_folder_item_activation(
+            item.data(0, Qt.ItemDataRole.UserRole),
+            item.data(0, Qt.ItemDataRole.UserRole + 1),
+        )
+
+    def launcher_folder_browser_context_menu(self, position):
+        """Handle right-click in the launcher-column quick file-browser panel"""
+        item = self.launcher_folder_browser.itemAt(position)
+        if not item:
+            return
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if not path:
+            return
+        self._build_folder_context_menu(path, item_type).exec(self.launcher_folder_browser.mapToGlobal(position))
+
+    def on_launcher_folder_icon_item_clicked(self, item):
+        """Handle single-click in the launcher-column mini panel's icon-grid view"""
+        self._handle_launcher_folder_item_activation(
+            item.data(Qt.ItemDataRole.UserRole),
+            item.data(Qt.ItemDataRole.UserRole + 1),
+        )
+
+    def launcher_folder_icon_view_context_menu(self, position):
+        """Handle right-click in the launcher-column mini panel's icon-grid view"""
+        item = self.launcher_folder_icon_view.itemAt(position)
+        if not item:
+            return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        item_type = item.data(Qt.ItemDataRole.UserRole + 1)
+        if not path:
+            return
+        self._build_folder_context_menu(path, item_type).exec(self.launcher_folder_icon_view.mapToGlobal(position))
+
+    def _toggle_launcher_folder_panel(self):
+        """Expand/collapse the quick file-browser panel in the Focus-layout launcher column."""
+        self.launcher_folder_panel_expanded = not self.launcher_folder_panel_expanded
+        self.refresh_projects()
 
     def _open_file_in_webview(self, path):
         """Open a local file in the built-in webview panel"""
@@ -10999,18 +11487,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.md_edit_btn.setVisible(is_md and not self._muya_editing)
         self.md_preview_btn.setVisible(is_md and self._muya_editing)
 
-    def folder_browser_context_menu(self, position):
-        """Handle right-click context menu in folder browser"""
-        item = self.folder_browser.itemAt(position)
-        if not item:
-            return
-
-        path = item.data(0, Qt.ItemDataRole.UserRole)
-        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
-
-        if not path:
-            return
-
+    def _build_folder_context_menu(self, path, item_type):
+        """Build the right-click menu for a folder-browser entry — shared by the tree and icon views."""
         menu = QMenu(self)
 
         # Add to Project action
@@ -11036,7 +11514,23 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         # Open action
         open_action = menu.addAction("Open")
-        open_action.triggered.connect(lambda: self.on_folder_item_clicked(item, 0))
+        open_action.triggered.connect(lambda: self._handle_folder_item_activation(path, item_type))
+
+        # Open in a specific built-in viewer (files only, when a matching viewer exists)
+        if item_type == "file":
+            ext = os.path.splitext(path)[1].lower()
+            if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp'):
+                viewer_action = menu.addAction("🖼️ Open in Image Viewer")
+                viewer_action.triggered.connect(lambda: self.preview_in_image_viewer(path))
+            elif ext == '.pdf':
+                viewer_action = menu.addAction("📄 Open in PDF Viewer")
+                viewer_action.triggered.connect(lambda: self.preview_in_pdf_viewer(path))
+            elif ext == '.md':
+                viewer_action = menu.addAction("📝 Open in Markdown Editor")
+                viewer_action.triggered.connect(lambda: self._open_markdown_in_webview(path))
+            elif ext in ('.html', '.htm'):
+                viewer_action = menu.addAction("🌐 Open in Web Viewer")
+                viewer_action.triggered.connect(lambda: self._open_file_in_webview(path))
 
         # Open in Terminal (for directories only)
         if item_type == "dir":
@@ -11044,7 +11538,33 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             terminal_action.triggered.connect(lambda: subprocess.Popen(
                 self._get_terminal_workdir_command(path), start_new_session=True))
 
-        menu.exec(self.folder_browser.mapToGlobal(position))
+        return menu
+
+    def folder_browser_context_menu(self, position):
+        """Handle right-click context menu in the tree-view folder browser"""
+        item = self.folder_browser.itemAt(position)
+        if not item:
+            return
+
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if not path:
+            return
+
+        self._build_folder_context_menu(path, item_type).exec(self.folder_browser.mapToGlobal(position))
+
+    def folder_icon_view_context_menu(self, position):
+        """Handle right-click context menu in the icon-grid folder browser"""
+        item = self.folder_icon_view.itemAt(position)
+        if not item:
+            return
+
+        path = item.data(Qt.ItemDataRole.UserRole)
+        item_type = item.data(Qt.ItemDataRole.UserRole + 1)
+        if not path:
+            return
+
+        self._build_folder_context_menu(path, item_type).exec(self.folder_icon_view.mapToGlobal(position))
 
     def show_add_to_project_dialog(self, file_path):
         """Show dialog to select which project to add the file/folder to"""
@@ -11842,8 +12362,7 @@ Project created: {date_str}
                     self.preview_in_image_viewer(expanded_path)
                     return
                 if ext == ".pdf":
-                    self.switch_to_viewer_mode("pdf")
-                    self.load_pdf(expanded_path)
+                    self.preview_in_pdf_viewer(expanded_path)
                     return
                 if ext == ".md" and self._is_local_path(path):
                     self._open_markdown_in_webview(expanded_path)
