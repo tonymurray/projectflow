@@ -403,6 +403,52 @@ class DragHandle(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class ViewerResizeHandle(QLabel):
+    """Thin bar at the bottom of the viewer column — drag vertically to resize it.
+
+    Uses setFixedHeight(), not setMinimumHeight(): a minimum is only a floor, and on any
+    project with a tall enough launcher column, the surrounding layout stretches column2_stack
+    well past that floor anyway (to match the launcher column's height, since both sit in the
+    same row) — making the drag have no visible effect, and pushing this handle far down the
+    page. A fixed height opts column2_stack out of that stretching entirely: any extra vertical
+    space from a tall launcher column is simply left blank below the handle instead, so the
+    viewer's actual size always matches what was last dragged (or the viewer_height default),
+    and the handle stays at a short, predictable scroll distance rather than however tall the
+    launcher list happens to be. Unlike DragHandle above (drag-and-drop reordering), this tracks
+    the mouse directly to live-resize target_widget rather than initiating a QDrag.
+    """
+
+    def __init__(self, target_widget, on_resize_end, parent=None):
+        super().__init__("⋯⋯⋯", parent)
+        self.target_widget = target_widget
+        self.on_resize_end = on_resize_end
+        self.setFixedHeight(10)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+        self.setToolTip("Drag to resize the viewer (remembered on this machine)")
+        self._drag_start_y = None
+        self._drag_start_height = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_y = event.globalPosition().y()
+            self._drag_start_height = self.target_widget.height()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start_y is None:
+            return
+        delta = event.globalPosition().y() - self._drag_start_y
+        new_height = max(400, int(self._drag_start_height + delta))
+        self.target_widget.setFixedHeight(new_height)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start_y is not None:
+            self._drag_start_y = None
+            self.on_resize_end(self.target_widget.height())
+        super().mouseReleaseEvent(event)
+
+
 class ClickableSearchTitle(QWidget):
     """A title widget that transforms into a search input on click"""
 
@@ -1965,7 +2011,7 @@ class ProjectFlowApp(QMainWindow):
         viewer_label = QLabel("Default Viewer:")
         viewer_label.setStyleSheet(label_style)
         self._proj_default_viewer = QComboBox()
-        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "examples", "console", "time"])
+        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "console", "time"])
         current_viewer = getattr(self, 'config_column2_default', None) or ""
         self._proj_default_viewer.setCurrentText(current_viewer)
         self._proj_default_viewer.setStyleSheet(input_style)
@@ -3597,6 +3643,13 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving settings: {e}")
 
+    def _save_viewer_height(self, height):
+        """Persist the viewer column's manually-resized minimum height (ViewerResizeHandle).
+        Per-machine, not per-project: how tall feels comfortable depends on the monitor's
+        resolution, not the project being viewed."""
+        self.settings["viewer_height"] = height
+        self.save_settings()
+
     def _save_splitter_state(self):
         """Persist column splitter positions to settings (mode-specific key)."""
         if hasattr(self, 'columns_splitter'):
@@ -4748,15 +4801,23 @@ function filterAliases(q) {{
             if not self.image_path and hasattr(self, 'config_image_file') and self.config_image_file:
                 self.image_path = self.config_image_file
 
-            # Use config-specified console path
+            # Use config-specified console path, falling back to the project's general folder_path
+            # (its "home" directory) when no console-specific path was set — otherwise a project
+            # with only folder_path set (no console_path) would open the console at wherever the
+            # app happens to be running from instead of the project's own folder.
             if hasattr(self, 'config_console_path') and self.config_console_path:
                 self.console_path = self.config_console_path
             else:
-                self.console_path = None
+                self.console_path = getattr(self, 'config_folder_path', None)
 
             # Use config-specified column2 default mode if set
             if hasattr(self, 'config_column2_default') and self.config_column2_default:
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "examples", "console", "folder", "time", "notes"):
+                # "examples" was merged into "help" (now a combined README + Examples tabbed
+                # page, accessed via the footer rather than the viewer tab row) — translate
+                # old configs that still have this saved rather than silently ignoring them.
+                if self.config_column2_default == "examples":
+                    self.config_column2_default = "help"
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -6848,6 +6909,16 @@ function filterAliases(q) {{
         all_columns = [self.COLUMN_1]
         self._launcher_search_refs = []
 
+        # Resolve the folder browser's starting path before either the launcher-column Quick
+        # File Browser Panel or the main Folder viewer consult it — the panel is built first
+        # (see _build_launcher_folder_panel's ordering note), and its own fallback used to
+        # default straight to "~" whenever folder_current_path had just been reset by
+        # switch_to_config(), ignoring config_folder_path entirely and then "sticking" before
+        # the main viewer's later init logic ever got a chance to apply the project's own
+        # folder_path.
+        if not getattr(self, 'folder_current_path', None):
+            self.folder_current_path = getattr(self, 'config_folder_path', None) or os.path.expanduser("~")
+
         for col_idx, column_categories in enumerate(all_columns):
             if col_idx == 0 and self.group_by_type and not self.edit_mode:
                 column_categories = self._build_grouped_categories()
@@ -7619,7 +7690,6 @@ function filterAliases(q) {{
                     ("webview",  "Web",      "Web viewer",         ["internet-web-browser", "web-browser", "globe", "applications-internet"]),
                     ("pdf",      "PDF",      "PDF viewer",         ["application-pdf", "evince", "document-viewer", "x-office-document"]),
                     ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
-                    ("examples", "Examples", "Handler examples",   ["help-contents", "help-browser", "accessories-text-editor"]),
                     ("console",  "Terminal", "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                     ("notes",    "Notes",    "Project notes",      ["text-editor", "accessories-text-editor"]),
                 ]
@@ -7719,11 +7789,14 @@ function filterAliases(q) {{
                 self.column2_stack = QWidget()
                 self.column2_stack_layout = QVBoxLayout(self.column2_stack)
                 self.column2_stack_layout.setContentsMargins(0, 0, 0, 0)
-                # Minimum height so the viewer (PDF/web/markdown/etc.) doesn't get squished
-                # short on projects with few launchers — the whole page (inside main_scroll)
-                # grows/scrolls to accommodate this rather than shrinking the viewer to match
-                # a short launcher column.
-                self.column2_stack.setMinimumHeight(900)
+                # Fixed (not minimum) height — see ViewerResizeHandle's docstring for why a
+                # minimum isn't enough: on a project with a tall launcher column, the surrounding
+                # layout stretches column2_stack past any floor anyway. A fixed height opts it out
+                # of that entirely, so it's exactly viewer_height regardless of the launcher
+                # column's height, with any extra space left blank below the resize handle
+                # instead. Stored per-machine (not per-project) since the comfortable value
+                # depends on monitor resolution, not the project.
+                self.column2_stack.setFixedHeight(self.settings.get("viewer_height", 1000))
 
                 # PDF viewer container
                 self.pdf_container = QWidget()
@@ -7822,7 +7895,10 @@ function filterAliases(q) {{
                     self._make_viewer_footer("Open in Gwenview", "Open image in Gwenview", self.open_image_in_external_viewer)
                 )
 
-                # Help viewer container
+                # Help viewer container — combines README + Launcher Examples as two HTML tabs
+                # in a single page (see _build_help_html). Lives outside the normal project-viewer
+                # tab row (accessed via the footer's "❓ Help" button instead) since it's reference
+                # material, not something tied to a specific project.
                 self.help_container = QWidget()
                 help_container_layout = QVBoxLayout(self.help_container)
                 help_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -7830,47 +7906,46 @@ function filterAliases(q) {{
                 # Create help toolbar
                 self.create_help_toolbar(help_container_layout)
 
-                # Create QTextBrowser for help content
-                self.help_browser = QTextBrowser()
-                self.help_browser.setOpenExternalLinks(True)
+                # QWebEngineView (not QTextBrowser) so the combined page's CSS-only tab
+                # switching (:checked ~ sibling selectors) actually works.
+                self.help_browser = QWebEngineView()
                 self.help_browser.setStyleSheet(f"""
-                    QTextBrowser {{
-                        background-color: {self.t('bg_help')};
-                        border: 2px solid {self.t('border')};
-                        border-radius: 5px;
-                        padding: 10px;
-                        color: {self.t('fg_primary')};
-                    }}
-                """)
-                help_container_layout.addWidget(self.help_browser)
-
-                help_editor = (self.settings.get("open_note_external") or "kate").capitalize()
-                help_container_layout.addWidget(
-                    self._make_viewer_footer(f"Open in {help_editor}", "Open README in editor", self.open_help_in_external_editor)
-                )
-
-                # Examples viewer container
-                self.examples_container = QWidget()
-                examples_container_layout = QVBoxLayout(self.examples_container)
-                examples_container_layout.setContentsMargins(0, 0, 0, 0)
-
-                # Create examples toolbar
-                self.create_examples_toolbar(examples_container_layout)
-
-                # Create QWebEngineView for examples content (full CSS support)
-                self.examples_browser = QWebEngineView()
-                self.examples_browser.setStyleSheet(f"""
                     QWebEngineView {{
                         border: 2px solid {self.t('border')};
                         border-radius: 5px;
                     }}
                 """)
-                examples_container_layout.addWidget(self.examples_browser, 1)  # stretch factor
+                help_container_layout.addWidget(self.help_browser, 1)  # stretch factor
 
-                examples_editor = (self.settings.get("open_note_external") or "kate").capitalize()
-                examples_container_layout.addWidget(
-                    self._make_viewer_footer(f"Open in {examples_editor}", "Open EXAMPLES.html in editor", self.open_examples_in_external_editor)
-                )
+                help_editor = (self.settings.get("open_note_external") or "kate").capitalize()
+                help_footer = QWidget()
+                help_footer.setStyleSheet(f"background-color: {self.t('bg_secondary')}; border-top: 1px solid {self.t('border')};")
+                help_footer_layout = QHBoxLayout(help_footer)
+                help_footer_layout.setContentsMargins(6, 4, 6, 4)
+                help_footer_layout.addStretch()
+                for label, tooltip, callback in (
+                    (f"Open README in {help_editor}", "Open README.md in editor", self.open_help_in_external_editor),
+                    (f"Open Examples in {help_editor}", "Open EXAMPLES.html in editor", self.open_examples_in_external_editor),
+                ):
+                    footer_btn = QPushButton(label)
+                    footer_btn.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {self.t('bg_button')};
+                            color: {self.t('fg_primary')};
+                            border: 1px solid {self.t('border')};
+                            border-radius: 4px;
+                            padding: 3px 10px;
+                            font-size: 11px;
+                        }}
+                        QPushButton:hover {{
+                            background-color: {self.t('bg_button_hover')};
+                            color: {self.t('fg_on_dark')};
+                        }}
+                    """)
+                    footer_btn.setToolTip(tooltip)
+                    footer_btn.clicked.connect(callback)
+                    help_footer_layout.addWidget(footer_btn)
+                help_container_layout.addWidget(help_footer)
 
                 # Console container (qtconsole, or a real terminal via ttyd — see
                 # resolve_console_backend/_ensure_ttyd_console)
@@ -8069,7 +8144,6 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.webview_container)
                 self.column2_stack_layout.addWidget(self.image_container)
                 self.column2_stack_layout.addWidget(self.help_container)
-                self.column2_stack_layout.addWidget(self.examples_container)
                 self.column2_stack_layout.addWidget(self.console_container)
                 self.column2_stack_layout.addWidget(self.folder_container)
                 self.column2_stack_layout.addWidget(self.time_container)
@@ -8080,7 +8154,6 @@ function filterAliases(q) {{
                 self.webview_container.hide()
                 self.image_container.hide()
                 self.help_container.hide()
-                self.examples_container.hide()
                 self.console_container.hide()
                 self.folder_container.hide()
                 self.time_container.hide()
@@ -8094,9 +8167,6 @@ function filterAliases(q) {{
                 elif self.column2_mode == "help":
                     self.help_container.show()
                     self.load_help_content()
-                elif self.column2_mode == "examples":
-                    self.examples_container.show()
-                    self.load_examples_content()
                 elif self.column2_mode == "console":
                     self.console_container.show()
                 elif self.column2_mode == "folder":
@@ -8109,6 +8179,31 @@ function filterAliases(q) {{
                     self.notes_viewer_container.show()
 
                 self.column2_layout.addWidget(self.column2_stack, 1)  # stretch factor to fill space
+
+                # Drag handle to manually resize the viewer's height — see the settings comment
+                # on column2_stack.setFixedHeight() above for why this is a per-machine setting.
+                viewer_resize_handle = ViewerResizeHandle(self.column2_stack, self._save_viewer_height)
+                viewer_resize_handle.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {self.t('bg_button')};
+                        color: {self.t('fg_secondary')};
+                        border-top: 1px solid {self.t('border')};
+                        border-bottom: 1px solid {self.t('border')};
+                    }}
+                    QLabel:hover {{
+                        background-color: {self.t('bg_button_hover')};
+                    }}
+                """)
+                self.column2_layout.addWidget(viewer_resize_handle)
+
+                # With column2_stack now Fixed-height (see above), nothing left in this layout
+                # can expand — and a Qt QBoxLayout with no expansive item centers its packed
+                # content within the allocated space rather than top-aligning it. On a project
+                # with a tall launcher column (so column2_widget is stretched tall by the
+                # splitter), that centered the tab row/viewer/handle in a sea of blank space
+                # instead of anchoring them to the top. A trailing stretch forces all the extra
+                # space to collect at the bottom instead.
+                self.column2_layout.addStretch()
 
                 # Load PDF if path is saved
                 if self.pdf_path:
@@ -8340,6 +8435,16 @@ function filterAliases(q) {{
             aliases_btn.setToolTip("Open Aliases project")
             aliases_btn.clicked.connect(self.open_aliases_project)
             footer_layout.addWidget(aliases_btn)
+
+        # Help button — README + Launcher Examples (see _build_help_html). Lives here rather
+        # than in the viewer tab row since it's app reference material, not a per-project
+        # viewer, and was feeling out of place next to Web/PDF/Image/Terminal.
+        help_btn = QPushButton("❓ Help")
+        help_btn.setMinimumHeight(30)
+        help_btn.setStyleSheet(footer_btn_style)
+        help_btn.setToolTip("README and launcher examples")
+        help_btn.clicked.connect(lambda: self.switch_to_viewer_mode("help"))
+        footer_layout.addWidget(help_btn)
 
         # New Project button
         new_project_btn = QPushButton("📄 New Project")
@@ -10101,21 +10206,21 @@ function filterAliases(q) {{
             self.status_label.setText(f"Error: {e}")
 
     def get_viewer_cycle_order(self):
-        """Get the viewer cycle order: default -> folder -> examples -> help -> remaining viewers"""
+        """Get the viewer cycle order: default -> folder -> remaining viewers.
+
+        Help is deliberately not part of this cycle — it's reference material accessed via the
+        footer's "❓ Help" button, not a per-project viewer, since combining it with Examples
+        into one page (see _build_help_html)."""
         default_viewer = getattr(self, 'config_column2_default', None) or "pdf"
-        # Build cycle: default first, then folder (if not default), then examples/help, then remaining viewers
+        # Build cycle: default first, then folder (if not default), then remaining viewers
         remaining = [m for m in ["pdf", "webview", "image", "console"] if m != default_viewer]
         cycle = [default_viewer]
         if default_viewer != "folder":
             cycle.append("folder")
-        if default_viewer != "examples":
-            cycle.append("examples")
-        if default_viewer != "help":
-            cycle.append("help")
         return cycle + remaining
 
     def toggle_column2_mode(self):
-        """Toggle between viewers: default -> examples -> help -> remaining viewers"""
+        """Toggle between viewers: default -> folder -> remaining viewers"""
         # Get dynamic cycle order based on default viewer
         cycle = self.get_viewer_cycle_order()
         current_idx = cycle.index(self.column2_mode) if self.column2_mode in cycle else -1
@@ -10132,7 +10237,6 @@ function filterAliases(q) {{
         self.webview_container.hide()
         self.image_container.hide()
         self.help_container.hide()
-        self.examples_container.hide()
         self.console_container.hide()
         self.folder_container.hide()
         self.time_container.hide()
@@ -10145,7 +10249,6 @@ function filterAliases(q) {{
             "webview": ("Web", "Web View", self.webview_container),
             "image": ("Image", "Image Viewer", self.image_container),
             "help": ("Help", "Help", self.help_container),
-            "examples": ("Examples", "Handler Examples", self.examples_container),
             "console": ("Console", "Console", self.console_container),
             "folder": ("Folder", "Folder Browser", self.folder_container),
             "time": ("Time", "Kimai Time Tracker", self.time_container),
@@ -10163,8 +10266,6 @@ function filterAliases(q) {{
         # Load content for viewers that need it
         if mode == "help":
             self.load_help_content()
-        elif mode == "examples":
-            self.load_examples_content()
         elif mode == "folder":
             self.populate_folder_browser(self.folder_current_path)
         elif mode == "time":
@@ -10616,70 +10717,24 @@ function filterAliases(q) {{
         parent_layout.addWidget(toolbar_widget)
 
     def open_help_in_external_editor(self):
-        """Open README.md in Kate"""
+        """Open README.md in the configured editor"""
         readme_path = os.path.join(self.script_dir, "README.md")
+        editor = self.settings.get("open_note_external") or "kate"
         if os.path.exists(readme_path):
-            subprocess.Popen(["kate", readme_path], start_new_session=True)
+            subprocess.Popen([editor, readme_path], start_new_session=True)
 
-    def create_examples_toolbar(self, parent_layout):
-        """Create a toolbar for the examples viewer"""
-        toolbar_widget = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar_widget)
-        toolbar_layout.setContentsMargins(0, 0, 0, 5)
-        toolbar_layout.setSpacing(5)
-
-        # Button style
-        btn_style = f"""
-            QPushButton {{
-                background-color: {self.t('bg_button')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 12px;
-                min-width: 28px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
-            }}
-            QPushButton:pressed {{
-                background-color: {self.t('bg_category_hover')};
-            }}
-        """
-
-        # Reload button
-        reload_btn = QPushButton("↻")
-        reload_btn.setStyleSheet(btn_style)
-        reload_btn.setToolTip("Reload examples content")
-        reload_btn.clicked.connect(self.load_examples_content)
-        toolbar_layout.addWidget(reload_btn)
-
-        toolbar_layout.addStretch()
-        parent_layout.addWidget(toolbar_widget)
-
-    def load_examples_content(self):
-        """Load and display EXAMPLES.html content with theme placeholders replaced"""
+    def _load_examples_html_fragment(self):
+        """Read EXAMPLES.html with theme placeholders substituted — used as the "Launcher
+        Examples" tab's iframe content in the combined Help page (_build_help_html)."""
         examples_path = os.path.join(self.script_dir, "EXAMPLES.html")
         if not os.path.exists(examples_path):
-            self.examples_browser.setHtml(f"<h1 style='color: {self.t('fg_help_h1')}'>Examples</h1><p style='color: {self.t('fg_primary')}'>EXAMPLES.html not found.</p>")
-            return
-
+            return f"<p style='color: {self.t('fg_primary')}'>EXAMPLES.html not found.</p>"
         try:
             with open(examples_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
-
-            # Replace theme placeholders with actual colors
-            # Format: {theme_key} -> actual color value
-            import re
-            def replace_placeholder(match):
-                key = match.group(1)
-                return self.t(key)
-
-            html_content = re.sub(r'\{(\w+)\}', replace_placeholder, html_content)
-            self.examples_browser.setHtml(html_content)
+            return re.sub(r'\{(\w+)\}', lambda m: self.t(m.group(1)), html_content)
         except Exception as e:
-            self.examples_browser.setHtml(f"<h1 style='color: {self.t('fg_help_h1')}'>Error</h1><p style='color: {self.t('fg_primary')}'>Could not load EXAMPLES.html: {e}</p>")
+            return f"<p style='color: {self.t('fg_primary')}'>Could not load EXAMPLES.html: {e}</p>"
 
     def open_examples_in_external_editor(self):
         """Open EXAMPLES.html in the configured editor"""
@@ -10741,6 +10796,33 @@ function filterAliases(q) {{
                 "Use 'External' button for full terminal features."
             )
         toolbar_layout.addWidget(self.console_path_label, 1)
+
+        # Alias quick-jump buttons — only meaningful for a real interactive shell (ttyd);
+        # qtconsole has no notion of "type this command into the running session". Capped so a
+        # project with many aliases doesn't crowd out the rest of the toolbar; order follows the
+        # project's own config (so reordering categories/items there controls which ones make
+        # the cut). Anything past the cap is still reachable via the "+N" overflow menu.
+        if self.resolve_console_backend() == "ttyd":
+            ALIAS_TOOLBAR_LIMIT = 10
+            project_aliases = self._get_current_project_aliases()
+            for alias_name, alias_command in project_aliases[:ALIAS_TOOLBAR_LIMIT]:
+                alias_btn = QPushButton(alias_name)
+                alias_btn.setStyleSheet(btn_style)
+                alias_btn.setToolTip(f"Run in terminal: {alias_command}")
+                alias_btn.clicked.connect(
+                    lambda checked=False, cmd=alias_command: self._run_alias_in_ttyd_console(cmd)
+                )
+                toolbar_layout.addWidget(alias_btn)
+
+            overflow_aliases = project_aliases[ALIAS_TOOLBAR_LIMIT:]
+            if overflow_aliases:
+                overflow_btn = QPushButton(f"+{len(overflow_aliases)}")
+                overflow_btn.setStyleSheet(btn_style)
+                overflow_btn.setToolTip(f"{len(overflow_aliases)} more aliases")
+                overflow_btn.clicked.connect(
+                    lambda checked=False: self._show_alias_overflow_menu(overflow_aliases, overflow_btn)
+                )
+                toolbar_layout.addWidget(overflow_btn)
 
         # Set as default button
         default_btn = QPushButton("📌")
@@ -10838,6 +10920,62 @@ function filterAliases(q) {{
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    def _get_current_project_aliases(self):
+        """Return [(name, command), ...] for every alias item in the current project's own
+        launcher categories (self.COLUMN_1) — not the separate cross-project alias file/project.
+        Parsed the same way open_in_app's alias branch does: path = "name command_or_directory"."""
+        aliases = []
+        for category_dict in self.COLUMN_1:
+            for _category_name, items in category_dict.items():
+                for item in items:
+                    if len(item) >= 3 and item[2] == "alias":
+                        name, _, rest = item[1].partition(' ')
+                        rest = rest.strip()
+                        if rest:
+                            aliases.append((name, rest))
+        return aliases
+
+    def _run_alias_in_ttyd_console(self, command):
+        """Run an alias's command inside the live ttyd terminal session (paste + submit).
+
+        window.term.paste() alone does not execute anything — xterm.js always wraps pasted
+        text in bracketed-paste escape sequences, and bash's readline treats a bracketed paste
+        as literal text to insert rather than auto-submitting it (verified empirically). There
+        is no public xterm.js API to simulate pressing Enter, so this reaches into the private
+        `_core.coreService` API to submit the line after pasting — wrapped in try/catch so a
+        future ttyd/xterm.js bump that changes this internal shape degrades to "text pasted but
+        not submitted" rather than a JS error.
+        """
+        if self.console_ttyd_proc is None or self.console_ttyd_proc.poll() is not None:
+            self._ensure_ttyd_console(self.console_path or "~")
+        self.console_ttyd_webview.page().runJavaScript(
+            f"window.term && window.term.paste({json.dumps(command)});"
+            f"try {{ window.term._core.coreService.triggerDataEvent('\\r', true); }} catch(e) {{}}"
+        )
+
+    def _show_alias_overflow_menu(self, aliases, anchor_btn):
+        """Show the aliases past the console toolbar's cap (see create_console_toolbar) in a
+        popup menu, so they're still reachable rather than just silently cut off."""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+            }}
+            QMenu::item:selected {{
+                background-color: {self.t('bg_config_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        for alias_name, alias_command in aliases:
+            action = menu.addAction(alias_name)
+            action.setToolTip(alias_command)
+            action.triggered.connect(
+                lambda checked=False, cmd=alias_command: self._run_alias_in_ttyd_console(cmd)
+            )
+        menu.exec(anchor_btn.mapToGlobal(anchor_btn.rect().bottomLeft()))
+
     def console_open_external(self):
         """Open external terminal at the current console path"""
         path = getattr(self, 'console_path', None) or os.path.expanduser("~")
@@ -10887,6 +11025,16 @@ function filterAliases(q) {{
         home_btn.setToolTip("Go to home directory")
         home_btn.clicked.connect(self.folder_go_home)
         toolbar_layout.addWidget(home_btn)
+
+        # Project default folder button — only shown when the project actually has one
+        # configured and it differs from home (otherwise it would be a redundant duplicate
+        # of the Home button above).
+        if self._project_folder_default_differs_from_home():
+            project_home_btn = QPushButton("⌂⌂")
+            project_home_btn.setStyleSheet(btn_style)
+            project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
+            project_home_btn.clicked.connect(self.folder_go_project_default)
+            toolbar_layout.addWidget(project_home_btn)
 
         # Refresh button
         refresh_btn = QPushButton("↻")
@@ -10978,6 +11126,13 @@ function filterAliases(q) {{
         home_btn.setToolTip("Go to home directory")
         home_btn.clicked.connect(self.folder_go_home)
         toolbar_layout.addWidget(home_btn)
+
+        if self._project_folder_default_differs_from_home():
+            project_home_btn = QPushButton("⌂⌂")
+            project_home_btn.setStyleSheet(mini_btn_style)
+            project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
+            project_home_btn.clicked.connect(self.folder_go_project_default)
+            toolbar_layout.addWidget(project_home_btn)
 
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(mini_btn_style)
@@ -11207,6 +11362,7 @@ function filterAliases(q) {{
         Browser Panel is built earlier in build_main_content() than they are, and can now call
         this on the very first-ever build if it starts pre-expanded (persisted per project).
         """
+        path = os.path.expanduser(path)
         self.folder_current_path = path
 
         # Update path label (shorten home dir to ~)
@@ -11309,6 +11465,20 @@ function filterAliases(q) {{
     def folder_go_home(self):
         """Navigate to home directory"""
         self.populate_folder_browser(os.path.expanduser("~"))
+
+    def _project_folder_default_differs_from_home(self):
+        """True if this project has its own folder_path configured and it isn't just the
+        user's home directory — used to decide whether the "⌂⌂ project folder" button is
+        worth showing at all (no point duplicating the plain Home button)."""
+        folder_path = getattr(self, 'config_folder_path', None)
+        if not folder_path:
+            return False
+        return os.path.expanduser(folder_path) != os.path.expanduser("~")
+
+    def folder_go_project_default(self):
+        """Navigate to this project's own configured folder_path."""
+        if self.config_folder_path:
+            self.populate_folder_browser(self.config_folder_path)
 
     def folder_refresh(self):
         """Refresh current directory listing"""
@@ -12170,19 +12340,74 @@ Project created: {date_str}
             print(f"Warning: Could not create notes file: {e}")
 
     def load_help_content(self):
-        """Load and display README.md content"""
-        readme_path = os.path.join(self.script_dir, "README.md")
-        if not os.path.exists(readme_path):
-            self.help_browser.setHtml(f"<h1 style='color: {self.t('fg_help_h1')}'>Help</h1><p style='color: {self.t('fg_primary')}'>README.md not found.</p>")
-            return
+        """Load and display the combined Help page (README + Launcher Examples tabs)"""
+        self.help_browser.setHtml(self._build_help_html())
 
+    def _build_help_html(self):
+        """Build the combined Help viewer page: a README tab and a "Launcher Examples" tab,
+        switched with a pure-CSS (no JavaScript) radio-button tab pattern.
+
+        QWebEngineView does support JavaScript — it's used elsewhere in this app (Muya editor,
+        the ttyd terminal, the Aliases page's search box) — but a static two-tab reference page
+        has no real need for it, so this avoids the dependency entirely. The Examples tab is
+        embedded via <iframe srcdoc="..."> rather than merged into one shared stylesheet, since
+        EXAMPLES.html is already a complete, self-contained document with its own <style> block;
+        an iframe keeps its CSS isolated instead of risking class-name collisions with the
+        README's own styling.
+        """
+        readme_path = os.path.join(self.script_dir, "README.md")
         try:
             with open(readme_path, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-            html_content = self.markdown_to_html(markdown_content)
-            self.help_browser.setHtml(html_content)
+                readme_html = self.markdown_to_html(f.read())
         except Exception as e:
-            self.help_browser.setHtml(f"<h1 style='color: {self.t('fg_help_h1')}'>Error</h1><p style='color: {self.t('fg_primary')}'>Could not load README.md: {e}</p>")
+            readme_html = f"<p style='color: {self.t('fg_primary')}'>Could not load README.md: {e}</p>"
+
+        examples_html = self._load_examples_html_fragment()
+        examples_srcdoc = examples_html.replace('&', '&amp;').replace('"', '&quot;')
+
+        bg_help = self.t('bg_help')
+        fg_primary = self.t('fg_primary')
+        border = self.t('border')
+        bg_button = self.t('bg_button')
+        bg_button_hover = self.t('bg_button_hover')
+        fg_on_dark = self.t('fg_on_dark')
+        bg_category = self.t('bg_category')
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
+    html, body {{ height: 100%; margin: 0; }}
+    body {{
+        display: flex; flex-direction: column;
+        font-family: sans-serif; background: {bg_help}; color: {fg_primary};
+    }}
+    input[type=radio] {{ display: none; }}
+    .tabbar {{ display: flex; flex: 0 0 auto; border-bottom: 2px solid {border}; padding: 10px 10px 0; }}
+    .tabbar label {{
+        padding: 8px 16px; cursor: pointer; font-weight: bold; font-size: 12pt;
+        background: {bg_button}; color: {fg_primary};
+        border: 1px solid {border}; border-bottom: none;
+        margin-right: 4px; border-radius: 5px 5px 0 0;
+    }}
+    .tabbar label:hover {{ background: {bg_button_hover}; color: {fg_on_dark}; }}
+    #tab-readme:checked ~ .tabbar label[for="tab-readme"],
+    #tab-examples:checked ~ .tabbar label[for="tab-examples"] {{
+        background: {bg_category}; color: {fg_on_dark};
+    }}
+    .tabpanel {{ display: none; flex: 1 1 auto; overflow: auto; padding: 15px; box-sizing: border-box; }}
+    .tabpanel iframe {{ width: 100%; height: 100%; border: none; }}
+    #tab-readme:checked ~ #panel-readme {{ display: block; }}
+    #tab-examples:checked ~ #panel-examples {{ display: block; }}
+</style></head>
+<body>
+    <input type="radio" name="helptabs" id="tab-readme" checked>
+    <input type="radio" name="helptabs" id="tab-examples">
+    <div class="tabbar">
+        <label for="tab-readme">README</label>
+        <label for="tab-examples">Launcher Examples</label>
+    </div>
+    <div class="tabpanel" id="panel-readme">{readme_html}</div>
+    <div class="tabpanel" id="panel-examples"><iframe srcdoc="{examples_srcdoc}"></iframe></div>
+</body></html>"""
 
     def markdown_to_html(self, text):
         """Convert markdown to HTML with theme-aware colors"""
