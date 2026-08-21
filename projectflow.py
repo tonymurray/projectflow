@@ -9,6 +9,7 @@ import sys
 import subprocess
 import os
 import shutil
+import time
 import shlex
 import json
 import argparse
@@ -719,6 +720,15 @@ class ProjectFlowApp(QMainWindow):
             lambda: self._muya_autosave_tick(self._notes_muya_session)
         )
 
+        # Third persistent webview, dedicated to the optional ttyd-backed real-terminal Console
+        # (see resolve_console_backend/_ensure_ttyd_console). Same "never recreated on refresh,
+        # detach-then-readd" pattern as notes_webview above — it just loads a plain http:// URL
+        # rather than hosting a Muya session, so no MuyaSession wrapper is needed.
+        self.console_ttyd_webview = QWebEngineView()
+        self.console_ttyd_proc = None
+        self._console_ttyd_cwd = None
+        self._console_ttyd_port = None
+
         # Debounce timer for alias file writes — prevents a write per keystroke
         # when the user types in the inline path/app fields.
         self._pending_alias_write = None
@@ -797,6 +807,17 @@ class ProjectFlowApp(QMainWindow):
         reflow_fn = getattr(config_bar_widget, '_reflow_fn', None) if config_bar_widget else None
         if reflow_fn:
             reflow_fn(config_bar_widget.width())
+
+    def closeEvent(self, event):
+        """Handle window close — terminate the ttyd console subprocess if one is running.
+
+        Unlike every other subprocess this app spawns (external terminal/editor/file-manager
+        launches, always started with start_new_session=True so they outlive the app), a ttyd
+        console is an internal implementation detail: it must die with the app, not survive it,
+        or every session leaves an orphaned process + open port behind.
+        """
+        self._stop_ttyd_console()
+        super().closeEvent(event)
 
     def load_settings(self):
         """Load user settings from JSON file"""
@@ -1425,6 +1446,24 @@ class ProjectFlowApp(QMainWindow):
             f"File manager for directorydev handler. Leave empty to auto-detect (currently: {self.detect_default_file_manager()})"
         )
         layout.addRow(fm_label, self._settings_file_manager)
+
+        # Console Backend
+        console_backend_label = QLabel("Console Backend:")
+        console_backend_label.setStyleSheet(label_style)
+        self._settings_console_backend = QComboBox()
+        self._settings_console_backend.addItem("Jupyter qtconsole (default)", "qtconsole")
+        self._settings_console_backend.addItem("Real terminal via ttyd", "ttyd")
+        self._settings_console_backend.addItem("Auto (ttyd if installed, else qtconsole)", "auto")
+        current_backend = self.settings.get("console_backend", "qtconsole")
+        idx = self._settings_console_backend.findData(current_backend)
+        self._settings_console_backend.setCurrentIndex(idx if idx >= 0 else 0)
+        self._settings_console_backend.setStyleSheet(input_style)
+        self._settings_console_backend.setToolTip(
+            "qtconsole runs Python/IPython in-process — no interactive programs (nano, vim, htop).\n"
+            "ttyd embeds a real terminal (requires the 'ttyd' binary on PATH) with full PTY support,\n"
+            "bound to 127.0.0.1 only."
+        )
+        layout.addRow(console_backend_label, self._settings_console_backend)
 
         # File Manager Tabs
         fm_tabs_label = QLabel("File Manager Tabs:")
@@ -3175,6 +3214,12 @@ class ProjectFlowApp(QMainWindow):
                 self.settings["file_manager"] = file_manager
             elif "file_manager" in self.settings:
                 del self.settings["file_manager"]  # Remove to enable auto-detection
+
+            console_backend = self._settings_console_backend.currentData()
+            if console_backend and console_backend != "qtconsole":
+                self.settings["console_backend"] = console_backend
+            elif "console_backend" in self.settings:
+                del self.settings["console_backend"]  # qtconsole is the implicit default
 
             notes_folder = self._settings_notes_folder.text().strip()
             if notes_folder:
@@ -4930,6 +4975,18 @@ function filterAliases(q) {{
             terminal = self.detect_default_terminal()
         return terminal
 
+    def resolve_console_backend(self):
+        """Resolve the "console_backend" setting to an actual backend to use: "qtconsole"
+        (default — no behavior change for existing users) or "ttyd" (real terminal via a
+        loopback-only ttyd process embedded in a QWebEngineView). "auto" uses ttyd only if
+        the binary is found on PATH, else falls back to qtconsole."""
+        backend = self.settings.get("console_backend", "qtconsole")
+        if backend == "auto":
+            return "ttyd" if shutil.which("ttyd") else "qtconsole"
+        if backend == "ttyd" and not shutil.which("ttyd"):
+            return "qtconsole"
+        return backend
+
     def _get_terminal_command(self, shell_cmd, hold=False, interactive=False):
         """Build terminal command based on configured terminal emulator"""
         terminal = self.get_configured_terminal()
@@ -5260,6 +5317,8 @@ function filterAliases(q) {{
             self.webview.setParent(self)
         if self.notes_webview is not None:
             self.notes_webview.setParent(self)
+        if self.console_ttyd_webview is not None:
+            self.console_ttyd_webview.setParent(self)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -7561,7 +7620,7 @@ function filterAliases(q) {{
                     ("pdf",      "PDF",      "PDF viewer",         ["application-pdf", "evince", "document-viewer", "x-office-document"]),
                     ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
                     ("examples", "Examples", "Handler examples",   ["help-contents", "help-browser", "accessories-text-editor"]),
-                    ("console",  "",         "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
+                    ("console",  "Terminal", "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
                     ("notes",    "Notes",    "Project notes",      ["text-editor", "accessories-text-editor"]),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
@@ -7600,7 +7659,8 @@ function filterAliases(q) {{
                     }}
                 """
 
-                # Console tab — icon-only, always has a subtle border
+                # Console tab — always has a subtle border, to stand out slightly (built-in
+                # real-terminal access rather than a document viewer)
                 console_tab_btn_style = f"""
                     QPushButton {{
                         background-color: {self.t('bg_green_1')};
@@ -7663,7 +7723,7 @@ function filterAliases(q) {{
                 # short on projects with few launchers — the whole page (inside main_scroll)
                 # grows/scrolls to accommodate this rather than shrinking the viewer to match
                 # a short launcher column.
-                self.column2_stack.setMinimumHeight(600)
+                self.column2_stack.setMinimumHeight(900)
 
                 # PDF viewer container
                 self.pdf_container = QWidget()
@@ -7812,7 +7872,8 @@ function filterAliases(q) {{
                     self._make_viewer_footer(f"Open in {examples_editor}", "Open EXAMPLES.html in editor", self.open_examples_in_external_editor)
                 )
 
-                # Console container (qtconsole if available)
+                # Console container (qtconsole, or a real terminal via ttyd — see
+                # resolve_console_backend/_ensure_ttyd_console)
                 self.console_container = QWidget()
                 console_container_layout = QVBoxLayout(self.console_container)
                 console_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -7821,71 +7882,79 @@ function filterAliases(q) {{
                 # Create console toolbar
                 self.create_console_toolbar(console_container_layout)
 
-                try:
-                    from qtconsole.rich_jupyter_widget import RichJupyterWidget
-                    from qtconsole.inprocess import QtInProcessKernelManager
-
-                    # Create kernel manager
-                    self.kernel_manager = QtInProcessKernelManager()
-                    self.kernel_manager.start_kernel()
-                    self.kernel_client = self.kernel_manager.client()
-                    self.kernel_client.start_channels()
-
-                    # Create console widget with dark theme
-                    self.console_widget = RichJupyterWidget()
-                    self.console_widget.kernel_manager = self.kernel_manager
-                    self.console_widget.kernel_client = self.kernel_client
-                    # Set dark color scheme
-                    self.console_widget.syntax_style = 'monokai'
-                    self.console_widget.set_default_style('linux')
-                    self.console_widget.style_sheet = """
-                        .in-prompt { color: #6aaf50; }
-                        .in-prompt-number { color: #6aaf50; font-weight: bold; }
-                        .out-prompt { color: #bf5656; }
-                        .out-prompt-number { color: #bf5656; font-weight: bold; }
-                    """
-                    # Set LS_COLORS for better directory colors in shell commands
-                    self.console_widget.execute('%colors Linux', hidden=True)
-                    self.console_widget.execute(
-                        'import os; os.environ["LS_COLORS"] = "di=1;38;2;61;174;233"',  # #3DAEE9
-                        hidden=True
-                    )
-                    # Navigate to default console path if set
+                if self.resolve_console_backend() == "ttyd":
                     if hasattr(self, 'console_path') and self.console_path:
-                        expanded = os.path.expanduser(self.console_path)
-                        self.console_widget.execute(f'import os; os.chdir("{expanded}")', hidden=True)
-                        self.console_path_label.setText(expanded)
-                    self.console_widget.setStyleSheet("""
-                        QPlainTextEdit, QTextEdit {
-                            background-color: #1e1e1e;
-                            color: #d4d4d4;
-                            selection-background-color: #264f78;
-                            font-family: monospace;
-                            font-size: 11pt;
-                        }
-                        QWidget {
-                            background-color: #1e1e1e;
-                            border: 2px solid #3c3c3c;
-                            border-radius: 5px;
-                        }
-                    """)
-                    console_container_layout.addWidget(self.console_widget)
+                        self.console_path_label.setText(os.path.expanduser(self.console_path))
+                    console_container_layout.addWidget(self.console_ttyd_webview, 1)  # stretch to fill space
+                    self._ensure_ttyd_console(getattr(self, 'console_path', None) or "~")
                     self.console_available = True
-                except ImportError:
-                    # qtconsole not available - show message
-                    console_label = QLabel("Console not available.\n\nInstall qtconsole:\npip install qtconsole ipykernel")
-                    console_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    console_label.setStyleSheet("""
-                        QLabel {
-                            background-color: #2d2d2d;
-                            color: #888;
-                            font-size: 14px;
-                            padding: 20px;
-                            border: 2px solid #3c3c3c;
-                            border-radius: 5px;
-                        }
-                    """)
-                    console_container_layout.addWidget(console_label)
+                else:
+                    self._stop_ttyd_console()  # backend switched away from ttyd — don't leak it
+                    try:
+                        from qtconsole.rich_jupyter_widget import RichJupyterWidget
+                        from qtconsole.inprocess import QtInProcessKernelManager
+
+                        # Create kernel manager
+                        self.kernel_manager = QtInProcessKernelManager()
+                        self.kernel_manager.start_kernel()
+                        self.kernel_client = self.kernel_manager.client()
+                        self.kernel_client.start_channels()
+
+                        # Create console widget with dark theme
+                        self.console_widget = RichJupyterWidget()
+                        self.console_widget.kernel_manager = self.kernel_manager
+                        self.console_widget.kernel_client = self.kernel_client
+                        # Set dark color scheme
+                        self.console_widget.syntax_style = 'monokai'
+                        self.console_widget.set_default_style('linux')
+                        self.console_widget.style_sheet = """
+                            .in-prompt { color: #6aaf50; }
+                            .in-prompt-number { color: #6aaf50; font-weight: bold; }
+                            .out-prompt { color: #bf5656; }
+                            .out-prompt-number { color: #bf5656; font-weight: bold; }
+                        """
+                        # Set LS_COLORS for better directory colors in shell commands
+                        self.console_widget.execute('%colors Linux', hidden=True)
+                        self.console_widget.execute(
+                            'import os; os.environ["LS_COLORS"] = "di=1;38;2;61;174;233"',  # #3DAEE9
+                            hidden=True
+                        )
+                        # Navigate to default console path if set
+                        if hasattr(self, 'console_path') and self.console_path:
+                            expanded = os.path.expanduser(self.console_path)
+                            self.console_widget.execute(f'import os; os.chdir("{expanded}")', hidden=True)
+                            self.console_path_label.setText(expanded)
+                        self.console_widget.setStyleSheet("""
+                            QPlainTextEdit, QTextEdit {
+                                background-color: #1e1e1e;
+                                color: #d4d4d4;
+                                selection-background-color: #264f78;
+                                font-family: monospace;
+                                font-size: 11pt;
+                            }
+                            QWidget {
+                                background-color: #1e1e1e;
+                                border: 2px solid #3c3c3c;
+                                border-radius: 5px;
+                            }
+                        """)
+                        console_container_layout.addWidget(self.console_widget)
+                        self.console_available = True
+                    except ImportError:
+                        # qtconsole not available - show message
+                        console_label = QLabel("Console not available.\n\nInstall qtconsole:\npip install qtconsole ipykernel")
+                        console_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        console_label.setStyleSheet("""
+                            QLabel {
+                                background-color: #2d2d2d;
+                                color: #888;
+                                font-size: 14px;
+                                padding: 20px;
+                                border: 2px solid #3c3c3c;
+                                border-radius: 5px;
+                            }
+                        """)
+                        console_container_layout.addWidget(console_label)
 
                 terminal_name = os.path.basename(self.get_configured_terminal()).capitalize()
                 console_container_layout.addWidget(
@@ -10661,11 +10730,16 @@ function filterAliases(q) {{
         # Path label with limitation hint
         self.console_path_label = QLabel("~")
         self.console_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
-        self.console_path_label.setToolTip(
-            "Python/IPython console - use !command for shell commands.\n"
-            "Limitations: No interactive programs (nano, vim, htop).\n"
-            "Use 'External' button for full terminal features."
-        )
+        if self.resolve_console_backend() == "ttyd":
+            self.console_path_label.setToolTip(
+                "Real terminal (ttyd) - a full interactive shell, including nano/vim/htop."
+            )
+        else:
+            self.console_path_label.setToolTip(
+                "Python/IPython console - use !command for shell commands.\n"
+                "Limitations: No interactive programs (nano, vim, htop).\n"
+                "Use 'External' button for full terminal features."
+            )
         toolbar_layout.addWidget(self.console_path_label, 1)
 
         # Set as default button
@@ -10687,9 +10761,75 @@ function filterAliases(q) {{
         if folder_path:
             self.console_path = folder_path
             self.console_path_label.setText(folder_path)
-            if self.console_available and hasattr(self, 'console_widget'):
+            if self.resolve_console_backend() == "ttyd":
+                self._ensure_ttyd_console(folder_path)
+            elif self.console_available and hasattr(self, 'console_widget'):
                 self.console_widget.execute(f'import os; os.chdir("{folder_path}")', hidden=True)
                 self.console_widget.execute('!pwd')
+
+    def _ensure_ttyd_console(self, cwd):
+        """Spawn (or reuse) a ttyd process bound to 127.0.0.1 serving a real shell rooted at
+        cwd, and load it into self.console_ttyd_webview.
+
+        Deliberately NOT recreated on every build_main_content() refresh — unlike the qtconsole
+        block above, which recreates its in-process kernel on every rebuild (harmless there,
+        since it holds no OS-level resource). ttyd is a real subprocess bound to a real port;
+        naively recreating it every refresh would leak a process + an open port every time the
+        UI rebuilds (every edit, every Group-by-Type toggle, etc.). Guarded by cwd + liveness
+        instead, the same way _notes_loaded_for gates redundant Muya reloads.
+        """
+        cwd = os.path.expanduser(cwd)
+        if (self.console_ttyd_proc is not None
+                and self.console_ttyd_proc.poll() is None
+                and self._console_ttyd_cwd == cwd):
+            return  # already running for this directory — reuse it
+
+        self._stop_ttyd_console()
+
+        shell = os.environ.get("SHELL", "bash")
+        try:
+            proc = subprocess.Popen(
+                ["ttyd", "-i", "127.0.0.1", "-p", "0", "-W", "-w", cwd, shell],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                start_new_session=False,  # must die with the app, not survive it
+            )
+        except FileNotFoundError:
+            return  # ttyd not on PATH — resolve_console_backend() should have already avoided this
+
+        port = None
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            match = re.search(r"Listening on port:\s*(\d+)", line)
+            if match:
+                port = int(match.group(1))
+                break
+
+        if port is None:
+            proc.terminate()
+            return
+
+        self.console_ttyd_proc = proc
+        self._console_ttyd_cwd = cwd
+        self._console_ttyd_port = port
+        self.console_ttyd_webview.setUrl(QUrl(f"http://127.0.0.1:{port}/"))
+
+    def _stop_ttyd_console(self):
+        """Terminate the current ttyd subprocess, if any."""
+        proc = self.console_ttyd_proc
+        if proc is None:
+            return
+        self.console_ttyd_proc = None
+        self._console_ttyd_cwd = None
+        self._console_ttyd_port = None
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
     def console_open_external(self):
         """Open external terminal at the current console path"""

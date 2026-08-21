@@ -241,6 +241,7 @@ User preferences are stored in `.projectflow_settings.json`:
 | `open_note_external` | External markdown editor (e.g., `"zettlr"`) for edit button |
 | `joplin_token` | Joplin API token for sync button |
 | `enable_baloo_tags` | Enable KDE Baloo tag integration (default: `false`) |
+| `console_backend` | Embedded Console backend: `"qtconsole"` (default), `"ttyd"` (real terminal, requires the optional `ttyd` binary on PATH), or `"auto"` |
 
 ## Notes and Archive
 

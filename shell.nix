@@ -10,5 +10,6 @@ pkgs.mkShell {
       ipykernel
     ]))
     libxcb-cursor
+    ttyd  # optional: real-terminal Console backend (see console_backend setting)
   ];
 }
