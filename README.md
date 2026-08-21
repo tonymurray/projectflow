@@ -243,6 +243,8 @@ User preferences are stored in `.projectflow_settings.json`:
 | `enable_baloo_tags` | Enable KDE Baloo tag integration (default: `false`) |
 | `console_backend` | Embedded Console backend: `"qtconsole"` (default), `"ttyd"` (real terminal, requires the optional `ttyd` binary on PATH), or `"auto"` |
 
+**A note on the `ttyd` console backend:** it works by running a small local web server that the built-in viewer connects to over a WebSocket, bound only to `127.0.0.1` (`localhost`) — it is never reachable over the network. Unauthenticated access from other websites is blocked (`ttyd`'s `--check-origin` option), so a page open in your browser can't connect to it. It grants no more access than you already have via any other terminal on the same machine.
+
 ## Notes and Archive
 
 Notes are stored as markdown files in the configured `notes_folder`, edited live in the same Muya WYSIWYG editor used for standalone `.md` files, with a Typora-style "paper on page" look:

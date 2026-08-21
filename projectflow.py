@@ -10777,6 +10777,13 @@ function filterAliases(q) {{
         naively recreating it every refresh would leak a process + an open port every time the
         UI rebuilds (every edit, every Group-by-Type toggle, etc.). Guarded by cwd + liveness
         instead, the same way _notes_loaded_for gates redundant Muya reloads.
+
+        `-O`/`--check-origin` matters even though this only ever binds to 127.0.0.1: WebSocket
+        connections aren't subject to the same-origin policy the way fetch/XHR are, so without
+        it any JavaScript running in any browser tab on the machine could open a WebSocket to
+        this port directly and get a shell — a malicious-webpage attack class localhost binding
+        alone doesn't prevent. `-O` makes ttyd reject connections whose Origin header doesn't
+        match, closing that off.
         """
         cwd = os.path.expanduser(cwd)
         if (self.console_ttyd_proc is not None
@@ -10789,7 +10796,7 @@ function filterAliases(q) {{
         shell = os.environ.get("SHELL", "bash")
         try:
             proc = subprocess.Popen(
-                ["ttyd", "-i", "127.0.0.1", "-p", "0", "-W", "-w", cwd, shell],
+                ["ttyd", "-i", "127.0.0.1", "-p", "0", "-W", "-O", "-w", cwd, shell],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 start_new_session=False,  # must die with the app, not survive it
             )

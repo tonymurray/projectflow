@@ -14,6 +14,9 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 ### Fixed
 - A `QWebEngineView` added to a `QVBoxLayout` without an explicit stretch factor only claims its own size hint rather than filling available space — on any project with a long enough launcher list to make the page taller than the viewport, this left the terminal a small box floating in the middle of the viewer column with blank space above and below. Fixed by adding the stretch factor (`addWidget(webview, 1)`), matching the fix the main web viewer already had for the same underlying issue.
 
+### Security
+- The `ttyd` console backend now passes `-O`/`--check-origin`. Binding to `127.0.0.1` alone doesn't stop this: WebSocket connections aren't subject to the same-origin policy the way `fetch`/XHR are, so without this flag any JavaScript running in any browser tab on the machine could open a WebSocket straight to the port and get a shell, regardless of which site served that page — the same attack class seen against other unauthenticated localhost dev servers. `-O` rejects connections whose `Origin` header doesn't match. Documented in the README alongside the `console_backend` setting.
+
 ## 2026-08-20
 
 ### Added
