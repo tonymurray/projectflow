@@ -748,6 +748,11 @@ class ProjectFlowApp(QMainWindow):
         # Folder browser view mode: "tree" (details) or "icons" (Dolphin-style grid) — per-machine preference
         self.folder_view_mode = self.settings.get("folder_view_mode", "tree")
 
+        # Folder browser filter text (Dolphin-style filter bar) — session-only, shared across
+        # every folder-browsing surface (main viewer + launcher panel) since they always show
+        # the same self.folder_current_path in sync.
+        self.folder_filter_text = ""
+
         # Quick file-browser panel in the Focus-layout launcher column — session-only, starts
         # collapsed; reset to collapsed on project switch (see load_config's is_project_switch).
         self.launcher_folder_panel_expanded = False
@@ -5185,7 +5190,8 @@ function filterAliases(q) {{
                     }
                 ]
             ],
-            "column2_default": "help"
+            "column2_default": "help",
+            "layout_mode": "focus"
         }
 
         with open(config_file, 'w') as f:
@@ -6808,6 +6814,7 @@ function filterAliases(q) {{
                 self.launcher_folder_icon_view = None
                 self.launcher_folder_view_stack = None
                 self.launcher_folder_view_toggle_btn = None
+                self.launcher_folder_filter_input = None
 
             # Create a vertical layout for this entire column
             column_layout = QVBoxLayout()
@@ -7964,6 +7971,8 @@ function filterAliases(q) {{
                 self.folder_view_stack.addWidget(self.folder_icon_view)
                 self.folder_view_stack.setCurrentIndex(1 if self.folder_view_mode == "icons" else 0)
                 folder_container_layout.addWidget(self.folder_view_stack)
+
+                self.folder_filter_input = self._build_folder_filter_bar(folder_container_layout)
 
                 fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
                 folder_container_layout.addWidget(
@@ -10918,6 +10927,13 @@ function filterAliases(q) {{
         self.launcher_folder_view_stack.setCurrentIndex(1 if self.folder_view_mode == "icons" else 0)
         column_layout.addWidget(self.launcher_folder_view_stack, 1)
 
+        self.launcher_folder_filter_input = self._build_folder_filter_bar(column_layout)
+
+        fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
+        column_layout.addWidget(
+            self._make_viewer_footer(f"Open in {fm_name}", "Open current folder in file manager", self.folder_open_external)
+        )
+
         # populate_folder_browser is otherwise only called when the Folder viewer tab is active
         # (column2_mode == "folder") — this panel must show content regardless of the active tab.
         start_path = getattr(self, 'folder_current_path', None) or os.path.expanduser("~")
@@ -11058,7 +11074,16 @@ function filterAliases(q) {{
         if launcher_path_label is not None:
             launcher_path_label.setText(display_path)
 
-        entries, error = self._scan_folder_entries(path)
+        self._folder_raw_entries, self._folder_scan_error = self._scan_folder_entries(path)
+        self._render_folder_views_from_cache()
+
+    def _render_folder_views_from_cache(self):
+        """Render self._folder_raw_entries (filtered by self.folder_filter_text, a Dolphin-style
+        filter bar) into whichever folder-browsing target widgets currently exist. Shared by
+        populate_folder_browser() and the filter bar's textChanged handler so live filtering
+        doesn't need to re-scan disk on every keystroke."""
+        entries = self._folder_raw_entries
+        error = self._folder_scan_error
         main_tree = getattr(self, 'folder_browser', None)
         main_icons = getattr(self, 'folder_icon_view', None)
         launcher_tree = getattr(self, 'launcher_folder_browser', None)
@@ -11078,6 +11103,9 @@ function filterAliases(q) {{
                 launcher_icons.addItem(QListWidgetItem(error))
             return
 
+        filter_text = (self.folder_filter_text or "").strip().lower()
+        entries = [e for e in entries if filter_text in e['display_name'].lower()] if filter_text else entries
+
         if main_tree is not None:
             self._render_folder_tree(entries)
         if main_icons is not None:
@@ -11086,6 +11114,44 @@ function filterAliases(q) {{
             self._render_folder_tree(entries, target=launcher_tree)
         if launcher_icons is not None:
             self._render_folder_icons(entries, target=launcher_icons)
+
+    def _build_folder_filter_bar(self, parent_layout):
+        """Build a Dolphin-style filter bar: a text box that live-filters the current folder's
+        entries by substring match against the display name. Returns the QLineEdit — callers
+        store their own ref since the main viewer and launcher panel each need their own widget
+        instance, kept in sync via self.folder_filter_text / _on_folder_filter_changed()."""
+        filter_input = QLineEdit()
+        filter_input.setPlaceholderText("Filter...")
+        filter_input.setClearButtonEnabled(True)
+        filter_input.setText(self.folder_filter_text)
+        filter_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 3px 6px;
+                font-size: 12px;
+            }}
+            QLineEdit:focus {{
+                border-color: {self.t('border_dark')};
+            }}
+        """)
+        filter_input.textChanged.connect(self._on_folder_filter_changed)
+        parent_layout.addWidget(filter_input)
+        return filter_input
+
+    def _on_folder_filter_changed(self, text):
+        """Keep both filter boxes (main viewer + launcher panel) in sync and re-render from the
+        cached scan without touching disk."""
+        self.folder_filter_text = text
+        for inp in (getattr(self, 'folder_filter_input', None), getattr(self, 'launcher_folder_filter_input', None)):
+            if inp is not None and inp.text() != text:
+                inp.blockSignals(True)
+                inp.setText(text)
+                inp.blockSignals(False)
+        if getattr(self, '_folder_raw_entries', None) is not None:
+            self._render_folder_views_from_cache()
 
     def folder_go_up(self):
         """Navigate to parent directory"""
@@ -11838,7 +11904,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             "columns": [[]],
             "column2_default": "folder",
             "folder_path": ".",
-            "notes_file": "./projectflow.md"
+            "notes_file": "./projectflow.md",
+            "layout_mode": "focus"
         }
 
         # Detect project type and add appropriate launchers

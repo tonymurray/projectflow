@@ -2,6 +2,13 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-21
+
+### Added
+- **"Open in {file manager}" button** below the Quick File Browser Panel's file list (Focus layout), matching the same footer button the main Folder viewer already had.
+- **Dolphin-style filter bar** for the folder browser: a "Filter..." text box (with built-in clear button) now sits below the file list on both the main Folder viewer and the Quick File Browser Panel, live-filtering entries by substring match against the filename as you type. Both boxes share state and stay in sync, and filtering re-renders from a cached directory scan rather than re-reading the disk on every keystroke. No "lock" toggle yet — typing a filter currently hides non-matching folders too, same as files.
+- **Focus layout is now the default for new projects**: `create_default_project()` (first-run default project) and `create_folder_project_config()` ("Make Project") now write `"layout_mode": "focus"` into the project they create, instead of implicitly defaulting to Standard. Existing projects are unaffected unless their config is explicitly migrated.
+
 ## 2026-08-20
 
 ### Added
