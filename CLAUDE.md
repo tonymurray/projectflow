@@ -8,25 +8,38 @@ ProjectFlow (formerly "Folder Opener") is a PyQt6-based KDE Plasma application t
 
 ## Running the Application
 
-The application uses nix-shell for dependency management:
+`projectflow.py` has a plain `#!/usr/bin/env python3` shebang — it does **not** auto-install dependencies itself. Three ways to get dependencies in place:
 
 ```bash
+# NixOS: use the nix-shell wrapper, which provides Python 3.13 + all deps (including optional ttyd)
+./projectflow-nix
+
+# uv
+uv venv && uv pip install PyQt6 PyQt6-WebEngine PyMuPDF qtconsole ipykernel
+uv run projectflow.py
+
+# pip (any Linux distro)
+pip install -r requirements.txt   # or: pip install PyQt6 PyQt6-WebEngine PyMuPDF qtconsole ipykernel
 ./projectflow.py
 ```
 
-The shebang handles all dependencies automatically via Nix:
-- Python 3.13
-- PyQt6
+`shell.nix` provides an equivalent `nix-shell` environment for interactive development (as opposed to `projectflow-nix`, which is the one-shot launcher wrapper). Both pull in `ttyd` as an optional dependency for the real-terminal Console backend (see `console_backend` setting below).
+
+Pass a config path as the first CLI argument to open a specific project: `./projectflow.py projects/myproject.json` (or `./projectflow-nix projects/myproject.json`). A CLI-provided path always overrides the settings-driven startup logic below.
 
 ## Configuration System Architecture
 
 ### Configuration Loading Hierarchy
 
-The app determines which config to load with this priority:
+`get_config_file_to_use()` determines which config to load with this priority:
 
-1. **Default config** (set via "Set as Default" button) stored in `.projectflow_settings.json`
-2. **Last used config** (automatically tracked)
-3. **Standard default**: `projectflow.json` in the project root or `projects/projectflow.json`
+1. **CLI argument** (`./projectflow.py projects/foo.json`) always wins if the path exists.
+2. **`startup_mode` setting** (Settings tab → "Startup" dropdown; `"last_used"` default), one of:
+   - `"last_used"`: the `last_used_project` from settings (automatically tracked on every switch).
+   - `"specific"`: the exact path in `startup_project` (chosen from a project picker in Settings).
+   - `"main"` (or any other value): falls through to the next step.
+3. **Default config** (`default_project` setting, set via "Set as Default" button) — also the fallback when `startup_mode` finds nothing.
+4. **Standard default**: `projects/projectflow.json` (or whatever `projects_directory` is configured to), else `projectflow.json` in the project root.
 
 ### Configuration File Structure
 
@@ -58,6 +71,8 @@ Example structure:
 
 User preferences are stored in `.projectflow_settings.json`:
 - `default_project`: The project file set as default
+- `startup_mode`: Which project to open on launch — `"last_used"` (default), `"specific"` (use `startup_project`), or `"main"` (use `default_project`). Configured via the "Startup" dropdown in Settings → Settings tab. See Configuration Loading Hierarchy below.
+- `startup_project`: Absolute path to the project to open when `startup_mode` is `"specific"`.
 - `projects_directory`: Subdirectory containing additional projects (default: "projects")
 - `last_used_project`: Most recently loaded project file
 - `recent_projects`: List of up to 10 recently used main projects (for quick-access bar)
@@ -222,7 +237,9 @@ Archive file format:
 **Initialization and Settings:**
 - `load_settings()`: Loads JSON settings from `.projectflow_settings.json`
 - `save_settings()`: Persists settings to JSON
-- `get_config_file_to_use()`: Determines which config file to load based on priority
+- `get_config_file_to_use()`: Determines which config file to load based on priority (see Configuration Loading Hierarchy above)
+- `setup_first_run()`: Called from `__init__`. On first run (empty/missing `projects_directory` or `notes_folder`), copies the tracked `examples/projectflow.json` / `examples/projectflow.md` templates in as the initial project and note. Also migrates a legacy `configs/` directory to `projects/` if found.
+- `ensure_desktop_file_installed()`: Called from `__init__`. On GNOME/COSMIC (skipped on KDE, which doesn't need it), writes `~/.local/share/applications/projectflow.desktop` on first run so the dock can match the app's `StartupWMClass` to an icon — GNOME/COSMIC require an installed `.desktop` file for this, unlike KDE's per-project WM_CLASS/Activities matching. Prefers the `projectflow-nix` wrapper as the `Exec=` target when present.
 
 **Configuration Management:**
 - `load_config()`: Executes the Python config file and extracts variables
@@ -602,26 +619,45 @@ The standard default config is `projects/projectflow.json`.
 
 ```
 projectflow/
-├── projectflow.py              # Main application
+├── projectflow.py              # Main application (plain python3 shebang, no auto-deps)
+├── projectflow-nix             # nix-shell launcher wrapper (NixOS one-shot run)
+├── shell.nix                   # nix-shell dev environment (equivalent deps, for interactive use)
+├── requirements.txt            # pip dependency list
 ├── themes.py                   # Light/dark theme color definitions
-├── CLAUDE.md                   # Development documentation
-├── .gitignore                  # Git exclusions
 ├── launch_handlers.py          # Built-in launch handlers (Python)
-├── launch_handlers_custom.json # User-defined launch handlers (editable via UI)
+├── launch_handlers_custom.json # User-defined launch handlers (gitignored, editable via UI)
 ├── icon_preferences.json       # App icon/name mappings
+├── CLAUDE.md                   # Development documentation (this file)
+├── README.md                   # User-facing install/usage/config docs
+├── CHANGELOG.md                # Dated, notable-changes log (grouped by date, no semver)
+├── TODO.md                     # Outstanding work items
+├── EXAMPLES.html               # Source for the Help viewer's "Launcher Examples" tab
+├── LICENSE                     # MIT
+├── deploy_mobile.sh            # Builds + installs the Android companion app (see Mobile App)
+├── .gitignore                  # Git exclusions
 ├── assets/muya/                # Vendored Muya markdown editor bundle (see Markdown Editor)
 │   ├── editor.html              # Editor shell page loaded into QWebEngineView
 │   └── lib/                     # Pre-built UMD bundle + assets + shim (see docs above)
-├── projects/                   # Project files (synced via Nextcloud)
-│   └── [project].json          # User-specific projects
-├── notes/                      # Markdown notes (synced via Nextcloud)
-│   └── [project-name].md       # Per-project notes
+├── examples/                   # Tracked templates copied in by setup_first_run() on first run
+│   ├── projectflow.json         # → copied to projects/projectflow.json if projects/ is empty
+│   └── projectflow.md           # → copied to notes/projectflow.md if notes/ is empty
+├── projects/                   # Per-user project files — gitignored entirely (personal/client data,
+│   └── [project].json           #   synced via Nextcloud/Syncthing instead of Git); seeded from examples/
+├── notes/                      # Per-project markdown notes — gitignored entirely, same reasoning
+│   └── [project-name].md
+├── screenshots/                # README screenshots
 ├── utilities/                  # Optional utility scripts
 │   ├── add-projectflow-servicemenu.sh  # KDE service menu handler
 │   ├── projectflow-servicemenu.desktop # KDE service menu definition
+│   ├── projectflow.desktop     # Base .desktop file (see ensure_desktop_file_installed())
 │   └── generate_menu_items.py  # Create KDE panel .desktop files
-└── docs/                       # Development documentation
-    └── build_specification.md  # Design specification
+├── docs/                       # Development documentation
+│   ├── build_specification.md   # Reverse-engineered spec / rebuild template
+│   ├── focus-mode.md            # User-facing Focus layout writeup
+│   ├── alt_page_view.md         # Layout design options (design notes)
+│   ├── capacitor_app_plan.md    # Mobile app planning notes + history
+│   └── learning_and_advice.md   # Notes on working with Claude on this codebase
+└── mobile/                     # Android companion app — see Mobile App section below
 ```
 
 ### Naming Conventions
@@ -634,13 +670,16 @@ projectflow/
 ### Version Control Patterns
 
 **Files to commit:**
-- Main application code (`projectflow.py`)
-- Documentation (`CLAUDE.md`)
-- Default/example projects in `projects/`
-- Configuration affecting all users (`.gitignore`)
+- Main application code (`projectflow.py`, `themes.py`, `launch_handlers.py`)
+- Documentation (`CLAUDE.md`, `README.md`, `CHANGELOG.md`, `docs/`)
+- Template project/note in `examples/` — these seed a fresh `projects/`/`notes/` on first run, they are not personal data
+- Configuration affecting all users (`.gitignore`, `icon_preferences.json`)
 
 **Files to exclude (in `.gitignore`):**
+- `projects/` and `notes/` — entirely gitignored, not just specific files. These hold personal/client project data synced via Nextcloud/Syncthing instead of Git; only `examples/` (the seed templates) is tracked.
+- `configs/` — legacy pre-rename name for `projects/`, kept in `.gitignore` only so `setup_first_run()`'s migration path has something to detect.
 - `.projectflow_settings.json` - Per-machine user preferences (auto-generated)
+- `launch_handlers_custom.json` - Per-user custom launch handlers (auto-generated, editable via Settings UI)
 - Python cache files (`__pycache__/`, `*.pyc`)
 - Editor-specific files (`.vscode/`, `.idea/`, `*.swp`)
 
