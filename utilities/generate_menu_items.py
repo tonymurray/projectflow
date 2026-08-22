@@ -7,12 +7,7 @@ This allows KDE to distinguish different projects as separate applications
 import os
 import glob
 
-# Choose appropriate icon based on desktop environment
-de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-if 'gnome' in de:
-    icon = "text-x-script"
-else:
-    icon = "preferences-desktop-icons"
+icon = "projectflow"  # installed into ~/.local/share/icons/hicolor/.../projectflow.{svg,png}
 
 # Get the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))

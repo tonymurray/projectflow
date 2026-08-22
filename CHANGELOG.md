@@ -2,6 +2,25 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-22
+
+### Added
+- **PDF/Image viewer placeholder graphics**: the plain "No PDF loaded"/"No image loaded" text is now a proper illustrated placeholder (`assets/placeholders/`), scaled to fit the actual viewer box (both width and height) rather than a fixed size — separate landscape and portrait art per asset (`pdf-landscape.png`/`pdf-portrait.png`, same for image), since Standard layout's viewer column and Focus layout's wide viewer have very different proportions. Portrait is picked automatically in Standard layout, landscape in Focus, falling back to landscape if no portrait variant exists for a given asset.
+- **Custom app icon**: replaced the generic `preferences-desktop-icons` (a literal cog/settings icon) used everywhere — the in-app window icon, every generated `.desktop` file, and the static `utilities/projectflow.desktop` template — with a real ProjectFlow icon (`assets/icon.svg`/`icon.png`). Installed into `~/.local/share/icons/hicolor/{scalable,256x256}/apps/projectflow.{svg,png}` so the static template and `utilities/generate_menu_items.py` can reference it by theme name (`Icon=projectflow`) without hardcoding a path; the two in-app `.desktop`-file generators use a dynamically-computed `assets/icon.png` path instead, needing no separate install step.
+- **Android app icon** replaced to match (`mobile/app/resources/icon.svg`/`icon.png`), regenerated through `@capacitor/assets` and rebuilt.
+- **Launcher tab bar (Focus layout)**: the launcher column's old "File Browser" accordion toggle and "☰ Group" toggle are unified into one tab row — **Files / Docs / Resources / Apps** — styled like the wide-viewer's own tab row. Standard layout is unaffected (still shows the plain category list plus the legacy "☰ Group" toggle). Active tab persists per-project (`active_launcher_tab`).
+  - **Files**: the existing Quick File Browser Panel, unchanged.
+  - **Docs / Resources**: the Group-by-Type classifier collapsed from three buckets (Documentation/Websites/Resources) to two — Websites folded into Resources, sorted first within it.
+  - **Apps** (new): a curated, large-icon-grid mini app-launcher built from the project's own launchers — every distinct real application referenced by an item (excluding path-action handlers like npm/ssh/alias/directorydev), plus the project's configured Terminal and Editor always included, plus built-in Markdown/PDF/Image viewer tiles when the project has matching content. Clicking an app tile launches it pointed at the project's folder (`force_external=True`, reusing `open_in_app()` so existing per-app quirks apply); browser tiles (Firefox/Chrome) get `about:blank` instead, since their launch command always templates the path in as a URL.
+  - Tab buttons are colored blue (`bg_category`/`bg_category_hover`), matching the category header bars they switch between, with a 20px gap after "Apps" separating them from the viewer tab row.
+- **Viewer tab icons**: every viewer tab (Web/PDF/Image/Terminal/Notes) now has a consistent white flat icon (`assets/tab-icons/`), and the tab buttons are wider (175px minimum) to visually balance against the launcher tab row. Previously only some tabs got an icon at all, since `QIcon.fromTheme()` lookups are unreliable across desktop environments/Nix setups — bundling the icons directly guarantees they always show.
+- **Generic app-icon fallback**: when an Apps-tab tile's app has no matching system theme icon, it now shows a small bundled neutral "window" icon (`assets/icon-generic-app.png`) instead of falling through to a system name that commonly renders as a gear/cog (confusingly reading as "settings"). Known-tricky app names also get a wider set of icon-name candidates to try first (`code` → also `vscode`/`com.visualstudio.code`, `libreoffice` → `libreoffice-startcenter`, `konsole` → `org.kde.konsole`/`utilities-terminal`, etc.).
+
+### Fixed
+- A deferred placeholder-resize callback could fire after a layout-mode toggle rebuilt the UI and deleted the old widget, raising an uncaught `RuntimeError` from a `QTimer` slot — which PyQt6 treats as fatal and aborts the whole process. Now guarded.
+- `QListWidget.setUniformItemSizes(True)` (used for the Apps-tab icon grid) silently dropped the text label of any item with a real (non-null) icon, while items with no icon rendered fine — Qt computes a uniform cell size from an inconsistent reference item across heterogeneous icon presence. Removed; the visually-similar folder icon grid was unaffected since it only ever shows one repeated icon.
+- `QIcon.pixmap(size)` for icon-engine-backed theme icons is only a size *request* — it commonly returns the icon's native resolution unchanged (e.g. a 128px Firefox icon asked for 64px still returns 128px) rather than actually scaling. Now explicitly re-scaled after the fact.
+
 ## 2026-08-21
 
 ### Added

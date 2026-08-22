@@ -796,10 +796,16 @@ class ProjectFlowApp(QMainWindow):
         # Per-project — load_config() overrides this once the active project's config is read.
         self.layout_mode = "standard"
 
-        # Dynamic Group-by-Type launcher view (Documentation/Websites/Resources) — display-only,
-        # never rewrites the project's category structure. See _build_grouped_categories.
+        # Dynamic Group-by-Type launcher view (Docs/Resources) — display-only, never
+        # rewrites the project's category structure. See _build_grouped_categories.
+        # Standard layout only — Focus layout uses active_launcher_tab instead (below).
         self.group_by_type = False
         self._group_view_origin = {}
+
+        # Focus-layout launcher column tab: "files" (Quick File Browser Panel) / "docs" /
+        # "resources" / "apps" (per-project curated app grid, see _build_apps_tab_items).
+        # Per-project — load_config() overrides this once the active project's config is read.
+        self.active_launcher_tab = "files"
 
         # Folder browser view mode: "tree" (details) or "icons" (Dolphin-style grid) — per-machine preference
         self.folder_view_mode = self.settings.get("folder_view_mode", "tree")
@@ -808,10 +814,6 @@ class ProjectFlowApp(QMainWindow):
         # every folder-browsing surface (main viewer + launcher panel) since they always show
         # the same self.folder_current_path in sync.
         self.folder_filter_text = ""
-
-        # Quick file-browser panel in the Focus-layout launcher column — session-only, starts
-        # collapsed; reset to collapsed on project switch (see load_config's is_project_switch).
-        self.launcher_folder_panel_expanded = False
 
         # MIGRATION (temporary): rename archive files to {name}-archive.md format
         self._migrate_archive_filenames()
@@ -1607,15 +1609,24 @@ class ProjectFlowApp(QMainWindow):
 
         return widget
 
-    def _classify_launcher_item(self, path, app):
-        """Heuristic bucket for the dynamic Group-by-Type view: Documentation / Websites / Resources."""
+    def _is_website_item(self, path, app):
+        """True if a launcher item's path/app looks like a website link (used for
+        classification and for sorting websites first within the Resources bucket)."""
         p = str(path)
         first_token = p.split()[0] if ' ' in p else p
-        if first_token.startswith(('http://', 'https://')) or app in ('firefox', 'chrome'):
-            return 'Websites'
+        return first_token.startswith(('http://', 'https://')) or app in ('firefox', 'chrome')
+
+    def _classify_launcher_item(self, path, app):
+        """Heuristic bucket for the dynamic Group-by-Type view: Docs / Resources.
+
+        Websites used to be their own bucket; they're now folded into Resources
+        (sorted first within it — see _build_grouped_categories) since the Focus-layout
+        tab view only has room for Files/Docs/Resources/Apps, not a dedicated Web tab.
+        """
+        first_token = str(path).split()[0] if ' ' in str(path) else str(path)
         ext = os.path.splitext(first_token)[1].lower()
-        if ext in ('.md', '.html', '.htm', '.pdf', '.txt'):
-            return 'Documentation'
+        if not self._is_website_item(path, app) and ext in ('.md', '.html', '.htm', '.pdf', '.txt'):
+            return 'Docs'
         return 'Resources'
 
     def _grouping_override_key(self):
@@ -1628,7 +1639,10 @@ class ProjectFlowApp(QMainWindow):
         key = self._grouping_override_key()
         if not key:
             return None
-        return self.settings.get('grouping_overrides', {}).get(key, {}).get(path)
+        override = self.settings.get('grouping_overrides', {}).get(key, {}).get(path)
+        # Back-compat: older projects may have overrides saved under the retired
+        # three-bucket names (Documentation/Websites) — fold them onto the new ones.
+        return {'Documentation': 'Docs', 'Websites': 'Resources'}.get(override, override)
 
     def _set_grouping_override(self, path, bucket):
         key = self._grouping_override_key()
@@ -1638,15 +1652,18 @@ class ProjectFlowApp(QMainWindow):
         self.save_settings()
 
     def _build_grouped_categories(self):
-        """Non-destructive Documentation/Websites/Resources view over self.COLUMN_1.
+        """Non-destructive Docs/Resources view over self.COLUMN_1.
 
         Pools items from every real category by heuristic (or manual override) without
         ever modifying self.COLUMN_1 or the project's JSON file. Each item's true
         (category_name, index) is recorded in self._group_view_origin — by object identity,
         since the same list objects are reused, not copies — so editing/deleting/context-menu
         actions triggered from this view still act on the real, authored data.
+
+        Resources is sorted websites-first (stable sort — everything else keeps its
+        relative pooling order) since there's no separate Websites bucket/tab anymore.
         """
-        buckets = {'Documentation': [], 'Websites': [], 'Resources': []}
+        buckets = {'Docs': [], 'Resources': []}
         self._group_view_origin = {}
         for cat_dict in self.COLUMN_1:
             for category_name, items in cat_dict.items():
@@ -1658,7 +1675,25 @@ class ProjectFlowApp(QMainWindow):
                     bucket = self._get_grouping_override(path) or self._classify_launcher_item(path, app)
                     buckets[bucket].append(item)
                     self._group_view_origin[id(item)] = (category_name, idx)
+
+        def _resource_sort_key(item):
+            path, app = (item[1], "kate") if len(item) == 2 else (item[1], item[2])
+            return 0 if self._is_website_item(path, app) else 1
+
+        buckets['Resources'].sort(key=_resource_sort_key)
         return [{name: items} for name, items in buckets.items() if items]
+
+    def _is_grouped_view_active(self):
+        """True whenever the launcher column is showing a pooled Docs/Resources view rather
+        than real per-category data — used to gate both the drag-disable behavior and the
+        right-click "Move display to" override menu consistently across both ways a pooled
+        view can be on screen: legacy Standard-layout group_by_type, and the Focus-layout
+        Docs/Resources tabs (see build_main_content's active_launcher_tab dispatch)."""
+        if self.edit_mode:
+            return False
+        if self.group_by_type:
+            return True
+        return self.layout_mode == "focus" and getattr(self, 'active_launcher_tab', 'files') in ('docs', 'resources')
 
     def _scan_for_docs(self, root_path):
         """Walk root_path and return (display_name, abs_path, app) for doc files."""
@@ -3576,11 +3611,7 @@ class ProjectFlowApp(QMainWindow):
         else:
             script_path = os.path.join(self.script_dir, "projectflow.py")
 
-        # Choose appropriate icon based on DE
-        if 'gnome' in de:
-            icon = "text-x-script"
-        else:
-            icon = "preferences-desktop-icons"
+        icon = os.path.join(self.script_dir, "assets", "icon.png")
 
         content = f"""[Desktop Entry]
 Type=Application
@@ -3705,10 +3736,11 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving group_by_type: {e}")
 
-    def _save_launcher_folder_panel_to_config(self):
-        """Persist whether the Focus-layout Quick File Browser Panel is expanded into the
-        active project's own config file, so it's remembered next time this project is opened
-        (see _toggle_launcher_folder_panel)."""
+    def _save_active_launcher_tab_to_config(self):
+        """Persist the active Focus-layout launcher tab (Files/Docs/Resources/Apps) into
+        the active project's own config file, so it's remembered next time this project is
+        opened (see _switch_launcher_tab). "files" is the default, so it's omitted rather
+        than written explicitly, keeping default projects' JSON clean."""
         if not getattr(self, 'current_config_file', None):
             return
         try:
@@ -3716,14 +3748,14 @@ StartupNotify=true
             if os.path.exists(self.current_config_file):
                 with open(self.current_config_file, 'r') as f:
                     config_data = json.load(f)
-            if self.launcher_folder_panel_expanded:
-                config_data['launcher_folder_panel_expanded'] = True
+            if self.active_launcher_tab != "files":
+                config_data['active_launcher_tab'] = self.active_launcher_tab
             else:
-                config_data.pop('launcher_folder_panel_expanded', None)
+                config_data.pop('active_launcher_tab', None)
             with open(self.current_config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
         except Exception as e:
-            print(f"Error saving launcher_folder_panel_expanded: {e}")
+            print(f"Error saving active_launcher_tab: {e}")
 
     def _enter_focus_layout(self):
         """Switch to Focus layout: hide right notes column, move notes into viewer tab."""
@@ -3923,9 +3955,10 @@ StartupNotify=true
                         self.group_by_type = bool(config_data['group_by_type'])
                     else:
                         self.group_by_type = (self.layout_mode == "focus")
-                    self.launcher_folder_panel_expanded = bool(
-                        config_data.get('launcher_folder_panel_expanded', False)
-                    )
+                    # Focus-layout launcher tab: remembers this project's last choice (see
+                    # _switch_launcher_tab/_save_active_launcher_tab_to_config); defaults to
+                    # "files" if never explicitly set.
+                    self.active_launcher_tab = config_data.get('active_launcher_tab', 'files')
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -3951,7 +3984,7 @@ StartupNotify=true
                 self.layout_mode = 'standard'
                 if is_project_switch:
                     self.group_by_type = False
-                    self.launcher_folder_panel_expanded = False
+                    self.active_launcher_tab = 'files'
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -6920,16 +6953,27 @@ function filterAliases(q) {{
             self.folder_current_path = getattr(self, 'config_folder_path', None) or os.path.expanduser("~")
 
         for col_idx, column_categories in enumerate(all_columns):
-            if col_idx == 0 and self.group_by_type and not self.edit_mode:
+            # Focus-layout launcher column: active_launcher_tab picks what column_categories
+            # (if anything) gets rendered — Files/Apps replace it with a panel built directly
+            # into column_layout below, Docs/Resources filter _build_grouped_categories() down
+            # to just that one bucket. Standard layout is untouched: it keeps the legacy
+            # group_by_type toggle driving the old (now two-bucket) stacked view.
+            focus_launcher_tab_active = col_idx == 0 and self.layout_mode == "focus" and not self.edit_mode
+            if focus_launcher_tab_active:
+                if self.active_launcher_tab in ("docs", "resources"):
+                    bucket_name = "Docs" if self.active_launcher_tab == "docs" else "Resources"
+                    column_categories = [c for c in self._build_grouped_categories() if bucket_name in c]
+                else:
+                    column_categories = []  # "files" / "apps" — panel built directly, no categories
+            elif col_idx == 0 and self.group_by_type and not self.edit_mode:
                 column_categories = self._build_grouped_categories()
 
-            # Quick file-browser panel (Focus layout only) replaces the category list while expanded
+            # Files/Apps tabs (Focus layout) and the legacy expanded-folder-panel both replace
+            # the category list with a panel built directly into column_layout — this flag
+            # gates the search/add header row too, which has nothing to search/add to then.
             hide_launchers_for_folder_panel = (
-                col_idx == 0 and self.layout_mode == "focus"
-                and self.launcher_folder_panel_expanded and not self.edit_mode
+                focus_launcher_tab_active and self.active_launcher_tab in ("files", "apps")
             )
-            if hide_launchers_for_folder_panel:
-                column_categories = []
 
             # These widgets only get (re)built below when the panel is actually expanded this
             # pass. Reset them to None on every other build so stale references to widgets Qt
@@ -6938,7 +6982,6 @@ function filterAliases(q) {{
             # PyQt wrapper for an already-deleted C++ object raises "wrapped C/C++ object has
             # been deleted", which is exactly the bug this guards against.
             if col_idx == 0:
-                self.launcher_folder_toggle_btn = None
                 self.launcher_folder_path_label = None
                 self.launcher_folder_browser = None
                 self.launcher_folder_icon_view = None
@@ -6981,51 +7024,77 @@ function filterAliases(q) {{
                         }}
                     """
 
-                    # Quick file-browser toggle (Focus layout only) — collapsed by default;
-                    # expanding replaces the category list with a compact folder browser
-                    # (see _toggle_launcher_folder_panel / _build_launcher_folder_panel)
+                    # Focus-layout launcher tab row (Files/Docs/Resources/Apps) — replaces the
+                    # old separate File-Browser-toggle + "☰ Group" toggle with one tab bar,
+                    # styled like the wide-viewer's tab row (see tab_btn_style/active_tab_style
+                    # further down in this method) so switching "what the launcher column
+                    # shows" feels the same as switching viewers. Standard layout is untouched
+                    # (see the "☰ Group" button further below, still built there).
                     if self.layout_mode == "focus" and not self.edit_mode:
-                        self.launcher_folder_toggle_btn = QPushButton("")
-                        self.launcher_folder_toggle_btn.setMinimumHeight(self.d('header_btn_height'))
-                        self.launcher_folder_toggle_btn.setToolTip(
-                            "Hide file browser" if self.launcher_folder_panel_expanded
-                            else "Browse files (opens into the viewer)"
-                        )
-                        self.launcher_folder_toggle_btn.setStyleSheet(f"""
+                        # Blue (bg_category/bg_category_hover) rather than the wide-viewer
+                        # tab row's green — matches the category header bars ("Docs - Open
+                        # All" etc.) these tabs are effectively switching between.
+                        launcher_tab_style = f"""
                             QPushButton {{
                                 background-color: {self.t('bg_category')};
-                                border: 2px solid {self.t('bg_category_hover')};
-                                border-radius: 5px;
+                                color: {self.t('fg_on_dark')};
+                                font-weight: bold;
+                                border-radius: 3px;
+                                padding: 5px 8px;
+                                font-size: 11px;
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('bg_category_hover')};
-                                border: 2px solid {self.t('border_dark')};
+                                color: {self.t('fg_on_dark')};
                             }}
-                        """)
-                        toggle_btn_layout = QHBoxLayout(self.launcher_folder_toggle_btn)
-                        toggle_btn_layout.setContentsMargins(10, 0, 10, 0)
-                        toggle_btn_layout.setSpacing(6)
-                        toggle_icon_label = QLabel()
-                        toggle_icon_label.setPixmap(self._folder_icon(self.t('fg_on_dark')).pixmap(16, 16))
-                        toggle_icon_label.setStyleSheet("background: transparent;")
-                        toggle_btn_layout.addWidget(toggle_icon_label)
-                        toggle_text_label = QLabel("File Browser")
-                        toggle_text_label.setStyleSheet(
-                            f"color: {self.t('fg_on_dark')}; font-weight: bold; font-size: 12px; background: transparent;"
-                        )
-                        toggle_btn_layout.addWidget(toggle_text_label)
-                        toggle_btn_layout.addStretch()
-                        toggle_arrow_label = QLabel("▲" if self.launcher_folder_panel_expanded else "◀")
-                        toggle_arrow_label.setStyleSheet(
-                            f"color: {self.t('fg_on_dark')}; font-weight: bold; font-size: 12px; background: transparent;"
-                        )
-                        toggle_btn_layout.addWidget(toggle_arrow_label)
-                        self.launcher_folder_toggle_btn.clicked.connect(self._toggle_launcher_folder_panel)
-                        column_layout.addWidget(self.launcher_folder_toggle_btn)
+                        """
+                        launcher_tab_active_style = f"""
+                            QPushButton {{
+                                background-color: {self.t('bg_category_hover')};
+                                color: {self.t('fg_on_dark')};
+                                font-weight: bold;
+                                border-radius: 3px;
+                                padding: 5px 8px;
+                                font-size: 11px;
+                                border: 2px solid {self.t('fg_on_dark')};
+                            }}
+                            QPushButton:hover {{
+                                background-color: {self.t('bg_category_hover')};
+                                color: {self.t('fg_on_dark')};
+                            }}
+                        """
+                        launcher_tabs_layout = QHBoxLayout()
+                        launcher_tabs_layout.setContentsMargins(0, 0, 0, 0)
+                        launcher_tabs_layout.setSpacing(3)
+                        for tab_id, tab_label, tab_tooltip in (
+                            ("files", "Files", "Browse files (opens into the viewer)"),
+                            ("docs", "Docs", "Local documentation files (.md/.html/.pdf/.txt)"),
+                            ("resources", "Resources", "Websites and everything else"),
+                            ("apps", "Apps", "Applications relevant to this project"),
+                        ):
+                            tab_btn = QPushButton(tab_label)
+                            tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                            tab_btn.setToolTip(tab_tooltip)
+                            tab_btn.setStyleSheet(
+                                launcher_tab_active_style if self.active_launcher_tab == tab_id
+                                else launcher_tab_style
+                            )
+                            tab_btn.clicked.connect(
+                                lambda checked=False, t=tab_id: self._switch_launcher_tab(t)
+                            )
+                            # Equal stretch so the trailing addSpacing below is a real gap
+                            # rather than being absorbed by the buttons expanding into it.
+                            launcher_tabs_layout.addWidget(tab_btn, 1)
+                        # Visual gap between the launcher tab row and the viewer's own tab
+                        # row, which sits immediately to the right in the adjacent column.
+                        launcher_tabs_layout.addSpacing(20)
+                        column_layout.addLayout(launcher_tabs_layout)
                         column_layout.addSpacing(3)
 
-                        if self.launcher_folder_panel_expanded:
+                        if self.active_launcher_tab == "files":
                             self._build_launcher_folder_panel(column_layout)
+                        elif self.active_launcher_tab == "apps":
+                            self._build_apps_tab(column_layout)
 
                     # First column: add edit mode and refresh buttons (like column 2 style)
                     header_layout = QHBoxLayout()
@@ -7053,17 +7122,20 @@ function filterAliases(q) {{
                         self._launcher_search_box.textChanged.connect(self._filter_launchers)
                         header_layout.addWidget(self._launcher_search_box, 1)
 
-                        group_btn = QPushButton("☰ Group")
-                        group_btn.setMinimumHeight(self.d('header_btn_height'))
-                        group_btn.setToolTip(
-                            "Group launchers by type (Documentation / Websites / Resources) — "
-                            "display only, never changes the project file"
-                        )
-                        group_btn.setCheckable(True)
-                        group_btn.setChecked(self.group_by_type)
-                        group_btn.setStyleSheet(green_btn_style)
-                        group_btn.clicked.connect(self._toggle_group_by_type)
-                        header_layout.addWidget(group_btn)
+                        # "☰ Group" toggle is Standard-layout only — Focus layout uses the
+                        # tab row above instead (active_launcher_tab subsumes this role).
+                        if self.layout_mode != "focus":
+                            group_btn = QPushButton("☰ Group")
+                            group_btn.setMinimumHeight(self.d('header_btn_height'))
+                            group_btn.setToolTip(
+                                "Group launchers by type (Docs / Resources) — "
+                                "display only, never changes the project file"
+                            )
+                            group_btn.setCheckable(True)
+                            group_btn.setChecked(self.group_by_type)
+                            group_btn.setStyleSheet(green_btn_style)
+                            group_btn.clicked.connect(self._toggle_group_by_type)
+                            header_layout.addWidget(group_btn)
 
                         add_btn = QPushButton("  +  Add")
                         add_btn.setMinimumHeight(self.d('header_btn_height'))
@@ -7225,7 +7297,7 @@ function filterAliases(q) {{
                                 else:
                                     app_icon = icon_val + " "
 
-                            grouped_active = getattr(self, 'group_by_type', False) and not self.edit_mode
+                            grouped_active = self._is_grouped_view_active()
                             if grouped_active:
                                 # Group-by-Type view: items are pooled from every real category, so
                                 # this button's true (category, index) may differ from the visual
@@ -7685,16 +7757,21 @@ function filterAliases(q) {{
                 header_layout.setContentsMargins(0, 0, 0, 0)
                 header_layout.setSpacing(3)
 
-                # Tab button definitions: (mode, label, tooltip, icon_names)
+                # Tab button definitions: (mode, label, tooltip). Icons are bundled white
+                # flat icons under assets/tab-icons/{mode}.png (see below) rather than
+                # system-theme lookups — QIcon.fromTheme() proved unreliable across desktop
+                # environments/Nix setups (many common names resolved to nothing at all),
+                # so every tab now gets a guaranteed, consistent icon instead of some tabs
+                # having one and others not.
                 tab_buttons = [
-                    ("webview",  "Web",      "Web viewer",         ["internet-web-browser", "web-browser", "globe", "applications-internet"]),
-                    ("pdf",      "PDF",      "PDF viewer",         ["application-pdf", "evince", "document-viewer", "x-office-document"]),
-                    ("image",    "Image",    "Image viewer",       ["image-viewer", "image-x-generic", "eog", "gwenview"]),
-                    ("console",  "Terminal", "Embedded console",   ["utilities-terminal", "terminal", "konsole", "gnome-terminal"]),
-                    ("notes",    "Notes",    "Project notes",      ["text-editor", "accessories-text-editor"]),
+                    ("webview",  "Web",      "Web viewer"),
+                    ("pdf",      "PDF",      "PDF viewer"),
+                    ("image",    "Image",    "Image viewer"),
+                    ("console",  "Terminal", "Embedded console"),
+                    ("notes",    "Notes",    "Project notes"),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-                    tab_buttons.insert(0, ("time", "⏱ Time", "Kimai time tracker", []))
+                    tab_buttons.insert(0, ("time", "⏱ Time", "Kimai time tracker"))
 
                 # Normal tab button style
                 tab_btn_style = f"""
@@ -7750,18 +7827,19 @@ function filterAliases(q) {{
                 # Store tab buttons for styling updates
                 self.viewer_tab_buttons = {}
 
-                for mode, label, tooltip, icon_names in tab_buttons:
+                for mode, label, tooltip in tab_buttons:
                     btn = QPushButton(label)
                     btn.setMinimumHeight(self.d('header_btn_height'))
+                    # Roughly matches the launcher column's own tab-button width (Files/Docs/
+                    # Resources/Apps, see build_main_content's Focus-layout tab row) so the
+                    # two adjacent tab rows read as visually consistent sizes.
+                    btn.setMinimumWidth(175)
                     btn.setToolTip(tooltip)
 
-                    # Try themed icons in order, use first available
-                    for icon_name in icon_names:
-                        icon = QIcon.fromTheme(icon_name)
-                        if not icon.isNull():
-                            btn.setIcon(icon)
-                            btn.setIconSize(QSize(16, 16))
-                            break
+                    icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{mode}.png")
+                    if os.path.exists(icon_path):
+                        btn.setIcon(QIcon(icon_path))
+                        btn.setIconSize(QSize(16, 16))
 
                     # Set style based on whether this is the active mode
                     if mode == self.column2_mode:
@@ -7818,9 +7896,10 @@ function filterAliases(q) {{
                 """)
 
                 # Create label for PDF display
-                self.pdf_label = QLabel("No PDF loaded\n\nUse the 📂 button to open a PDF file")
+                self.pdf_label = QLabel()
                 self.pdf_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-                self.pdf_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; padding-top: 50px; font-size: 14px;")
+                self.pdf_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; font-size: 14px;")
+                self._set_viewer_placeholder(self.pdf_label, "pdf", "No PDF loaded\n\nUse the 📂 button to open a PDF file")
                 self.pdf_scroll.setWidget(self.pdf_label)
 
                 pdf_container_layout.addWidget(self.pdf_scroll)
@@ -7884,9 +7963,10 @@ function filterAliases(q) {{
                 """)
 
                 # Create label for image display
-                self.image_label = QLabel("No image loaded\n\nUse the 📂 button to open an image")
+                self.image_label = QLabel()
                 self.image_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-                self.image_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; padding-top: 50px; font-size: 14px;")
+                self.image_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; font-size: 14px;")
+                self._set_viewer_placeholder(self.image_label, "image", "No image loaded\n\nUse the 📂 button to open an image")
                 self.image_scroll.setWidget(self.image_label)
 
                 image_container_layout.addWidget(self.image_scroll)
@@ -9553,6 +9633,16 @@ function filterAliases(q) {{
         self._save_group_by_type_to_config()
         self.refresh_projects()
 
+    def _switch_launcher_tab(self, tab_name):
+        """Switch the Focus-layout launcher column's active tab (Files/Docs/Resources/Apps).
+        Display-only, like _toggle_group_by_type — never rewrites the project's category
+        structure, just which pooled/panel view build_main_content renders for column 0."""
+        if tab_name == self.active_launcher_tab:
+            return
+        self.active_launcher_tab = tab_name
+        self._save_active_launcher_tab_to_config()
+        self.refresh_projects()
+
     def _filter_launchers(self, query):
         """Show/hide launcher items and categories based on search text."""
         q = query.strip().lower()
@@ -9596,9 +9686,9 @@ function filterAliases(q) {{
         delete_action = menu.addAction("🗑  Delete")
 
         move_actions = {}
-        if self.group_by_type:
+        if self._is_grouped_view_active():
             move_menu = menu.addMenu("📁  Move display to")
-            for bucket in ('Documentation', 'Websites', 'Resources'):
+            for bucket in ('Docs', 'Resources'):
                 move_actions[move_menu.addAction(bucket)] = bucket
 
         action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
@@ -10010,6 +10100,10 @@ function filterAliases(q) {{
         if not self.pdf_doc or not self.pdf_label:
             return
 
+        # Undo the placeholder's centered alignment (_set_viewer_placeholder) now that
+        # there's real content — documents read top-down, not centered in the viewport.
+        self.pdf_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+
         try:
             page = self.pdf_doc[self.pdf_current_page]
             mat = fitz.Matrix(self.pdf_zoom, self.pdf_zoom)
@@ -10147,6 +10241,61 @@ function filterAliases(q) {{
                 self.pdf_zoom_label.setText(f"{int(self.pdf_zoom * 100)}%")
         except Exception as e:
             print(f"Error fitting PDF to width: {e}")
+
+    def _set_viewer_placeholder(self, label, asset_basename, fallback_text):
+        """Show a placeholder graphic (assets/placeholders/) on an empty PDF/image viewer label.
+
+        Falls back to plain text if the asset is missing, so a stripped-down install
+        (or a future rename) degrades gracefully instead of showing a blank label.
+
+        Standard layout's viewer column is narrow-but-tall; Focus layout's is wide-but-
+        shorter. A single graphic can't fit both well, so there are two variants per asset —
+        `{asset_basename}-landscape.png` (Focus) and `{asset_basename}-portrait.png`
+        (Standard), e.g. "pdf" -> pdf-landscape.png / pdf-portrait.png. Falls back to the
+        landscape file if the portrait one is missing.
+
+        Fit-to-box (both width AND height, via QPixmap.scaled with KeepAspectRatio) rather
+        than fit-to-width alone, so whichever dimension is more constraining wins — matters
+        since landscape and portrait art have very different aspect ratios. One-shot
+        deferred, same pattern as image_fit_width (scheduled 500ms after load to let layout
+        settle) rather than a live resize handler, matching that existing precedent.
+
+        Measures self.column2_stack rather than the PDF/image scroll area's own viewport:
+        column2_stack holds every viewer container stacked together and is always visible/
+        laid-out, whereas whichever container isn't the active tab is hidden — and Qt
+        layouts skip hidden widgets, leaving a hidden scroll area's viewport width at 0/stale
+        until it's actually shown. column2_stack has no such gap since it's never hidden.
+        """
+        placeholders_dir = os.path.join(self.script_dir, "assets", "placeholders")
+        orientation = "portrait" if self.layout_mode == "standard" else "landscape"
+        chosen_filename = f"{asset_basename}-{orientation}.png"
+        placeholder_path = os.path.join(placeholders_dir, chosen_filename)
+        if not os.path.exists(placeholder_path) and orientation == "portrait":
+            placeholder_path = os.path.join(placeholders_dir, f"{asset_basename}-landscape.png")
+        pixmap = QPixmap(placeholder_path) if os.path.exists(placeholder_path) else None
+        if not pixmap or pixmap.isNull():
+            label.setText(fallback_text)
+            return
+
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        def apply_fit():
+            # A layout-mode toggle (or any other refresh_projects()) rebuilds the whole UI
+            # and deletes the old label/column2_stack before this deferred call fires — a
+            # bare RuntimeError here ("wrapped C/C++ object has been deleted") would escape
+            # uncaught from a QTimer slot, which PyQt6 treats as fatal and aborts the process.
+            try:
+                available_width = max(240, self.column2_stack.width() - 40)
+                available_height = max(160, self.column2_stack.height() - 150)
+                label.setPixmap(pixmap.scaled(
+                    available_width, available_height,
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                ))
+            except RuntimeError:
+                pass
+
+        apply_fit()  # immediate best-effort so something shows before layout settles
+        QTimer.singleShot(500, apply_fit)
 
     def _make_viewer_footer(self, label, tooltip, callback):
         """Create a thin footer strip with a single right-aligned action button."""
@@ -11484,6 +11633,223 @@ function filterAliases(q) {{
         """Refresh current directory listing"""
         self.populate_folder_browser(self.folder_current_path)
 
+    def _scaled_icon(self, icon):
+        """Force an icon down to a genuine single 64x64 pixmap.
+
+        QIcon.pixmap(size) is only a *request* — for icon-engine-backed icons (which most
+        system theme icons are) it returns the closest available native resolution rather
+        than actually scaling, e.g. asking a Firefox/GIMP/Kate icon for 64x64 still hands
+        back its native 128x128 pixmap. QListWidget's IconMode (used by the Apps tab grid)
+        sizes each item's on-screen layout off the icon's real pixmap dimensions rather than
+        the widget's setIconSize() in that case — empirically confirmed: items with these
+        oversized icons rendered with the icon visible but their text label pushed outside
+        the 110x130 grid cell entirely, while items with a smaller/null icon laid out fine.
+        Explicitly re-scaling the pixmap (not just re-requesting it) sidesteps this.
+        """
+        pixmap = icon.pixmap(QSize(64, 64))
+        if pixmap.isNull():
+            return QIcon()
+        if pixmap.size() != QSize(64, 64):
+            pixmap = pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        return QIcon(pixmap)
+
+    def _theme_icon(self, candidate_names, fallback=None):
+        """Try system-theme icon names in order, returning the first that resolves, scaled
+        via _scaled_icon to a genuine single 64x64 pixmap (see that method's docstring).
+
+        Falls back to the bundled assets/icon-generic-app.png — a plain neutral window
+        shape — rather than a further system-theme name like "application-x-executable".
+        That name technically exists in many icon themes, but commonly renders as a
+        gear/cog (the conventional "generic executable" glyph), which reads as "settings"
+        rather than "app" and was confusing next to real launcher tiles. `fallback` is still
+        available for a MIME-appropriate intermediate try (e.g. "text-x-generic" before
+        giving up entirely) — it just no longer defaults to the cog-prone system name.
+        """
+        for name in candidate_names:
+            icon = QIcon.fromTheme(name)
+            if not icon.isNull():
+                return self._scaled_icon(icon)
+        if fallback:
+            icon = QIcon.fromTheme(fallback)
+            if not icon.isNull():
+                return self._scaled_icon(icon)
+        generic_path = os.path.join(self.script_dir, "assets", "icon-generic-app.png")
+        return self._scaled_icon(QIcon(generic_path)) if os.path.exists(generic_path) else QIcon()
+
+    def _build_apps_tab_items(self):
+        """Curated per-project "Apps" tile list for the Apps launcher tab: distinct real
+        applications this project's own launchers reference, plus the project's configured
+        Terminal and Editor (always included), plus built-in content-viewer tiles (PDF/
+        Image/Markdown) when the project actually has matching content.
+
+        Deliberately excludes structural/path-action handlers (npm, ssh_session,
+        directorydev, alias, dolphin_tabs, tail_log, rsync_backup*, file_manager, konsole/
+        terminal, and any custom "shell"-type handler) — those are actions on a specific
+        path, not standalone applications you'd open blank, so they stay reachable only via
+        their normal launcher items in the Resources tab.
+
+        Returns a list of dicts: {'label', 'icon', 'kind': 'viewer'|'app', 'target'}.
+        'target' is a switch_to_viewer_mode() mode string for kind='viewer', or the resolved
+        app binary name for kind='app'.
+        """
+        STRUCTURAL_APPS = {
+            'browser', 'file_manager', 'dolphin', 'editor', 'default',
+            'konsole', 'terminal', 'alias', 'projectflowlink',
+            'tail_log', 'ssh_session', 'ssh_cd_npm', 'terminal_cmd', 'terminal_npm',
+            'npm', 'directorydev', 'dolphin_tabs',
+            'rsync_backup', 'rsync_backup_id', 'rsync_backup_id_port',
+        }
+        IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg')
+
+        # A resolved binary name isn't always a valid theme-icon name too — VS Code's
+        # package binary is "code" but its icon is usually registered as "vscode" (or the
+        # Flatpak reverse-DNS id), LibreOffice has no single icon at all (only per-app ones
+        # like "libreoffice-writer"), etc. Tried in order before falling back to the bundled
+        # generic-app icon (_theme_icon).
+        ICON_NAME_ALIASES = {
+            'code': ['code', 'vscode', 'com.visualstudio.code', 'visual-studio-code'],
+            'codium': ['vscodium', 'codium', 'com.vscodium.codium'],
+            'konsole': ['konsole', 'org.kde.konsole', 'utilities-terminal'],
+            'libreoffice': ['libreoffice-startcenter', 'libreoffice-main', 'libreoffice'],
+            'soffice': ['libreoffice-startcenter', 'libreoffice-main', 'libreoffice'],
+        }
+
+        resolved_apps = {}  # binary name -> display label, insertion order doesn't matter (sorted later)
+
+        def add_app(binary):
+            if not binary:
+                return
+            name = os.path.basename(str(binary)).split()[0].lower()
+            if name and name not in resolved_apps:
+                resolved_apps[name] = name.replace('-', ' ').replace('_', ' ').title()
+
+        has_pdf = bool(getattr(self, 'config_pdf_file', None))
+        has_image = bool(getattr(self, 'config_image_file', None))
+        has_markdown = False
+
+        for cat_dict in self.COLUMN_1:
+            for category_name, items in cat_dict.items():
+                for item in items:
+                    path, app = (item[1], "kate") if len(item) == 2 else (item[1], item[2])
+
+                    first_token = str(path).split()[0] if ' ' in str(path) else str(path)
+                    ext = os.path.splitext(first_token)[1].lower()
+                    if ext == '.md':
+                        has_markdown = True
+                    elif ext == '.pdf':
+                        has_pdf = True
+                    elif ext in IMAGE_EXTS:
+                        has_image = True
+
+                    if app in STRUCTURAL_APPS:
+                        continue
+                    if self.custom_handlers.get(app, {}).get('type') == 'shell':
+                        continue
+                    add_app(app)
+
+        # Always include the project's configured Terminal + Editor, resolved to their real
+        # binary — merges with any item that already uses that same binary literally.
+        add_app(self.get_configured_terminal())
+        add_app(self.get_configured_editor())
+
+        # Short, single-word labels — matches the terse style of the real-app tiles
+        # (Firefox/Kate/etc.) and avoids wrapping/eliding in the grid's narrow tiles.
+        tiles = []
+        if has_markdown:
+            tiles.append({
+                'label': 'Markdown', 'kind': 'viewer', 'target': 'webview',
+                'icon': self._theme_icon(['text-markdown', 'text-x-markdown'], 'text-x-generic'),
+            })
+        if has_pdf:
+            tiles.append({
+                'label': 'PDF', 'kind': 'viewer', 'target': 'pdf',
+                'icon': self._theme_icon(['application-pdf'], 'text-x-generic'),
+            })
+        if has_image:
+            tiles.append({
+                'label': 'Images', 'kind': 'viewer', 'target': 'image',
+                'icon': self._theme_icon(['accessories-image-viewer', 'image-viewer'], 'image-x-generic'),
+            })
+
+        for name, label in sorted(resolved_apps.items(), key=lambda kv: kv[1]):
+            tiles.append({
+                'label': label, 'kind': 'app', 'target': name,
+                'icon': self._theme_icon(ICON_NAME_ALIASES.get(name, [name])),
+            })
+
+        return tiles
+
+    def _build_apps_tab(self, column_layout):
+        """Build the Apps tab's content: a large icon-grid of per-project app tiles (see
+        _build_apps_tab_items). Mirrors the launcher-panel folder icon grid's QListWidget
+        setup (_build_launcher_folder_panel) but with bigger tiles per user request — this
+        is meant to read as a small, distinctive app-switcher, not a file list."""
+        apps_list = QListWidget()
+        apps_list.setViewMode(QListWidget.ViewMode.IconMode)
+        apps_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        apps_list.setMovement(QListWidget.Movement.Static)
+        apps_list.setWrapping(True)
+        apps_list.setIconSize(QSize(64, 64))
+        apps_list.setGridSize(QSize(110, 130))
+        apps_list.setSpacing(6)
+        apps_list.setWordWrap(True)
+        # NOT setUniformItemSizes(True) — unlike the folder icon grid (which only ever shows
+        # the one same "folder" icon), this grid mixes items with a real theme icon and items
+        # whose icon lookup failed (empty QIcon). Empirically confirmed: with uniform sizing
+        # on, any item that HAS a real icon renders the icon but its text label vanishes
+        # entirely (clipped by a size Qt computed from a differently-shaped item) — off, both
+        # icon and text render correctly for every item regardless of icon presence.
+        apps_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        apps_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {self.t('bg_secondary')};
+                border: 2px solid {self.t('border')};
+                border-radius: 5px;
+                color: {self.t('fg_primary')};
+                font-size: 12px;
+            }}
+            QListWidget::item {{
+                padding: 6px;
+                border-radius: 4px;
+            }}
+            QListWidget::item:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QListWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+
+        for tile in self._build_apps_tab_items():
+            list_item = QListWidgetItem(tile['icon'], tile['label'])
+            list_item.setData(Qt.ItemDataRole.UserRole, tile)
+            list_item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            apps_list.addItem(list_item)
+
+        apps_list.itemClicked.connect(self._on_apps_tab_item_clicked)
+        column_layout.addWidget(apps_list, 1)
+
+    def _on_apps_tab_item_clicked(self, list_item):
+        """Launch an Apps-tab tile: built-in viewers switch the wide viewer tab; external
+        apps launch pointed at the project's own folder via the existing open_in_app()
+        dispatch (so per-app quirks like "kate+directory opens Dolphin instead" apply
+        automatically) — with force_external=True so Focus layout's content-type routing
+        (which would otherwise intercept e.g. a folder path into the internal folder
+        preview) is bypassed, since these tiles are explicitly meant to open the real app.
+        Browsers (firefox/chrome) get "about:blank" instead of the folder path, since their
+        command always templates the path in as a URL, not a directory."""
+        tile = list_item.data(Qt.ItemDataRole.UserRole)
+        if tile['kind'] == 'viewer':
+            self.switch_to_viewer_mode(tile['target'])
+            return
+        app_name = tile['target']
+        target = "about:blank" if app_name in ('firefox', 'chrome') else (
+            self.config_folder_path or os.path.expanduser("~")
+        )
+        self.open_in_app(target, app_name, force_external=True)
+
     def _toggle_folder_view_mode(self):
         """Switch the folder browser(s) between tree/details and Dolphin-style icon grid view —
         applies to both the main Folder viewer and the launcher-column mini panel, whichever exist."""
@@ -11607,12 +11973,6 @@ function filterAliases(q) {{
         if not path:
             return
         self._build_folder_context_menu(path, item_type).exec(self.launcher_folder_icon_view.mapToGlobal(position))
-
-    def _toggle_launcher_folder_panel(self):
-        """Expand/collapse the quick file-browser panel in the Focus-layout launcher column."""
-        self.launcher_folder_panel_expanded = not self.launcher_folder_panel_expanded
-        self._save_launcher_folder_panel_to_config()
-        self.refresh_projects()
 
     def _open_file_in_webview(self, path):
         """Open a local file in the built-in webview panel"""
@@ -12541,6 +12901,10 @@ Project created: {date_str}
         if not hasattr(self, 'image_pixmap') or self.image_pixmap.isNull():
             return
 
+        # Undo the placeholder's centered alignment (_set_viewer_placeholder) now that
+        # there's a real image — matches the same restore in render_pdf_page.
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+
         scaled_pixmap = self.image_pixmap.scaled(
             int(self.image_pixmap.width() * self.image_zoom),
             int(self.image_pixmap.height() * self.image_zoom),
@@ -13048,12 +13412,7 @@ Exec={script_path} "{project_path}"
         # Build desktop file content
         actions_line = f"Actions={';'.join(actions)};" if actions else ""
 
-        # DE-specific icon
-        de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-        if 'gnome' in de:
-            icon = "text-x-script"
-        else:
-            icon = "preferences-desktop-icons"
+        icon = os.path.join(self.script_dir, "assets", "icon.png")
 
         content = f"""[Desktop Entry]
 Type=Application
@@ -13128,27 +13487,17 @@ Examples:
         app.setApplicationName("projectflow")
         app.setDesktopFileName("projectflow")
 
-    # Set window icon with fallback chain for different desktop environments
-    de = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-    if 'gnome' in de:
-        icon_candidates = [
-            "text-x-script",              # GNOME icon
-            "application-x-executable",   # Generic app icon
-            "system-run",                 # Generic freedesktop
-            "folder",                     # Universal fallback
-        ]
-    else:
-        icon_candidates = [
-            "preferences-desktop-icons",  # KDE Breeze icon
-            "application-x-executable",   # Generic app icon
-            "system-run",                 # Generic freedesktop
-            "folder",                     # Universal fallback
-        ]
-    for icon_name in icon_candidates:
-        icon = QIcon.fromTheme(icon_name)
-        if not icon.isNull():
-            app.setWindowIcon(icon)
-            break
+    # Set window icon to the app's own branded icon (assets/icon.png), falling back to a
+    # generic theme icon only if that file is somehow missing (e.g. a stripped-down install).
+    own_icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+    icon = QIcon(own_icon_path) if os.path.exists(own_icon_path) else QIcon()
+    if icon.isNull():
+        for icon_name in ["application-x-executable", "system-run", "folder"]:
+            icon = QIcon.fromTheme(icon_name)
+            if not icon.isNull():
+                break
+    if not icon.isNull():
+        app.setWindowIcon(icon)
 
     window = ProjectFlowApp(config_file_arg=args.config)
     window.showMaximized()
