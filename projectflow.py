@@ -5487,34 +5487,43 @@ function filterAliases(q) {{
 
         # Edit toolbar on far right — buttons always use the same style
         _in_edit = getattr(self, 'edit_mode', False)
-        _edit_btn_style = f"""
+
+        # All top-right title-bar buttons (Edit Project/Save, Layout toggle, and — while
+        # in edit mode — Project Details/Scan Docs) share this style: the same look as the
+        # footer buttons (New Project, Settings, etc: bg_button + a visible border) rather
+        # than the old green edit-toolbar style, with a border specifically so they read as
+        # distinct from the plain app background instead of blending into it.
+        _topright_btn_style = f"""
             QPushButton {{
-                background-color: {self.t('bg_green_1')};
-                color: {self.t('fg_on_dark')};
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 5px 12px;
                 font-weight: bold;
-                border-radius: 3px;
-                padding: 4px 10px;
                 font-size: 12px;
             }}
             QPushButton:hover {{
-                background-color: {self.t('bg_green_2')};
+                background-color: {self.t('bg_button_hover')};
                 color: {self.t('fg_on_dark')};
             }}
             QPushButton:checked {{
                 background-color: {self.t('bg_success')};
+                color: {self.t('fg_on_dark')};
+                border-color: {self.t('bg_success')};
             }}
         """
 
         if _in_edit:
             proj_details_btn = QPushButton("Project Details")
             proj_details_btn.setToolTip("Open project details editor")
-            proj_details_btn.setStyleSheet(_edit_btn_style)
+            proj_details_btn.setStyleSheet(_topright_btn_style)
             proj_details_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
             title_bar.addWidget(proj_details_btn)
 
             scan_docs_btn = QPushButton("🔍 Scan Docs")
             scan_docs_btn.setToolTip("Scan project folder for documentation files")
-            scan_docs_btn.setStyleSheet(_edit_btn_style)
+            scan_docs_btn.setStyleSheet(_topright_btn_style)
             scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
             title_bar.addWidget(scan_docs_btn)
 
@@ -5522,7 +5531,7 @@ function filterAliases(q) {{
         self.edit_project_btn.setCheckable(True)
         self.edit_project_btn.setChecked(_in_edit)
         self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts and launchers")
-        self.edit_project_btn.setStyleSheet(_edit_btn_style)
+        self.edit_project_btn.setStyleSheet(_topright_btn_style)
         self.edit_project_btn.clicked.connect(self.toggle_edit_mode)
         title_bar.addWidget(self.edit_project_btn)
 
@@ -5562,7 +5571,7 @@ function filterAliases(q) {{
             "Switch to Standard layout (3 columns)" if _is_focus
             else "Switch to Focus layout (launcher + wide viewer)"
         )
-        self.layout_toggle_btn.setStyleSheet(_edit_btn_style)
+        self.layout_toggle_btn.setStyleSheet(_topright_btn_style)
         self.layout_toggle_btn.clicked.connect(self.toggle_layout_mode)
         title_bar.addWidget(self.layout_toggle_btn)
 
@@ -7067,9 +7076,9 @@ function filterAliases(q) {{
                         launcher_tabs_layout.setContentsMargins(0, 0, 0, 0)
                         launcher_tabs_layout.setSpacing(3)
                         for tab_id, tab_label, tab_tooltip in (
-                            ("files", "Files", "Browse files (opens into the viewer)"),
                             ("docs", "Docs", "Local documentation files (.md/.html/.pdf/.txt)"),
                             ("resources", "Resources", "Websites and everything else"),
+                            ("files", "Files", "Browse files (opens into the viewer)"),
                             ("apps", "Apps", "Applications relevant to this project"),
                         ):
                             tab_btn = QPushButton(tab_label)
@@ -7764,14 +7773,14 @@ function filterAliases(q) {{
                 # so every tab now gets a guaranteed, consistent icon instead of some tabs
                 # having one and others not.
                 tab_buttons = [
+                    ("notes",    "Notes",    "Project notes"),
                     ("webview",  "Web",      "Web viewer"),
+                    ("console",  "Terminal", "Embedded console"),
                     ("pdf",      "PDF",      "PDF viewer"),
                     ("image",    "Image",    "Image viewer"),
-                    ("console",  "Terminal", "Embedded console"),
-                    ("notes",    "Notes",    "Project notes"),
                 ]
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-                    tab_buttons.insert(0, ("time", "⏱ Time", "Kimai time tracker"))
+                    tab_buttons.append(("time", "⏱ Time", "Kimai time tracker"))
 
                 # Normal tab button style
                 tab_btn_style = f"""
