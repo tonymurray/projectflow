@@ -20,6 +20,17 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 ### Fixed
 - The Apps tab's "Markdown" tile did nothing when clicked: it called the same generic `switch_to_viewer_mode("webview")` used for PDF/Image, but unlike those there's no persisted "default markdown file" setting for it to reveal — the general viewer's markdown path is pure runtime state, never saved or restored. Now carries the actual path of the first local `.md` item found and opens it directly.
 
+### Added (launcher editing rework)
+- **Resources categories are now fully editable, in both layouts**: the Resources section is no longer one pooled/merged bucket — it shows the project's real categories under their own real names, filtered to hide only their doc-classified items. Because these are real categories again (not a pool), they get full drag-reorder, rename, delete-category, and add-entry for free, in Focus layout's Resources tab and Standard layout's "☰ Group" view, whether or not Edit Project is on.
+- **A real "Docs" category**: a category literally named "Docs" merges into the Docs bucket with its true origin instead of going through the doc/resource classifier — filed there *is* the classification. Fully editable exactly like a Resources category (drag/rename/delete/add-entry), sitting alongside the still-pooled AI section and dynamically-discovered doc items from other categories in the same Docs tab. A "➕ Create Docs Category" button appears in edit mode when one doesn't exist yet.
+- **👁 Hide toggle for dynamically-discovered docs**: AI items and doc-typed files still living in another category get an inline eye button instead of drag/edit controls, since there's no single real category behind them to manage. Hidden items disappear from the curated views entirely; a "👁 N hidden — Manage" button (shown whenever any exist) opens a small dialog to bring them back.
+- **"📁 Move to category"**: replaces the old cosmetic "Move display to" (a Docs/Resources-only display flag) with a real, physical move to any existing category — the same mechanism drag-and-drop already used. Moving a dynamically-discovered item into the real "Docs" category is how it gets promoted to fully editable.
+
+### Fixed (launcher editing rework)
+- Entering Edit Project while on the Focus-layout Docs tab could show unrelated Resources-style content (a plain real category list) instead of the AI/Docs view with the new hide toggles — `group_by_type` defaults to `true` in Focus layout (a vestigial leftover from before the tab bar existed) and an unguarded dispatch branch let it hijack Focus's own tab routing whenever that fell through unhandled. Docs and Resources now both stay on the curated view regardless of edit mode; only Files/Apps still fall back to the raw category list while editing.
+- A stray "➕ Add Launcher" button appeared under the AI section in edit mode — AI isn't a real category, so it couldn't have worked correctly. Removed.
+- `_grouped_hidden_item_ids`/`_group_view_origin` (used to hide items from a pooled view without disturbing their real indices) could leak stale state into a render pass that didn't rebuild them, incorrectly hiding items in what should have been an unfiltered view. Now reset unconditionally at the start of every render.
+
 ## 2026-08-22
 
 ### Added

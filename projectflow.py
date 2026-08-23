@@ -359,13 +359,19 @@ class CategoryDropZone(QWidget):
         event.acceptProposedAction()
 
     def _get_drop_index(self, pos):
-        """Determine which index the drop should insert at based on Y position"""
-        for i, (widget, item_idx) in enumerate(self.item_widgets):
-            widget_rect = widget.geometry()
+        """Determine which true item index the drop should insert at, based on Y position.
+
+        Returns the real item_idx from self.item_widgets, not the loop position — those
+        are the same thing when every item in the category is rendered (always true until
+        Resources categories could have gaps, see _build_grouped_categories()'s
+        self._grouped_hidden_item_ids), but diverge once some items are hidden. Returning
+        the true index keeps handle_item_reorder()/handle_item_move_to_category() correct
+        in both cases, since they already expect true indices."""
+        for widget, item_idx in self.item_widgets:
             # If drop is above the widget's center, insert before it
-            if pos.y() < widget_rect.center().y():
-                return i
-        return len(self.item_widgets)
+            if pos.y() < widget.geometry().center().y():
+                return item_idx
+        return self.item_widgets[-1][1] + 1 if self.item_widgets else 0
 
 
 class DragHandle(QLabel):
@@ -1611,7 +1617,7 @@ class ProjectFlowApp(QMainWindow):
 
     def _is_website_item(self, path, app):
         """True if a launcher item's path/app looks like a website link (used for
-        classification and for sorting websites first within the Resources bucket)."""
+        Docs/Resources classification)."""
         p = str(path)
         first_token = p.split()[0] if ' ' in p else p
         return first_token.startswith(('http://', 'https://')) or app in ('firefox', 'chrome')
@@ -1636,6 +1642,9 @@ class ProjectFlowApp(QMainWindow):
         return None
 
     def _get_grouping_override(self, path):
+        """Returns 'Docs', 'Resources', 'Hidden', or None. 'Hidden' (set via the inline 👁
+        toggle) excludes the item from both the Docs pool and its real category's
+        Resources rendering — see _build_grouped_categories()."""
         key = self._grouping_override_key()
         if not key:
             return None
@@ -1651,12 +1660,125 @@ class ProjectFlowApp(QMainWindow):
         self.settings.setdefault('grouping_overrides', {}).setdefault(key, {})[path] = bucket
         self.save_settings()
 
+    def _ai_hidden_paths_key(self):
+        """Absolute path of the current config — scopes ai_hidden_paths per project,
+        mirroring _grouping_override_key()."""
+        if getattr(self, 'current_config_file', None):
+            return os.path.abspath(self.current_config_file)
+        return None
+
+    def _get_ai_hidden_paths(self):
+        key = self._ai_hidden_paths_key()
+        if not key:
+            return set()
+        return set(self.settings.get('ai_hidden_paths', {}).get(key, []))
+
+    def _toggle_ai_item_hidden(self, path):
+        """Hide an AI-category item (👁 toggle) — stored in .projectflow_settings.json,
+        never the project JSON, since this is a personal declutter preference rather than
+        project content. AI items aren't self.COLUMN_1 data, so there's no grouping
+        override to reuse here (see _hide_pooled_doc_item for that case)."""
+        key = self._ai_hidden_paths_key()
+        if not key:
+            return
+        hidden = self.settings.setdefault('ai_hidden_paths', {}).setdefault(key, [])
+        abs_path = os.path.abspath(path)
+        if abs_path not in hidden:
+            hidden.append(abs_path)
+        self.save_settings()
+        self.refresh_projects()
+
+    def _hide_pooled_doc_item(self, path):
+        """Hide a doc-classified item that's still pooled from another real category (👁
+        toggle) — sets the 'Hidden' grouping override, excluding it from both the Docs
+        pool and its real category's Resources rendering. See _build_grouped_categories()."""
+        self._set_grouping_override(path, 'Hidden')
+        self.refresh_projects()
+
+    def _get_all_hidden_items(self):
+        """Everything currently hidden from the dynamic Docs/Resources views — both
+        AI-hidden paths and 'Hidden'-overridden real items — for the "N hidden — Manage"
+        dialog. Best-effort label lookup for override-hidden items (falls back to the raw
+        path if the item can't be found, e.g. it was since deleted)."""
+        hidden = []
+        for abs_path in sorted(self._get_ai_hidden_paths()):
+            hidden.append({'kind': 'ai', 'label': os.path.basename(abs_path), 'path': abs_path})
+
+        key = self._grouping_override_key()
+        if key:
+            overrides = self.settings.get('grouping_overrides', {}).get(key, {})
+            for path, bucket in overrides.items():
+                if bucket != 'Hidden':
+                    continue
+                label = path
+                for cat_dict in self.COLUMN_1:
+                    for items in cat_dict.values():
+                        for item in items:
+                            if item[1] == path:
+                                label = item[0]
+                hidden.append({'kind': 'override', 'label': label, 'path': path})
+        return hidden
+
+    def _unhide_item(self, hidden_entry):
+        """Reverse _toggle_ai_item_hidden()/_hide_pooled_doc_item() for one entry from
+        _get_all_hidden_items()."""
+        if hidden_entry['kind'] == 'ai':
+            key = self._ai_hidden_paths_key()
+            if key:
+                hidden_list = self.settings.get('ai_hidden_paths', {}).get(key, [])
+                if hidden_entry['path'] in hidden_list:
+                    hidden_list.remove(hidden_entry['path'])
+                self.save_settings()
+        else:
+            key = self._grouping_override_key()
+            if key:
+                self.settings.get('grouping_overrides', {}).get(key, {}).pop(hidden_entry['path'], None)
+                self.save_settings()
+        self.refresh_projects()
+
+    def _show_hidden_items_dialog(self):
+        """Minimal management dialog for 👁-hidden items — see the "N hidden — Manage"
+        link. Deliberately simple (plain list + un-hide), matching the View Archive
+        dialog's style — no search/bulk actions, per the "tidy up later" scope decision."""
+        hidden = self._get_all_hidden_items()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Hidden from Docs")
+        dialog.resize(420, 320)
+        layout = QVBoxLayout(dialog)
+
+        list_widget = QListWidget()
+        for entry in hidden:
+            list_item = QListWidgetItem(entry['label'])
+            list_item.setData(Qt.ItemDataRole.UserRole, entry)
+            list_widget.addItem(list_item)
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        unhide_btn = QPushButton("Show Again")
+
+        def _do_unhide():
+            list_item = list_widget.currentItem()
+            if not list_item:
+                return
+            self._unhide_item(list_item.data(Qt.ItemDataRole.UserRole))
+            dialog.accept()
+
+        unhide_btn.clicked.connect(_do_unhide)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.reject)
+        btn_row.addWidget(unhide_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dialog.exec()
+
     def _get_ai_category_items(self):
         """Detect an ai/ folder (see ai/.instructions.md's human/AI-shared-docs convention)
         in this project's default folder, and surface it plus well-known AI-authored root
         files as an automatic, non-editable "AI" category — always shown above Docs when
         present. Returns [] if no ai/ subfolder exists, so the bucket stays absent for most
-        projects."""
+        projects. Items in _get_ai_hidden_paths() (the 👁 hide toggle) are excluded."""
         root = getattr(self, 'config_folder_path', None)
         if not root or not os.path.isdir(root):
             return []
@@ -1664,12 +1786,13 @@ class ProjectFlowApp(QMainWindow):
         if not os.path.isdir(ai_dir):
             return []
 
+        hidden_paths = self._get_ai_hidden_paths()
         items = []
         for name in sorted(os.listdir(ai_dir), key=str.lower):
             if name.startswith('.'):
                 continue
             full_path = os.path.join(ai_dir, name)
-            if os.path.isfile(full_path):
+            if os.path.isfile(full_path) and full_path not in hidden_paths:
                 items.append([name, full_path, "default"])
 
         AI_ROOT_FILES = ["claude.md", "agents.md", "changelog.md", "specification.md", "spec.md"]
@@ -1683,27 +1806,51 @@ class ProjectFlowApp(QMainWindow):
             if not real_name or real_name.lower() in seen:
                 continue
             full_path = os.path.join(root, real_name)
-            if os.path.isfile(full_path):
+            if os.path.isfile(full_path) and full_path not in hidden_paths:
                 items.append([real_name, full_path, "default"])
                 seen.add(real_name.lower())
         return items
 
     def _build_grouped_categories(self):
-        """Non-destructive Docs/Resources view over self.COLUMN_1.
+        """AI/Docs pooled view + real, editable Resources categories over self.COLUMN_1.
 
-        Pools items from every real category by heuristic (or manual override) without
-        ever modifying self.COLUMN_1 or the project's JSON file. Each item's true
-        (category_name, index) is recorded in self._group_view_origin — by object identity,
-        since the same list objects are reused, not copies — so editing/deleting/context-menu
-        actions triggered from this view still act on the real, authored data.
+        AI and Docs remain a non-destructive pool: items are collected from every real
+        category by heuristic (or manual override) without ever modifying self.COLUMN_1
+        or the project's JSON file. Each pooled item's true (category_name, index) is
+        recorded in self._group_view_origin — by object identity, since the same list
+        objects are reused, not copies — so editing/deleting/context-menu actions
+        triggered from this view still act on the real, authored data.
 
-        Resources is sorted websites-first (stable sort — everything else keeps its
-        relative pooling order) since there's no separate Websites bucket/tab anymore.
+        Resources is deliberately NOT pooled: real categories are returned under their
+        own real names, with their full, unfiltered item lists intact (so every index
+        stays correct for drag-and-drop/edit) — any items among them that are AI- or
+        Docs-classified are recorded in self._grouped_hidden_item_ids instead, so the
+        render loop skips drawing them there (they're shown under AI/Docs instead).
+        Because these are real categories rather than a pool, they get full drag-reorder/
+        rename/delete/add-entry for free, reusing Standard layout's own category
+        rendering — see _is_grouped_view_active() and build_main_content()'s dispatch.
+
+        A real category literally named "Docs" is a special case: every item in it goes
+        straight into the pooled Docs bucket with its TRUE origin ("Docs", idx) — no
+        classifier, no hiding — since being filed there IS the classification. This is
+        the one intentional place where a real category name and a pooled bucket name
+        coincide, letting Docs items be fully editable (drag/rename/delete/add-entry)
+        exactly like a Resources category, while AI and other pooled Docs items (still
+        physically living in some other category) stay read-mostly with only a hide
+        toggle — see build_main_content()'s per-item grouped_active check.
+
+        Items can also be explicitly hidden from these dynamic views via a 'Hidden'
+        grouping override (_get_grouping_override()/_set_grouping_override()) — set via
+        the inline 👁 toggle rather than the heuristic, tracked the same way as AI-claimed
+        items (self._grouped_hidden_item_ids), excluding them from both Docs and their
+        real category's Resources rendering.
         """
         # Dict insertion order controls render order — AI declared first so it always
-        # renders above Docs above Resources (see _get_ai_category_items()).
-        buckets = {'AI': [], 'Docs': [], 'Resources': []}
+        # renders above Docs (see _get_ai_category_items()); real categories are
+        # appended after, in their own self.COLUMN_1 order.
+        buckets = {'AI': [], 'Docs': []}
         self._group_view_origin = {}
+        self._grouped_hidden_item_ids = set()
 
         ai_items = self._get_ai_category_items()
         ai_paths = set()
@@ -1712,24 +1859,36 @@ class ProjectFlowApp(QMainWindow):
             self._group_view_origin[id(item)] = (None, None)
             ai_paths.add(os.path.abspath(item[1]))
 
+        real_category_buckets = []
         for cat_dict in self.COLUMN_1:
             for category_name, items in cat_dict.items():
+                if category_name == "Docs":
+                    # Real Docs category — filed here IS the classification, no heuristic,
+                    # no hiding; true origin lets these render fully editable (see above).
+                    for idx, item in enumerate(items):
+                        buckets['Docs'].append(item)
+                        self._group_view_origin[id(item)] = ("Docs", idx)
+                    continue
+                has_visible_resource_item = False
                 for idx, item in enumerate(items):
                     if len(item) == 2:
                         path, app = item[1], "kate"
                     else:
                         path, app = item[1], item[2]
+                    self._group_view_origin[id(item)] = (category_name, idx)
                     if os.path.abspath(os.path.expanduser(str(path))) in ai_paths:
+                        self._grouped_hidden_item_ids.add(id(item))
                         continue  # already surfaced via the automatic AI category
                     bucket = self._get_grouping_override(path) or self._classify_launcher_item(path, app)
-                    buckets[bucket].append(item)
-                    self._group_view_origin[id(item)] = (category_name, idx)
-
-        def _resource_sort_key(item):
-            path, app = (item[1], "kate") if len(item) == 2 else (item[1], item[2])
-            return 0 if self._is_website_item(path, app) else 1
-
-        buckets['Resources'].sort(key=_resource_sort_key)
+                    if bucket == 'Hidden':
+                        self._grouped_hidden_item_ids.add(id(item))
+                    elif bucket == 'Docs':
+                        buckets['Docs'].append(item)
+                        self._grouped_hidden_item_ids.add(id(item))
+                    else:
+                        has_visible_resource_item = True
+                if has_visible_resource_item:
+                    real_category_buckets.append({category_name: items})
 
         # Always pin the project's own notes as the first Docs entry — a second,
         # non-editable way to reach the same file as the Notes panel/tab (see
@@ -1740,15 +1899,18 @@ class ProjectFlowApp(QMainWindow):
         buckets['Docs'].insert(0, notes_item)
         self._group_view_origin[id(notes_item)] = (None, None)
 
-        return [{name: items} for name, items in buckets.items() if items]
+        return [{name: items} for name, items in buckets.items() if items] + real_category_buckets
 
     def _is_grouped_view_active(self):
-        """True whenever the launcher column is showing a pooled Docs/Resources view rather
-        than real per-category data — used to gate both the drag-disable behavior and the
-        right-click "Move display to" override menu consistently across both ways a pooled
-        view can be on screen: legacy Standard-layout group_by_type, and the Focus-layout
-        Docs/Resources tabs (see build_main_content's active_launcher_tab dispatch)."""
-        if self.edit_mode:
+        """True whenever the launcher column is showing _build_grouped_categories()'s output
+        rather than raw self.COLUMN_1 — used to gate the right-click "Move to category" menu,
+        the "👁 N hidden — Manage"/"Create Docs Category" buttons, and (per-item, see
+        build_main_content) the drag-disable behavior for the still-pooled AI/discovered-doc
+        items. edit_mode does NOT blanket-disable this: Docs/Resources both stay on the
+        grouped view while editing (Resources categories are real; Docs mixes a real "Docs"
+        category with still-pooled items) — only Files/Apps fall back to raw self.COLUMN_1
+        while editing, since there's nothing meaningful to manage on those tabs."""
+        if self.layout_mode == "focus" and self.edit_mode and self.active_launcher_tab not in ("docs", "resources"):
             return False
         if self.group_by_type:
             return True
@@ -7057,6 +7219,14 @@ function filterAliases(q) {{
         all_columns = [self.COLUMN_1]
         self._launcher_search_refs = []
 
+        # Reset every render — only _build_grouped_categories() (called below, conditionally)
+        # should populate these. Without this reset, a render pass that DOESN'T call it (the
+        # raw self.COLUMN_1 fallback used for Docs/Files/Apps while editing) would keep
+        # consulting stale data from whichever grouped/pooled render happened last, silently
+        # hiding items that should show up unfiltered in the raw view.
+        self._group_view_origin = {}
+        self._grouped_hidden_item_ids = set()
+
         # Resolve the folder browser's starting path before either the launcher-column Quick
         # File Browser Panel or the main Folder viewer consult it — the panel is built first
         # (see _build_launcher_folder_panel's ordering note), and its own fallback used to
@@ -7070,18 +7240,35 @@ function filterAliases(q) {{
         for col_idx, column_categories in enumerate(all_columns):
             # Focus-layout launcher column: active_launcher_tab picks what column_categories
             # (if anything) gets rendered — Files/Apps replace it with a panel built directly
-            # into column_layout below, Docs/Resources filter _build_grouped_categories() down
-            # to just that one bucket. Standard layout is untouched: it keeps the legacy
-            # group_by_type toggle driving the old (now two-bucket) stacked view.
-            focus_launcher_tab_active = col_idx == 0 and self.layout_mode == "focus" and not self.edit_mode
+            # into column_layout below, and are the only tabs that still fall back to raw
+            # self.COLUMN_1 while editing (nothing meaningful to show there otherwise). Docs
+            # and Resources both stay on _build_grouped_categories()'s output regardless of
+            # edit_mode: Resources categories are real (not pooled), so they get full
+            # editing for free; Docs mixes a real "Docs" category (same full editing) with
+            # still-pooled AI/discovered items (👁 hide toggle only, no drag) — see the
+            # per-item grouped_active check below and "A real 'Docs' category" in CLAUDE.md.
+            # Standard layout's legacy group_by_type toggle mirrors this same split.
+            focus_launcher_tab_active = col_idx == 0 and self.layout_mode == "focus" and (
+                not self.edit_mode or self.active_launcher_tab in ("docs", "resources")
+            )
             if focus_launcher_tab_active:
-                if self.active_launcher_tab in ("docs", "resources"):
-                    bucket_names = ("AI", "Docs") if self.active_launcher_tab == "docs" else ("Resources",)
-                    column_categories = [c for c in self._build_grouped_categories() if any(bn in c for bn in bucket_names)]
-                else:
+                if self.active_launcher_tab == "resources":
+                    column_categories = [c for c in self._build_grouped_categories() if "AI" not in c and "Docs" not in c]
+                elif self.active_launcher_tab == "docs":
+                    column_categories = [c for c in self._build_grouped_categories() if "AI" in c or "Docs" in c]
+                elif not self.edit_mode:
                     column_categories = []  # "files" / "apps" — panel built directly, no categories
-            elif col_idx == 0 and self.group_by_type and not self.edit_mode:
-                column_categories = self._build_grouped_categories()
+                # else: edit_mode and tab is "files"/"apps" — falls through, column_categories
+                # stays [self.COLUMN_1] (raw fallback — nothing to manage on these tabs anyway).
+            elif col_idx == 0 and self.layout_mode != "focus" and self.group_by_type:
+                # Standard layout only — group_by_type is vestigial in Focus layout (still
+                # stored/defaulted True, but display is entirely driven by the tab dispatch
+                # above; without this layout_mode guard it would incorrectly hijack Focus's
+                # own raw-fallback case above whenever that branch falls through unhandled.
+                if self.edit_mode:
+                    column_categories = [c for c in self._build_grouped_categories() if "AI" not in c and "Docs" not in c]
+                else:
+                    column_categories = self._build_grouped_categories()
 
             # Files/Apps tabs (Focus layout) and the legacy expanded-folder-panel both replace
             # the category list with a panel built directly into column_layout — this flag
@@ -7144,8 +7331,12 @@ function filterAliases(q) {{
                     # styled like the wide-viewer's tab row (see tab_btn_style/active_tab_style
                     # further down in this method) so switching "what the launcher column
                     # shows" feels the same as switching viewers. Standard layout is untouched
-                    # (see the "☰ Group" button further below, still built there).
-                    if self.layout_mode == "focus" and not self.edit_mode:
+                    # (see the "☰ Group" button further below, still built there). Always shown
+                    # (even in edit mode) so Resources — real, editable categories — stays
+                    # reachable/switchable while editing; switching to Docs/Files/Apps while
+                    # editing still falls back to today's raw category list (see the
+                    # focus_launcher_tab_active dispatch above), unchanged for now.
+                    if self.layout_mode == "focus":
                         # Blue (bg_category/bg_category_hover) rather than the wide-viewer
                         # tab row's green — matches the category header bars ("Docs - Open
                         # All" etc.) these tabs are effectively switching between.
@@ -7231,9 +7422,9 @@ function filterAliases(q) {{
                         column_layout.addLayout(launcher_tabs_layout)
                         column_layout.addSpacing(3)
 
-                        if self.active_launcher_tab == "files":
+                        if not self.edit_mode and self.active_launcher_tab == "files":
                             self._build_launcher_folder_panel(column_layout)
-                        elif self.active_launcher_tab == "apps":
+                        elif not self.edit_mode and self.active_launcher_tab == "apps":
                             self._build_apps_tab(column_layout)
 
                     # First column: add edit mode and refresh buttons (like column 2 style)
@@ -7299,8 +7490,12 @@ function filterAliases(q) {{
                         category_ref = {'container': group_container, 'category_name': category_name, 'items': []}
                         self._launcher_search_refs.append(category_ref)
 
-                    # Create category header (editable in edit mode)
-                    if self.edit_mode:
+                    # Create category header (editable in edit mode) — AI is excluded even
+                    # while editing, since it's purely filesystem-derived, not a real category
+                    # to rename/delete (see _build_grouped_categories()). "Docs" always gets the
+                    # real-category header, since even if nothing's filed there yet, the
+                    # "+ Create Docs Category" button (below) is how that gets created.
+                    if self.edit_mode and category_name != "AI":
                         # EDIT MODE: Show category name editor with delete button
                         category_header = QWidget()
                         category_header_layout = QHBoxLayout(category_header)
@@ -7408,6 +7603,12 @@ function filterAliases(q) {{
 
                     # Add buttons for each item in this category
                     for idx, item in enumerate(items):
+                        # Skip items surfaced elsewhere (AI/Docs pooled buckets) when this
+                        # category is being rendered as a real Resources category — see
+                        # _build_grouped_categories()'s self._grouped_hidden_item_ids. Kept
+                        # at true index so drag/edit/delete stay correct for the items shown.
+                        if id(item) in getattr(self, '_grouped_hidden_item_ids', ()):
+                            continue
                         # Handle both 2-tuple and 3-tuple formats
                         if len(item) == 2:
                             display_name, path = item
@@ -7415,41 +7616,91 @@ function filterAliases(q) {{
                         else:
                             display_name, path, app = item
 
+                        # True origin first: AI has none (sentinel), a real category's items map
+                        # to themselves, and the Docs bucket is a MIX — items filed in the real
+                        # "Docs" category resolve to true_category == "Docs" (fully real, see
+                        # _build_grouped_categories()), while items pooled into Docs from
+                        # elsewhere (or AI) resolve to their own real category, or None for AI.
+                        true_category, true_idx = self._group_view_origin.get(id(item), (category_name, idx))
+                        # AI is always pooled (no real category backs it). The Docs bucket is only
+                        # pooled for items NOT actually filed in the real Docs category — those
+                        # get full drag/edit capability like any Resources category, below.
+                        is_pooled = self._is_grouped_view_active() and (
+                            category_name == "AI" or (category_name == "Docs" and true_category != "Docs")
+                        )
+
+                        # Get app icon if available — either emoji text or SVG file (shared by
+                        # both the pooled row and the real-item rendering below).
+                        app_icon = ""
+                        svg_icon_path = None
+                        if self._icon_key_for_app(app, path) in self.APP_INFO:
+                            icon_val = self.APP_INFO[self._icon_key_for_app(app, path)]["icon"]
+                            if icon_val.endswith(('.svg', '.png', '.jpg')):
+                                candidate = os.path.join(self.script_dir, icon_val)
+                                if os.path.isfile(candidate):
+                                    svg_icon_path = candidate
+                            else:
+                                app_icon = icon_val + " "
+
+                        if is_pooled:
+                            # Pooled AI/Docs item: no reordering/renaming to offer here (it isn't
+                            # filed in a category this view can manage), so the row is identical
+                            # in edit and view mode — a plain clickable button plus an inline 👁
+                            # hide toggle. Right-click still offers Edit/Delete/"Move to category"
+                            # when true_category is real (AI items have none, so they don't).
+                            pooled_row = QWidget()
+                            pooled_row_layout = QHBoxLayout(pooled_row)
+                            pooled_row_layout.setContentsMargins(0, 0, 0, 0)
+                            pooled_row_layout.setSpacing(2)
+
+                            btn = QPushButton(f"{app_icon}{display_name}")
+                            btn.setMinimumHeight(30)
+                            btn.setStyleSheet(self.get_item_button_style())
+                            if svg_icon_path:
+                                btn.setIcon(QIcon(svg_icon_path))
+                                btn.setIconSize(QSize(16, 16))
+                            btn.clicked.connect(
+                                lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
+                            )
+                            btn.setToolTip(f"[{app}] {path}")
+                            if true_category is not None:
+                                self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
+                            pooled_row_layout.addWidget(btn, 1)
+
+                            # No hide toggle for the permanent pinned-notes entry (category_name
+                            # == "Docs", true_category is None, but it's not an AI item either) —
+                            # hiding it wouldn't even take effect, since its insertion into the
+                            # Docs bucket bypasses the override check entirely (see
+                            # _build_grouped_categories()'s notes_item handling).
+                            if category_name == "AI" or true_category is not None:
+                                hide_btn = QPushButton("👁")
+                                hide_btn.setFixedWidth(28)
+                                hide_btn.setMinimumHeight(30)
+                                hide_btn.setToolTip("Hide from Docs")
+                                hide_btn.setStyleSheet(self.get_item_button_style())
+                                if category_name == "AI":
+                                    hide_btn.clicked.connect(lambda checked=False, p=path: self._toggle_ai_item_hidden(p))
+                                else:
+                                    hide_btn.clicked.connect(lambda checked=False, p=path: self._hide_pooled_doc_item(p))
+                                pooled_row_layout.addWidget(hide_btn)
+
+                            drop_zone_layout.addWidget(pooled_row)
+                            if col_idx == 0 and not self.edit_mode:
+                                category_ref['items'].append({
+                                    'widget': pooled_row, 'display_name': display_name, 'path': path, 'app': app,
+                                })
+                            continue
+
                         if self.edit_mode:
                             # EDIT MODE: compact row with drag handle, launcher, edit + delete buttons
                             item_widget = self.create_edit_item_widget(
-                                col_idx, category_name, idx, display_name, path, app
+                                col_idx, true_category, true_idx, display_name, path, app
                             )
                             drop_zone_layout.addWidget(item_widget)
-                            category_drop_zone.add_item(item_widget, idx)
+                            category_drop_zone.add_item(item_widget, true_idx)
                         else:
                             # VIEW MODE: Show normal button
-                            # Get app icon if available — either emoji text or SVG file
-                            app_icon = ""
-                            svg_icon_path = None
-                            if self._icon_key_for_app(app, path) in self.APP_INFO:
-                                icon_val = self.APP_INFO[self._icon_key_for_app(app, path)]["icon"]
-                                # Detect file-path icons (SVG/PNG stored relative to script_dir)
-                                if icon_val.endswith(('.svg', '.png', '.jpg')):
-                                    candidate = os.path.join(self.script_dir, icon_val)
-                                    if os.path.isfile(candidate):
-                                        svg_icon_path = candidate
-                                else:
-                                    app_icon = icon_val + " "
-
-                            grouped_active = self._is_grouped_view_active()
-                            if grouped_active:
-                                # Group-by-Type view: items are pooled from every real category, so
-                                # this button's true (category, index) may differ from the visual
-                                # bucket it's rendered under. Look up its real origin for editing —
-                                # and use a plain (non-draggable) button so a drag can never trigger
-                                # handle_item_move_to_category() and silently rewrite the real config.
-                                true_category, true_idx = self._group_view_origin.get(id(item), (category_name, idx))
-                                btn = QPushButton(f"{app_icon}{display_name}")
-                            else:
-                                true_category, true_idx = category_name, idx
-                                # Use DraggableItemButton for drag-and-drop reordering
-                                btn = DraggableItemButton(f"{app_icon}{display_name}", col_idx, category_name, idx)
+                            btn = DraggableItemButton(f"{app_icon}{display_name}", col_idx, true_category, true_idx)
                             btn.setMinimumHeight(30)
                             btn.setStyleSheet(self.get_item_button_style())
                             if svg_icon_path:
@@ -7459,9 +7710,9 @@ function filterAliases(q) {{
                                 lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
                             )
 
-                            # Set tooltip showing the command and path (with drag hint)
-                            drag_hint = "" if grouped_active else "\n(Drag to reorder)"
-                            btn.setToolTip(f"[{app}] {path}{drag_hint}")
+                            # Set tooltip showing the command and path — always draggable here,
+                            # since pooled (non-draggable) items are handled separately above.
+                            btn.setToolTip(f"[{app}] {path}\n(Drag to reorder)")
                             if true_category is not None:
                                 self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
 
@@ -7537,7 +7788,7 @@ function filterAliases(q) {{
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
-                                category_drop_zone.add_item(btn_container, idx)
+                                category_drop_zone.add_item(btn_container, true_idx)
 
                             # Check if this is a web link - add preview button
                             elif app in ("firefox", "chrome"):
@@ -7589,7 +7840,7 @@ function filterAliases(q) {{
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
-                                category_drop_zone.add_item(btn_container, idx)
+                                category_drop_zone.add_item(btn_container, true_idx)
 
                             # Check if this is an image - add preview button
                             elif app in ("gwenview", "gimp", "krita"):
@@ -7626,7 +7877,7 @@ function filterAliases(q) {{
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
-                                category_drop_zone.add_item(btn_container, idx)
+                                category_drop_zone.add_item(btn_container, true_idx)
 
                             # Check if this is a local HTML file - add built-in web viewer preview button
                             elif os.path.expanduser(path).lower().endswith(('.html', '.htm')) and self._is_local_path(path):
@@ -7648,7 +7899,7 @@ function filterAliases(q) {{
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
-                                category_drop_zone.add_item(btn_container, idx)
+                                category_drop_zone.add_item(btn_container, true_idx)
 
                             # Check if this is a local .md file - add rendered markdown preview button
                             elif os.path.expanduser(path).lower().endswith('.md') and self._is_local_path(path):
@@ -7670,7 +7921,7 @@ function filterAliases(q) {{
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
-                                category_drop_zone.add_item(btn_container, idx)
+                                category_drop_zone.add_item(btn_container, true_idx)
 
                             # Check if this is a folder/terminal item - add terminal button
                             elif app in ("dolphin", "file_manager", "terminal", "tail_log"):
@@ -7700,7 +7951,7 @@ function filterAliases(q) {{
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
-                                category_drop_zone.add_item(btn_container, idx)
+                                category_drop_zone.add_item(btn_container, true_idx)
                             else:
                                 if self._is_local_path(path):
                                     btn_layout = QHBoxLayout()
@@ -7726,27 +7977,41 @@ function filterAliases(q) {{
                                     btn_container = QWidget()
                                     btn_container.setLayout(btn_layout)
                                     drop_zone_layout.addWidget(btn_container)
-                                    category_drop_zone.add_item(btn_container, idx)
+                                    category_drop_zone.add_item(btn_container, true_idx)
                                 else:
                                     drop_zone_layout.addWidget(btn)
-                                    category_drop_zone.add_item(btn, idx)
+                                    category_drop_zone.add_item(btn, true_idx)
 
-                    # Populate search refs from drop zone (normal mode only)
+                    # Populate search refs from drop zone (normal mode only). `i` is each
+                    # item's TRUE index within category_drop_zone's own real category (they
+                    # match exactly — pooled/non-real items never get added to a drop zone,
+                    # see the `is_pooled` early-continue above) — not necessarily a position
+                    # in `items`, which for the Docs bucket is a pooled, mixed-origin list.
+                    # Look the real item up by its true category/index instead of `items[i]`.
                     if col_idx == 0 and not self.edit_mode:
-                        for w, i in category_drop_zone.item_widgets:
-                            it = items[i]
-                            category_ref['items'].append({
-                                'widget': w,
-                                'display_name': it[0],
-                                'path': it[1],
-                                'app': it[2] if len(it) > 2 else 'kate',
-                            })
+                        real_items_for_zone = None
+                        for cd in self.COLUMN_1:
+                            if category_drop_zone.category_name in cd:
+                                real_items_for_zone = cd[category_drop_zone.category_name]
+                                break
+                        if real_items_for_zone is not None:
+                            for w, i in category_drop_zone.item_widgets:
+                                if not (0 <= i < len(real_items_for_zone)):
+                                    continue
+                                it = real_items_for_zone[i]
+                                category_ref['items'].append({
+                                    'widget': w,
+                                    'display_name': it[0],
+                                    'path': it[1],
+                                    'app': it[2] if len(it) > 2 else 'kate',
+                                })
 
                     # Add the drop zone to group layout (always — drag works in both modes)
                     group_layout.addWidget(category_drop_zone)
 
-                    # Add "Add Launcher" button in edit mode
-                    if self.edit_mode:
+                    # Add "Add Launcher" button in edit mode — excluded for AI, same as the
+                    # rename/delete category header, since it isn't a real category to add into.
+                    if self.edit_mode and category_name != "AI":
                         add_entry_btn = QPushButton("➕ Add Launcher")
                         add_entry_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
                         add_entry_btn.setStyleSheet(f"""
@@ -7873,6 +8138,62 @@ function filterAliases(q) {{
                     tagged_group.setLayout(tagged_group_layout)
                     tagged_container_layout.addWidget(tagged_group)
                     column_layout.addWidget(tagged_container)
+
+            # "N hidden — Manage" — the only way back for items hidden via the inline 👁
+            # toggle (see _get_all_hidden_items()/_show_hidden_items_dialog()). Shown in
+            # both view and edit mode, since noticing something's missing isn't tied to
+            # editing.
+            if col_idx == 0 and self._is_grouped_view_active():
+                hidden_count = len(self._get_all_hidden_items())
+                if hidden_count:
+                    manage_hidden_btn = QPushButton(f"👁 {hidden_count} hidden — Manage")
+                    manage_hidden_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                    manage_hidden_btn.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {self.t('bg_button')};
+                            color: {self.t('fg_secondary')};
+                            border: 1px solid {self.t('border')};
+                            border-radius: 3px;
+                            padding: 4px 10px;
+                            font-size: 11px;
+                        }}
+                        QPushButton:hover {{
+                            background-color: {self.t('bg_button_hover')};
+                            color: {self.t('fg_on_dark')};
+                        }}
+                    """)
+                    manage_hidden_btn.clicked.connect(self._show_hidden_items_dialog)
+                    column_layout.addWidget(manage_hidden_btn)
+
+            # "+ Create Docs Category" — a discoverable shortcut for creating the real
+            # "Docs" category (see _build_grouped_categories()) the first time you're
+            # editing a grouped/pooled view and it doesn't exist yet, instead of expecting
+            # the user to know to type "Docs" via the generic "+ Add Category" below.
+            if self.edit_mode and self._is_grouped_view_active():
+                has_real_docs_category = any("Docs" in cd for cd in self.COLUMN_1)
+                if not has_real_docs_category:
+                    create_docs_btn = QPushButton("➕ Create Docs Category")
+                    create_docs_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                    create_docs_btn.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {self.t('bg_category')};
+                            color: {self.t('fg_on_dark')};
+                            border: 1px solid {self.t('bg_category_hover')};
+                            border-radius: 3px;
+                            padding: 5px 10px;
+                            font-size: 11px;
+                            font-weight: bold;
+                        }}
+                        QPushButton:hover {{
+                            background-color: {self.t('bg_category_hover')};
+                            color: {self.t('fg_on_dark')};
+                        }}
+                    """)
+                    create_docs_btn.setToolTip('Create a real "Docs" category — fully editable, always shown under Docs')
+                    create_docs_btn.clicked.connect(
+                        lambda checked=False, c_idx=col_idx: self._create_docs_category(c_idx)
+                    )
+                    column_layout.addWidget(create_docs_btn)
 
             # Add "Add Category" button in edit mode
             if self.edit_mode:
@@ -9846,11 +10167,19 @@ function filterAliases(q) {{
         edit_action = menu.addAction("✏️  Edit")
         delete_action = menu.addAction("🗑  Delete")
 
+        # "Move to category" physically relocates the item into any real category —
+        # replaces the old cosmetic Docs/Resources-only "Move display to" override.
+        # Moving into the real "Docs" category is how a dynamically-pooled item (still
+        # living elsewhere) gets promoted to fully editable — see _build_grouped_categories().
         move_actions = {}
         if self._is_grouped_view_active():
-            move_menu = menu.addMenu("📁  Move display to")
-            for bucket in ('Docs', 'Resources'):
-                move_actions[move_menu.addAction(bucket)] = bucket
+            real_category_names = [list(cd.keys())[0] for cd in self.COLUMN_1 if cd]
+            if real_category_names:
+                move_menu = menu.addMenu("📁  Move to category")
+                for real_name in real_category_names:
+                    if real_name == category_name:
+                        continue  # already there
+                    move_actions[move_menu.addAction(real_name)] = real_name
 
         action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if action == edit_action:
@@ -9858,12 +10187,9 @@ function filterAliases(q) {{
         elif action == delete_action:
             self.delete_item(col_idx, category_name, item_idx)
         elif action in move_actions:
-            for cat_dict in self.COLUMN_1:
-                if category_name in cat_dict and 0 <= item_idx < len(cat_dict[category_name]):
-                    item = cat_dict[category_name][item_idx]
-                    self._set_grouping_override(item[1], move_actions[action])
-                    self.refresh_projects()
-                    break
+            target_category = move_actions[action]
+            dest_items = next((cd[target_category] for cd in self.COLUMN_1 if target_category in cd), [])
+            self.handle_item_move_to_category(category_name, item_idx, target_category, len(dest_items))
 
     def _show_category_context_menu(self, btn, col_idx, category_name):
         """Show right-click Rename/Delete menu for a category header."""
@@ -10031,6 +10357,18 @@ function filterAliases(q) {{
         new_category = {"New Category": [["New Launcher", "/path/to/file", "editor"]]}
         column.append(new_category)
 
+        self.save_config_to_json()
+        self.refresh_projects(restore_scroll_pos=scroll_pos)
+
+    def _create_docs_category(self, col_idx):
+        """Create the real "Docs" category (empty) — see _build_grouped_categories() and
+        the "+ Create Docs Category" button. Mirrors add_new_category() but starts empty
+        (rather than a placeholder launcher) since it's immediately usable via its own
+        "+ Add Launcher" button once rendered as a real, editable category."""
+        if any("Docs" in cd for cd in self.COLUMN_1):
+            return  # already exists — button shouldn't be visible in this case anyway
+        scroll_pos = self.main_scroll.verticalScrollBar().value() if hasattr(self, 'main_scroll') else None
+        self.COLUMN_1.append({"Docs": []})
         self.save_config_to_json()
         self.refresh_projects(restore_scroll_pos=scroll_pos)
 
