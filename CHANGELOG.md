@@ -2,6 +2,24 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-23
+
+### Added
+- **Project notes pinned as the first Docs entry**: the Docs bucket (Focus layout's Docs tab, and Standard layout's "☰ Group" view) always shows a non-editable `"{Project Name} project notes"` entry first, linking to the same file as the Notes panel/tab — a second way to reach it, since there's no single obvious place documentation-hunters would otherwise look. Docs is now never empty, even for a project with zero authored doc items.
+- **Automatic "AI" category**: if a project's default folder contains an `ai/` subfolder (the shared human/AI documentation convention now used across projects), a new **AI** category appears above Docs — populated live from `ai/`'s own files (dotfiles skipped) plus whichever of `CLAUDE.md`/`AGENTS.md`/`CHANGELOG.md`/`Specification.md`/`SPEC.md` exist at the project root. Computed fresh from disk every render, nothing written to the project file; any authored launcher item pointing at one of these files is automatically excluded from the generic Docs bucket to avoid duplicates.
+- **"Open Project Folder in {file manager}"** footer button right below the Docs category, shown whenever the project has a default folder pinned.
+- **Pin a default Focus-layout launcher tab**: a new 📌 button at the end of the Files/Docs/Resources/Apps tab row writes `launcher_tab_default` into the project's config, overriding the last-opened tab on future loads (mirrors how viewer pins already override the last-opened viewer). Also addable via a new "Default Launcher Tab" field in Project Details.
+- **"⌂⌂ project folder" button is now always visible** on both folder-browsing toolbars instead of being hidden until a default folder exists: greyed out (still clickable) when unset — clicking it pins the currently browsed folder as the project's default and the button switches to its normal active style; unchanged "jump to project folder" behavior once one is set.
+- **"New from Template"**: right-clicking empty space in either folder-browsing surface now offers a template picker sourced from the freedesktop Templates folder (`XDG_TEMPLATES_DIR`, resolved from `~/.config/user-dirs.dirs`, falling back to `~/Templates`). Supports both conventions found in the wild: plain files/folders copied as-is, and KDE/Dolphin-style `.desktop` `Type=Link` wrapper files that give a friendlier display name than the real target file. Prompts for a name before copying (pre-filled with the template's own name); folders are copied recursively with only the resulting top-level folder renamed.
+
+### Changed
+- **Viewer pin buttons consolidated**: the individual 📌 buttons that used to live in each viewer's own toolbar (PDF/Web/Image/Console/Notes/Time) are replaced by a single shared 📌 at the end of the viewer tab row, acting on whichever tab is currently active — mirrors the new single pin button on the launcher tab row. The now-redundant 20px spacer after the launcher tab row was removed, since the pin buttons on both rows already provide visual separation.
+- **Notes panel's external-editor button** is now a proper "Open in {Editor}" footer (matching every other viewer's "Open in X" button style/position) instead of a bare 📝 icon sitting among the Joplin/archive controls.
+- **Default Viewer dropdown** (Project Details) reordered to match the viewer tab row (Notes, Web, Terminal, PDF, Image, Time, Help) and gained a `notes` option it was previously missing — the Notes pin button already worked, the dropdown just couldn't display/re-select that value.
+
+### Fixed
+- The Apps tab's "Markdown" tile did nothing when clicked: it called the same generic `switch_to_viewer_mode("webview")` used for PDF/Image, but unlike those there's no persisted "default markdown file" setting for it to reveal — the general viewer's markdown path is pure runtime state, never saved or restored. Now carries the actual path of the first local `.md` item found and opens it directly.
+
 ## 2026-08-22
 
 ### Added

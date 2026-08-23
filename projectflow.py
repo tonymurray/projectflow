@@ -1651,6 +1651,43 @@ class ProjectFlowApp(QMainWindow):
         self.settings.setdefault('grouping_overrides', {}).setdefault(key, {})[path] = bucket
         self.save_settings()
 
+    def _get_ai_category_items(self):
+        """Detect an ai/ folder (see ai/.instructions.md's human/AI-shared-docs convention)
+        in this project's default folder, and surface it plus well-known AI-authored root
+        files as an automatic, non-editable "AI" category — always shown above Docs when
+        present. Returns [] if no ai/ subfolder exists, so the bucket stays absent for most
+        projects."""
+        root = getattr(self, 'config_folder_path', None)
+        if not root or not os.path.isdir(root):
+            return []
+        ai_dir = os.path.join(root, "ai")
+        if not os.path.isdir(ai_dir):
+            return []
+
+        items = []
+        for name in sorted(os.listdir(ai_dir), key=str.lower):
+            if name.startswith('.'):
+                continue
+            full_path = os.path.join(ai_dir, name)
+            if os.path.isfile(full_path):
+                items.append([name, full_path, "default"])
+
+        AI_ROOT_FILES = ["claude.md", "agents.md", "changelog.md", "specification.md", "spec.md"]
+        try:
+            root_entries = {n.lower(): n for n in os.listdir(root)}
+        except OSError:
+            root_entries = {}
+        seen = set()
+        for target in AI_ROOT_FILES:
+            real_name = root_entries.get(target)
+            if not real_name or real_name.lower() in seen:
+                continue
+            full_path = os.path.join(root, real_name)
+            if os.path.isfile(full_path):
+                items.append([real_name, full_path, "default"])
+                seen.add(real_name.lower())
+        return items
+
     def _build_grouped_categories(self):
         """Non-destructive Docs/Resources view over self.COLUMN_1.
 
@@ -1663,8 +1700,18 @@ class ProjectFlowApp(QMainWindow):
         Resources is sorted websites-first (stable sort — everything else keeps its
         relative pooling order) since there's no separate Websites bucket/tab anymore.
         """
-        buckets = {'Docs': [], 'Resources': []}
+        # Dict insertion order controls render order — AI declared first so it always
+        # renders above Docs above Resources (see _get_ai_category_items()).
+        buckets = {'AI': [], 'Docs': [], 'Resources': []}
         self._group_view_origin = {}
+
+        ai_items = self._get_ai_category_items()
+        ai_paths = set()
+        for item in ai_items:
+            buckets['AI'].append(item)
+            self._group_view_origin[id(item)] = (None, None)
+            ai_paths.add(os.path.abspath(item[1]))
+
         for cat_dict in self.COLUMN_1:
             for category_name, items in cat_dict.items():
                 for idx, item in enumerate(items):
@@ -1672,6 +1719,8 @@ class ProjectFlowApp(QMainWindow):
                         path, app = item[1], "kate"
                     else:
                         path, app = item[1], item[2]
+                    if os.path.abspath(os.path.expanduser(str(path))) in ai_paths:
+                        continue  # already surfaced via the automatic AI category
                     bucket = self._get_grouping_override(path) or self._classify_launcher_item(path, app)
                     buckets[bucket].append(item)
                     self._group_view_origin[id(item)] = (category_name, idx)
@@ -1681,6 +1730,16 @@ class ProjectFlowApp(QMainWindow):
             return 0 if self._is_website_item(path, app) else 1
 
         buckets['Resources'].sort(key=_resource_sort_key)
+
+        # Always pin the project's own notes as the first Docs entry — a second,
+        # non-editable way to reach the same file as the Notes panel/tab (see
+        # CLAUDE.md's Group-by-Type Launcher View section). Sentinel origin
+        # (None, None) marks it as synthetic so the render loop skips wiring
+        # edit/delete/move-bucket context menu actions onto it.
+        notes_item = [f"{self.get_project_name()} project notes", self.get_notes_file_path(), "default"]
+        buckets['Docs'].insert(0, notes_item)
+        self._group_view_origin[id(notes_item)] = (None, None)
+
         return [{name: items} for name, items in buckets.items() if items]
 
     def _is_grouped_view_active(self):
@@ -2046,11 +2105,25 @@ class ProjectFlowApp(QMainWindow):
         viewer_label = QLabel("Default Viewer:")
         viewer_label.setStyleSheet(label_style)
         self._proj_default_viewer = QComboBox()
-        self._proj_default_viewer.addItems(["", "pdf", "webview", "image", "help", "console", "time"])
+        # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Time); "help"
+        # isn't a tab (opened via the footer's "❓ Help" button instead), so it's appended last.
+        self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "time", "help"])
         current_viewer = getattr(self, 'config_column2_default', None) or ""
         self._proj_default_viewer.setCurrentText(current_viewer)
         self._proj_default_viewer.setStyleSheet(input_style)
         form_layout.addRow(viewer_label, self._proj_default_viewer)
+
+        # Default Launcher Tab (Focus layout) — pins Files/Docs/Resources/Apps, mirrors
+        # Default Viewer above (see _set_launcher_tab_as_default())
+        launcher_tab_label = QLabel("Default Launcher Tab:")
+        launcher_tab_label.setStyleSheet(label_style)
+        self._proj_default_launcher_tab = QComboBox()
+        # Order matches the launcher tab row (Docs, Resources, Files, Apps).
+        self._proj_default_launcher_tab.addItems(["", "docs", "resources", "files", "apps"])
+        current_launcher_tab = getattr(self, 'config_launcher_tab_default', None) or ""
+        self._proj_default_launcher_tab.setCurrentText(current_launcher_tab)
+        self._proj_default_launcher_tab.setStyleSheet(input_style)
+        form_layout.addRow(launcher_tab_label, self._proj_default_launcher_tab)
 
         # PDF File
         pdf_label = QLabel("PDF File:")
@@ -3225,6 +3298,7 @@ class ProjectFlowApp(QMainWindow):
             self.config_project_name = self._proj_project_name.text().strip() or None
             # Viewer defaults
             self.config_column2_default = self._proj_default_viewer.currentText() or None
+            self.config_launcher_tab_default = self._proj_default_launcher_tab.currentText() or None
             self.config_pdf_file = self._proj_pdf_file.text().strip() or None
             self.config_webview_url = self._proj_webview_url.text().strip() or None
             self.config_image_file = self._proj_image_file.text().strip() or None
@@ -3408,6 +3482,11 @@ class ProjectFlowApp(QMainWindow):
                 config_data["column2_default"] = self.config_column2_default
             elif "column2_default" in config_data:
                 del config_data["column2_default"]
+
+            if self.config_launcher_tab_default:
+                config_data["launcher_tab_default"] = self.config_launcher_tab_default
+            elif "launcher_tab_default" in config_data:
+                del config_data["launcher_tab_default"]
 
             if self.config_pdf_file:
                 config_data["pdf_file"] = self.config_pdf_file
@@ -3757,6 +3836,26 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving active_launcher_tab: {e}")
 
+    def _set_launcher_tab_as_default(self):
+        """Pin the currently active Focus-layout launcher tab as this project's default —
+        mirrors set_viewer_as_default(), so launcher_tab_default overrides the last-opened
+        active_launcher_tab on future loads (see load_config())."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            config_data['launcher_tab_default'] = self.active_launcher_tab
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            self.config_launcher_tab_default = self.active_launcher_tab
+            QMessageBox.information(self, "Set Default", f"Set \"{self.active_launcher_tab.title()}\" as default launcher tab.")
+        except Exception as e:
+            print(f"Error setting launcher tab default: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to set default: {e}")
+
     def _enter_focus_layout(self):
         """Switch to Focus layout: hide right notes column, move notes into viewer tab."""
         if not hasattr(self, 'notes_panel') or not hasattr(self, 'notes_viewer_container'):
@@ -3929,6 +4028,8 @@ StartupNotify=true
                 self.config_folder_path = config_data.get('folder_path', None)
                 # Load default column2 mode (pdf, webview, or image)
                 self.config_column2_default = config_data.get('column2_default', None)
+                # Load pinned default Focus-layout launcher tab, if any
+                self.config_launcher_tab_default = config_data.get('launcher_tab_default', None)
                 # Load per-config terminal override
                 self.config_terminal = config_data.get('terminal', None)
                 # Load project-local notes file path if specified
@@ -3957,8 +4058,12 @@ StartupNotify=true
                         self.group_by_type = (self.layout_mode == "focus")
                     # Focus-layout launcher tab: remembers this project's last choice (see
                     # _switch_launcher_tab/_save_active_launcher_tab_to_config); defaults to
-                    # "files" if never explicitly set.
+                    # "files" if never explicitly set. A pinned launcher_tab_default (see
+                    # _set_launcher_tab_as_default) wins over the last-opened tab, mirroring
+                    # how config_column2_default overrides the viewer's last-opened mode.
                     self.active_launcher_tab = config_data.get('active_launcher_tab', 'files')
+                    if self.config_launcher_tab_default:
+                        self.active_launcher_tab = self.config_launcher_tab_default
 
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
@@ -3975,6 +4080,7 @@ StartupNotify=true
                 self.config_console_path = None
                 self.config_folder_path = None
                 self.config_column2_default = None
+                self.config_launcher_tab_default = None
                 self.config_terminal = None
                 self.config_browser_new_tab = None
                 self.config_notes_file = None
@@ -6970,8 +7076,8 @@ function filterAliases(q) {{
             focus_launcher_tab_active = col_idx == 0 and self.layout_mode == "focus" and not self.edit_mode
             if focus_launcher_tab_active:
                 if self.active_launcher_tab in ("docs", "resources"):
-                    bucket_name = "Docs" if self.active_launcher_tab == "docs" else "Resources"
-                    column_categories = [c for c in self._build_grouped_categories() if bucket_name in c]
+                    bucket_names = ("AI", "Docs") if self.active_launcher_tab == "docs" else ("Resources",)
+                    column_categories = [c for c in self._build_grouped_categories() if any(bn in c for bn in bucket_names)]
                 else:
                     column_categories = []  # "files" / "apps" — panel built directly, no categories
             elif col_idx == 0 and self.group_by_type and not self.edit_mode:
@@ -7094,9 +7200,34 @@ function filterAliases(q) {{
                             # Equal stretch so the trailing addSpacing below is a real gap
                             # rather than being absorbed by the buttons expanding into it.
                             launcher_tabs_layout.addWidget(tab_btn, 1)
-                        # Visual gap between the launcher tab row and the viewer's own tab
-                        # row, which sits immediately to the right in the adjacent column.
-                        launcher_tabs_layout.addSpacing(20)
+
+                        # Pin the active tab as this project's default — mirrors the shared
+                        # viewer 📌 button at the end of the viewer tab row (below), so
+                        # launcher_tab_default overrides the last-opened tab on load (see
+                        # load_config()) the same way column2_default already does for
+                        # viewers. No dynamic "currently pinned" highlight, matching every
+                        # other 📌 button in the app.
+                        pin_tab_btn_style = f"""
+                            QPushButton {{
+                                background-color: {self.t('bg_button')};
+                                color: {self.t('fg_primary')};
+                                border: 1px solid {self.t('border')};
+                                border-radius: 3px;
+                                font-size: 12px;
+                            }}
+                            QPushButton:hover {{
+                                background-color: {self.t('bg_button_hover')};
+                                color: {self.t('fg_on_dark')};
+                            }}
+                        """
+                        pin_tab_btn = QPushButton("📌")
+                        pin_tab_btn.setFixedWidth(28)
+                        pin_tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                        pin_tab_btn.setToolTip(f"Pin \"{self.active_launcher_tab.title()}\" as default launcher tab for this project")
+                        pin_tab_btn.setStyleSheet(pin_tab_btn_style)
+                        pin_tab_btn.clicked.connect(self._set_launcher_tab_as_default)
+                        launcher_tabs_layout.addWidget(pin_tab_btn)
+
                         column_layout.addLayout(launcher_tabs_layout)
                         column_layout.addSpacing(3)
 
@@ -7331,7 +7462,8 @@ function filterAliases(q) {{
                             # Set tooltip showing the command and path (with drag hint)
                             drag_hint = "" if grouped_active else "\n(Drag to reorder)"
                             btn.setToolTip(f"[{app}] {path}{drag_hint}")
-                            self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
+                            if true_category is not None:
+                                self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
 
                             # Shared style for small icon buttons beside launchers
                             icon_btn_style = f"""
@@ -7641,6 +7773,23 @@ function filterAliases(q) {{
 
                     column_layout.addWidget(group_container)
 
+                    # "Open Project Folder" footer right below the Docs category (only when
+                    # a default folder is actually pinned — see the "⌂⌂ project folder"
+                    # button/_pin_current_folder_as_project_default()). Deliberately labeled
+                    # "Open Project Folder", not "Open in {file manager}" alone, since the
+                    # project's default folder isn't necessarily where any given document in
+                    # this list actually lives — same _make_viewer_footer() strip used by
+                    # every other viewer's own "Open in X" button, for consistency.
+                    if category_name == "Docs" and col_idx == 0 and not self.edit_mode and self.config_folder_path:
+                        fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
+                        column_layout.addWidget(
+                            self._make_viewer_footer(
+                                f"Open Project Folder in {fm_name}",
+                                "Open this project's default folder in the file manager",
+                                self.open_project_folder_external,
+                            )
+                        )
+
             # Add Tagged Files category at the bottom of Column 1
             if col_idx == 0 and not hide_launchers_for_folder_panel:
                 tagged_files = self.get_tagged_files()
@@ -7866,6 +8015,20 @@ function filterAliases(q) {{
                     # Notes tab only visible in Focus layout
                     if mode == "notes":
                         btn.setVisible(self.layout_mode == "focus")
+
+                # Pin the current viewer as this project's default — a single shared button
+                # replacing the old per-viewer 📌 buttons that used to live in each viewer's
+                # own toolbar (PDF/webview/image/console/notes/time), mirroring the single
+                # pin button on the launcher tab row (see build_main_content's Focus-layout
+                # tab row) for consistency. set_viewer_as_default() already dispatches on
+                # self.column2_mode, so one button works for whichever tab is active.
+                viewer_pin_btn = QPushButton("📌")
+                viewer_pin_btn.setFixedWidth(28)
+                viewer_pin_btn.setMinimumHeight(self.d('header_btn_height'))
+                viewer_pin_btn.setToolTip("Set current viewer as default for this project")
+                viewer_pin_btn.setStyleSheet(tab_btn_style)
+                viewer_pin_btn.clicked.connect(self.set_viewer_as_default)
+                header_layout.addWidget(viewer_pin_btn)
 
                 # Add stretch to push buttons left
                 header_layout.addStretch()
@@ -8357,25 +8520,6 @@ function filterAliases(q) {{
             joplin_btn.clicked.connect(self.sync_to_joplin)
             archive_bar.addWidget(joplin_btn)
 
-        external_editor = self.settings.get("open_note_external")
-        if external_editor:
-            external_btn = QPushButton("📝")
-            external_btn.setStyleSheet(archive_btn_style)
-            external_btn.setToolTip(f"Open in {external_editor}")
-            external_btn.clicked.connect(self.open_note_in_external_editor)
-            archive_bar.addWidget(external_btn)
-
-        # Pin Notes as this project's default viewer — only meaningful in Focus layout, where
-        # Notes is a peer of the other viewer tabs (Web/PDF/Image/etc.); in Standard layout
-        # Notes is always the fixed 3rd column regardless of column2_mode/column2_default.
-        if self.layout_mode == "focus":
-            notes_pin_btn = QPushButton("📌")
-            notes_pin_btn.setFixedWidth(28)
-            notes_pin_btn.setStyleSheet(archive_btn_style)
-            notes_pin_btn.setToolTip("Set Notes as default viewer for this project")
-            notes_pin_btn.clicked.connect(self.set_viewer_as_default)
-            archive_bar.addWidget(notes_pin_btn)
-
         archive_bar.addStretch()
 
         archive_btn = QPushButton("📥 Archive")
@@ -8410,6 +8554,20 @@ function filterAliases(q) {{
         archive_bar.addWidget(view_archive_btn)
 
         notes_panel_layout.addLayout(archive_bar)
+
+        # "Open in {editor}" footer — same _make_viewer_footer() thin right-aligned strip
+        # used by every other viewer (PDF/Web/Image/Console/Folder/Help), for consistency,
+        # replacing the old bare 📝 icon button that used to sit among the Joplin/archive
+        # controls above.
+        external_editor = self.settings.get("open_note_external")
+        if external_editor:
+            notes_panel_layout.addWidget(
+                self._make_viewer_footer(
+                    f"Open in {external_editor.capitalize()}",
+                    f"Open note in {external_editor}",
+                    self.open_note_in_external_editor,
+                )
+            )
 
         # Place notes_panel into whichever container matches the current layout — decided
         # once, here, instead of built into the Standard-layout slot and reparented later.
@@ -9290,14 +9448,8 @@ function filterAliases(q) {{
         link_proj_btn.setFixedWidth(28)
         link_proj_btn.setToolTip("Change linked Kimai project")
         link_proj_btn.clicked.connect(self._kimai_link_project_dialog)
-        pin_btn = QPushButton("📌")
-        pin_btn.setStyleSheet(btn_style)
-        pin_btn.setFixedWidth(28)
-        pin_btn.setToolTip("Set time viewer as default for this project")
-        pin_btn.clicked.connect(self.set_viewer_as_default)
         toolbar.addWidget(refresh_btn)
         toolbar.addWidget(link_proj_btn)
-        toolbar.addWidget(pin_btn)
         main_layout.addLayout(toolbar)
 
         # Summary label
@@ -10054,17 +10206,6 @@ function filterAliases(q) {{
         fit_btn.clicked.connect(self.pdf_fit_width)
         toolbar_layout.addWidget(fit_btn)
 
-        # Set as default button
-        sep_default = QLabel("|")
-        sep_default.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep_default)
-
-        default_btn = QPushButton("📌")
-        default_btn.setStyleSheet(btn_style)
-        default_btn.setToolTip("Set this PDF as default for this project")
-        default_btn.clicked.connect(self.set_viewer_as_default)
-        toolbar_layout.addWidget(default_btn)
-
         # Add stretch to push buttons to the left
         toolbar_layout.addStretch()
 
@@ -10581,17 +10722,6 @@ function filterAliases(q) {{
         go_btn.clicked.connect(self.webview_navigate)
         toolbar_layout.addWidget(go_btn)
 
-        # Set as default button
-        sep_default = QLabel("|")
-        sep_default.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep_default)
-
-        default_btn = QPushButton("📌")
-        default_btn.setStyleSheet(btn_style)
-        default_btn.setToolTip("Set this URL as default for this project")
-        default_btn.clicked.connect(self.set_viewer_as_default)
-        toolbar_layout.addWidget(default_btn)
-
         # Markdown edit/preview controls — only visible when a .md file is loaded.
         # Editing is the default mode and autosaves; these just swap to/from the
         # read-only rendered view.
@@ -10815,17 +10945,6 @@ function filterAliases(q) {{
         fit_btn.clicked.connect(self.image_fit_width)
         toolbar_layout.addWidget(fit_btn)
 
-        # Set as default button
-        sep_default = QLabel("|")
-        sep_default.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
-        toolbar_layout.addWidget(sep_default)
-
-        default_btn = QPushButton("📌")
-        default_btn.setStyleSheet(btn_style)
-        default_btn.setToolTip("Set this image as default for this project")
-        default_btn.clicked.connect(self.set_viewer_as_default)
-        toolbar_layout.addWidget(default_btn)
-
         toolbar_layout.addStretch()
         parent_layout.addWidget(toolbar_widget)
 
@@ -10981,13 +11100,6 @@ function filterAliases(q) {{
                     lambda checked=False: self._show_alias_overflow_menu(overflow_aliases, overflow_btn)
                 )
                 toolbar_layout.addWidget(overflow_btn)
-
-        # Set as default button
-        default_btn = QPushButton("📌")
-        default_btn.setStyleSheet(btn_style)
-        default_btn.setToolTip("Set this directory as default for this project")
-        default_btn.clicked.connect(self.set_viewer_as_default)
-        toolbar_layout.addWidget(default_btn)
 
         parent_layout.addWidget(toolbar_widget)
 
@@ -11184,15 +11296,34 @@ function filterAliases(q) {{
         home_btn.clicked.connect(self.folder_go_home)
         toolbar_layout.addWidget(home_btn)
 
-        # Project default folder button — only shown when the project actually has one
-        # configured and it differs from home (otherwise it would be a redundant duplicate
-        # of the Home button above).
-        if self._project_folder_default_differs_from_home():
-            project_home_btn = QPushButton("⌂⌂")
+        # Project default folder button — always shown, greyed out (but still clickable)
+        # when this project has no folder_path pinned yet. Clicking it while greyed pins
+        # the currently browsed folder as the project default; once pinned, it switches to
+        # its active style and navigates there instead (see _pin_current_folder_as_project_default).
+        project_home_btn = QPushButton("⌂⌂")
+        if self.config_folder_path:
             project_home_btn.setStyleSheet(btn_style)
             project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
             project_home_btn.clicked.connect(self.folder_go_project_default)
-            toolbar_layout.addWidget(project_home_btn)
+        else:
+            project_home_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_button')};
+                    color: {self.t('border')};
+                    border: 1px solid {self.t('border')};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    min-width: 28px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
+            project_home_btn.setToolTip("Set current folder as this project's default folder")
+            project_home_btn.clicked.connect(self._pin_current_folder_as_project_default)
+        toolbar_layout.addWidget(project_home_btn)
 
         # Refresh button
         refresh_btn = QPushButton("↻")
@@ -11285,12 +11416,32 @@ function filterAliases(q) {{
         home_btn.clicked.connect(self.folder_go_home)
         toolbar_layout.addWidget(home_btn)
 
-        if self._project_folder_default_differs_from_home():
-            project_home_btn = QPushButton("⌂⌂")
+        # Always shown; greyed out (but still clickable) when no folder_path is pinned yet
+        # — see create_folder_toolbar's matching button for the full explanation.
+        project_home_btn = QPushButton("⌂⌂")
+        if self.config_folder_path:
             project_home_btn.setStyleSheet(mini_btn_style)
             project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
             project_home_btn.clicked.connect(self.folder_go_project_default)
-            toolbar_layout.addWidget(project_home_btn)
+        else:
+            project_home_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_button')};
+                    color: {self.t('border')};
+                    border: 1px solid {self.t('border')};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    min-width: 28px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
+            project_home_btn.setToolTip("Set current folder as this project's default folder")
+            project_home_btn.clicked.connect(self._pin_current_folder_as_project_default)
+        toolbar_layout.addWidget(project_home_btn)
 
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(mini_btn_style)
@@ -11624,19 +11775,33 @@ function filterAliases(q) {{
         """Navigate to home directory"""
         self.populate_folder_browser(os.path.expanduser("~"))
 
-    def _project_folder_default_differs_from_home(self):
-        """True if this project has its own folder_path configured and it isn't just the
-        user's home directory — used to decide whether the "⌂⌂ project folder" button is
-        worth showing at all (no point duplicating the plain Home button)."""
-        folder_path = getattr(self, 'config_folder_path', None)
-        if not folder_path:
-            return False
-        return os.path.expanduser(folder_path) != os.path.expanduser("~")
-
     def folder_go_project_default(self):
         """Navigate to this project's own configured folder_path."""
         if self.config_folder_path:
             self.populate_folder_browser(self.config_folder_path)
+
+    def _pin_current_folder_as_project_default(self):
+        """Pin the currently browsed folder as this project's default folder_path — the
+        action behind the always-visible "⌂⌂ project folder" button while it's greyed out
+        (no folder_path set yet). Mirrors the pin pattern used for viewers/launcher tabs
+        (set_viewer_as_default()/_set_launcher_tab_as_default()). refresh_projects() rebuilds
+        both folder toolbars so the button switches to its active style/behavior immediately."""
+        if not getattr(self, 'current_config_file', None) or not getattr(self, 'folder_current_path', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            config_data['folder_path'] = self.folder_current_path
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            self.config_folder_path = self.folder_current_path
+            QMessageBox.information(self, "Set Default", f"Set \"{self.folder_current_path}\" as this project's default folder.")
+            self.refresh_projects()
+        except Exception as e:
+            print(f"Error pinning project folder: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to set default folder: {e}")
 
     def folder_refresh(self):
         """Refresh current directory listing"""
@@ -11697,9 +11862,12 @@ function filterAliases(q) {{
         path, not standalone applications you'd open blank, so they stay reachable only via
         their normal launcher items in the Resources tab.
 
-        Returns a list of dicts: {'label', 'icon', 'kind': 'viewer'|'app', 'target'}.
-        'target' is a switch_to_viewer_mode() mode string for kind='viewer', or the resolved
-        app binary name for kind='app'.
+        Returns a list of dicts: {'label', 'icon', 'kind': 'viewer'|'markdown'|'app', 'target'}.
+        'target' is a switch_to_viewer_mode() mode string for kind='viewer' (PDF/Image, which
+        already have known content via config_pdf_file/config_image_file); a concrete file
+        path for kind='markdown' (the first local .md item found — there's no per-project
+        "default markdown file" setting the way PDF/Image have one); or the resolved app
+        binary name for kind='app'.
         """
         STRUCTURAL_APPS = {
             'browser', 'file_manager', 'dolphin', 'editor', 'default',
@@ -11734,7 +11902,13 @@ function filterAliases(q) {{
 
         has_pdf = bool(getattr(self, 'config_pdf_file', None))
         has_image = bool(getattr(self, 'config_image_file', None))
-        has_markdown = False
+        # Unlike has_pdf/has_image (backed by config_pdf_file/config_image_file, a genuine
+        # per-project default that's already loaded into self.pdf_path/self.image_path at
+        # project load time), there's no equivalent "default markdown file" setting — the
+        # general viewer's self.webview_md_path is purely runtime state, never persisted.
+        # So the Markdown tile needs its own concrete path to open, not just a mode switch;
+        # markdown_path is the first local .md item found (see 'markdown' kind below).
+        markdown_path = None
 
         for cat_dict in self.COLUMN_1:
             for category_name, items in cat_dict.items():
@@ -11744,7 +11918,8 @@ function filterAliases(q) {{
                     first_token = str(path).split()[0] if ' ' in str(path) else str(path)
                     ext = os.path.splitext(first_token)[1].lower()
                     if ext == '.md':
-                        has_markdown = True
+                        if markdown_path is None:
+                            markdown_path = os.path.expanduser(first_token)
                     elif ext == '.pdf':
                         has_pdf = True
                     elif ext in IMAGE_EXTS:
@@ -11764,9 +11939,9 @@ function filterAliases(q) {{
         # Short, single-word labels — matches the terse style of the real-app tiles
         # (Firefox/Kate/etc.) and avoids wrapping/eliding in the grid's narrow tiles.
         tiles = []
-        if has_markdown:
+        if markdown_path:
             tiles.append({
-                'label': 'Markdown', 'kind': 'viewer', 'target': 'webview',
+                'label': 'Markdown', 'kind': 'markdown', 'target': markdown_path,
                 'icon': self._theme_icon(['text-markdown', 'text-x-markdown'], 'text-x-generic'),
             })
         if has_pdf:
@@ -11841,17 +12016,24 @@ function filterAliases(q) {{
         column_layout.addWidget(apps_list, 1)
 
     def _on_apps_tab_item_clicked(self, list_item):
-        """Launch an Apps-tab tile: built-in viewers switch the wide viewer tab; external
-        apps launch pointed at the project's own folder via the existing open_in_app()
-        dispatch (so per-app quirks like "kate+directory opens Dolphin instead" apply
-        automatically) — with force_external=True so Focus layout's content-type routing
-        (which would otherwise intercept e.g. a folder path into the internal folder
-        preview) is bypassed, since these tiles are explicitly meant to open the real app.
-        Browsers (firefox/chrome) get "about:blank" instead of the folder path, since their
-        command always templates the path in as a URL, not a directory."""
+        """Launch an Apps-tab tile: built-in PDF/Image viewers switch the wide viewer tab
+        (they already have known content via config_pdf_file/config_image_file); the
+        Markdown tile opens its concrete file directly (see _build_apps_tab_items — there's
+        no equivalent "default markdown file" setting for switch_to_viewer_mode alone to
+        reveal); external apps launch pointed at the project's own folder via the existing
+        open_in_app() dispatch (so per-app quirks like "kate+directory opens Dolphin
+        instead" apply automatically) — with force_external=True so Focus layout's
+        content-type routing (which would otherwise intercept e.g. a folder path into the
+        internal folder preview) is bypassed, since these tiles are explicitly meant to
+        open the real app. Browsers (firefox/chrome) get "about:blank" instead of the
+        folder path, since their command always templates the path in as a URL, not a
+        directory."""
         tile = list_item.data(Qt.ItemDataRole.UserRole)
         if tile['kind'] == 'viewer':
             self.switch_to_viewer_mode(tile['target'])
+            return
+        if tile['kind'] == 'markdown':
+            self._open_markdown_in_webview(tile['target'])
             return
         app_name = tile['target']
         target = "about:blank" if app_name in ('firefox', 'chrome') else (
@@ -11958,6 +12140,8 @@ function filterAliases(q) {{
         """Handle right-click in the launcher-column quick file-browser panel"""
         item = self.launcher_folder_browser.itemAt(position)
         if not item:
+            self._build_folder_background_context_menu(self.folder_current_path).exec(
+                self.launcher_folder_browser.mapToGlobal(position))
             return
         path = item.data(0, Qt.ItemDataRole.UserRole)
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
@@ -11976,6 +12160,8 @@ function filterAliases(q) {{
         """Handle right-click in the launcher-column mini panel's icon-grid view"""
         item = self.launcher_folder_icon_view.itemAt(position)
         if not item:
+            self._build_folder_background_context_menu(self.folder_current_path).exec(
+                self.launcher_folder_icon_view.mapToGlobal(position))
             return
         path = item.data(Qt.ItemDataRole.UserRole)
         item_type = item.data(Qt.ItemDataRole.UserRole + 1)
@@ -12259,10 +12445,118 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         return menu
 
+    def _get_templates_folder(self):
+        """Resolve the freedesktop Templates folder (XDG_TEMPLATES_DIR) — the same folder
+        Dolphin/Nautilus's "Create New" reads. Checks ~/.config/user-dirs.dirs for a user
+        override (handles renamed/localized folders), falling back to ~/Templates."""
+        user_dirs_file = os.path.expanduser("~/.config/user-dirs.dirs")
+        if os.path.exists(user_dirs_file):
+            try:
+                with open(user_dirs_file) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("XDG_TEMPLATES_DIR="):
+                            value = line.split("=", 1)[1].strip().strip('"')
+                            return os.path.expanduser(value.replace("$HOME", "~"))
+            except OSError:
+                pass
+        return os.path.expanduser("~/Templates")
+
+    def _resolve_desktop_template(self, desktop_path):
+        """Parse a KDE/Dolphin-style Type=Link template .desktop file (Name=/URL=, URL
+        resolved relative to the .desktop file's own directory). Returns (label,
+        source_path), or (None, None) if it isn't a Link template (e.g. a stray launcher
+        .desktop someone dropped into Templates, not an actual template wrapper)."""
+        import configparser
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(desktop_path, encoding='utf-8')
+        except configparser.Error:
+            return None, None
+        if not parser.has_section('Desktop Entry'):
+            return None, None
+        section = parser['Desktop Entry']
+        if section.get('Type') != 'Link' or not section.get('URL'):
+            return None, None
+        url = section.get('URL')
+        source = url if os.path.isabs(url) else os.path.join(os.path.dirname(desktop_path), url)
+        return section.get('Name') or os.path.splitext(os.path.basename(desktop_path))[0], source
+
+    def _get_template_entries(self):
+        """Scan the Templates folder into {'label', 'source_path', 'kind': 'file'|'dir'}
+        dicts for the "New from Template" background menu — plain files/folders copied
+        as-is (the simple freedesktop/Nautilus convention), plus KDE/Dolphin '.desktop'
+        Type=Link wrappers resolved to their real target via _resolve_desktop_template()."""
+        templates_dir = self._get_templates_folder()
+        if not os.path.isdir(templates_dir):
+            return []
+        entries = []
+        for name in sorted(os.listdir(templates_dir), key=str.lower):
+            if name.startswith('.'):
+                continue
+            full_path = os.path.join(templates_dir, name)
+            if os.path.isdir(full_path):
+                entries.append({'label': name, 'source_path': full_path, 'kind': 'dir'})
+            elif name.lower().endswith('.desktop'):
+                label, source = self._resolve_desktop_template(full_path)
+                if source:
+                    entries.append({'label': label, 'source_path': source, 'kind': 'file'})
+            else:
+                entries.append({'label': name, 'source_path': full_path, 'kind': 'file'})
+        return entries
+
+    def _build_folder_background_context_menu(self, target_dir):
+        """Right-click menu for empty space in a folder-browser view (no item under the
+        cursor) — currently just "New from Template", shared by all four folder-browsing
+        view widgets (main tree/icons, launcher-panel tree/icons)."""
+        menu = QMenu(self)
+        entries = self._get_template_entries()
+        template_menu = menu.addMenu("New from Template")
+        if not entries:
+            placeholder = template_menu.addAction("No templates found")
+            placeholder.setEnabled(False)
+        for entry in entries:
+            icon = self._folder_theme_icon() if entry['kind'] == 'dir' else QIcon()
+            action = template_menu.addAction(icon, entry['label'])
+            action.triggered.connect(
+                lambda checked=False, e=entry: self._create_from_template(e, target_dir)
+            )
+        return menu
+
+    def _create_from_template(self, entry, target_dir):
+        """Copy a template file/folder into target_dir, prompting for a name first. Files:
+        the copy is renamed (contents untouched) — e.g. accept 'markdown.md' as-is or
+        rename to 'note.md'. Folders: only the resulting folder's name is chosen; contents
+        are copied recursively as-is. Mirrors new_project()'s QInputDialog + collision-check
+        + shutil.copy2 pattern."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        default_name = os.path.basename(entry['source_path'].rstrip('/'))
+        prompt = "Folder name:" if entry['kind'] == 'dir' else "File name:"
+        new_name, ok = QInputDialog.getText(self, "New from Template", prompt, text=default_name)
+        if not ok or not new_name.strip():
+            return
+        new_name = new_name.strip()
+        dest_path = os.path.join(target_dir, new_name)
+        if os.path.exists(dest_path):
+            QMessageBox.warning(self, "Already Exists", f'"{new_name}" already exists in this folder.')
+            return
+        try:
+            if entry['kind'] == 'dir':
+                shutil.copytree(entry['source_path'], dest_path)
+            else:
+                shutil.copy2(entry['source_path'], dest_path)
+        except (OSError, shutil.Error) as e:
+            QMessageBox.warning(self, "Error", f"Failed to create from template: {e}")
+            return
+        self.folder_refresh()
+
     def folder_browser_context_menu(self, position):
         """Handle right-click context menu in the tree-view folder browser"""
         item = self.folder_browser.itemAt(position)
         if not item:
+            self._build_folder_background_context_menu(self.folder_current_path).exec(
+                self.folder_browser.mapToGlobal(position))
             return
 
         path = item.data(0, Qt.ItemDataRole.UserRole)
@@ -12276,6 +12570,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """Handle right-click context menu in the icon-grid folder browser"""
         item = self.folder_icon_view.itemAt(position)
         if not item:
+            self._build_folder_background_context_menu(self.folder_current_path).exec(
+                self.folder_icon_view.mapToGlobal(position))
             return
 
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -12513,6 +12809,15 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """Open current folder in file manager"""
         file_manager = self.get_configured_file_manager()
         subprocess.Popen([file_manager, self.folder_current_path], start_new_session=True)
+
+    def open_project_folder_external(self):
+        """Open this project's default folder (config_folder_path, not necessarily where any
+        given document actually lives) in the configured file manager — the callback behind
+        the "Open Project Folder" footer under the Docs category."""
+        if not getattr(self, 'config_folder_path', None):
+            return
+        file_manager = self.get_configured_file_manager()
+        subprocess.Popen([file_manager, os.path.expanduser(self.config_folder_path)], start_new_session=True)
 
     def folder_make_project(self):
         """Create a .projectflow config and projectflow.md notes file for the current folder"""

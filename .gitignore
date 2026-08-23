@@ -14,6 +14,9 @@ configs/
 notes
 notes/
 
+# Shared human/AI context docs (personal working notes, not versioned)
+ai/
+
 # Local/generated files
 course/
 ErrorCrash.txt
