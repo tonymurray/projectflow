@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: __PF_BG__;
+    color: __PF_FG__;
+  }
+  #editor { height: 100%; }
+  .cm-editor { height: 100%; font-family: "DejaVu Sans Mono", "Monospace", monospace; font-size: 13px; }
+  .cm-scroller { overflow: auto; }
+  __PF_EXTRA_CSS__
+</style>
+</head>
+<body>
+<div id="editor"></div>
+
+<script src="./lib/codemirror-bundle.js"></script>
+<script>
+(function () {
+  var CM = window.PFCodeMirror;
+  var view = null;
+  var dirty = false;
+  var syntaxColors = __PF_SYNTAX_JSON__;
+  var wrapCompartment = new CM.Compartment();
+
+  var themeExtension = CM.EditorView.theme({
+    "&": { backgroundColor: "__PF_BG__", color: "__PF_FG__", height: "100%" },
+    ".cm-content": { caretColor: "__PF_FG__" },
+    ".cm-gutters": { backgroundColor: "__PF_GUTTER_BG__", color: "__PF_FG_SECONDARY__", border: "none" },
+    ".cm-activeLine": { backgroundColor: "__PF_ACTIVE_LINE__" },
+    ".cm-activeLineGutter": { backgroundColor: "__PF_ACTIVE_LINE__" },
+    ".cm-selectionBackground, ::selection": { backgroundColor: "__PF_SELECTION__ !important" },
+  }, { dark: __PF_IS_DARK__ });
+
+  var highlightStyle = CM.HighlightStyle.define([
+    { tag: [CM.tags.keyword, CM.tags.controlKeyword, CM.tags.operatorKeyword,
+            CM.tags.definitionKeyword, CM.tags.moduleKeyword, CM.tags.self, CM.tags.bool,
+            CM.tags.null],
+      color: syntaxColors.keyword },
+    { tag: [CM.tags.string, CM.tags.special(CM.tags.string), CM.tags.regexp],
+      color: syntaxColors.string },
+    { tag: [CM.tags.comment, CM.tags.lineComment, CM.tags.blockComment],
+      color: syntaxColors.comment, fontStyle: "italic" },
+  ]);
+
+  // langMap is keyed by the short language string Python passes in (see
+  // _code_editor_language_for() in projectflow.py) rather than by file extension —
+  // keeps this shell generic/dumb about extensions, matching how the Muya shell has
+  // zero Python-specific knowledge of what "kind" of markdown it's editing.
+  var langMap = {
+    js: CM.languages.js,
+    py: CM.languages.py,
+    html: CM.languages.html,
+    css: CM.languages.css,
+    php: CM.languages.php,
+  };
+
+  window.__initCodeEditor = function (content, language, wrapEnabled) {
+    var extensions = [
+      CM.basicSetup,
+      CM.keymap.of(CM.defaultKeymap),
+      // Swallows the browser's native Ctrl+S ("Save Page As") inside the webview —
+      // actual saving is a Python-side action (toolbar Save button / Ctrl+S handler),
+      // there is deliberately no JS->Python push channel for it (see CLAUDE.md).
+      CM.keymap.of([{ key: "Mod-s", run: function () { return true; } }]),
+      themeExtension,
+      CM.syntaxHighlighting(highlightStyle),
+      CM.EditorView.updateListener.of(function (u) {
+        if (u.docChanged) dirty = true;
+      }),
+      // Line wrapping lives in its own Compartment so __setCodeEditorWrap() can flip it
+      // at runtime without recreating the whole editor (which would lose undo history).
+      // Off by default in CM6's basicSetup — long lines just scroll horizontally instead.
+      wrapCompartment.of(wrapEnabled ? CM.EditorView.lineWrapping : []),
+    ];
+    if (langMap[language]) extensions.push(langMap[language]());
+
+    var state = CM.EditorState.create({ doc: content || "", extensions: extensions });
+    if (view) view.destroy();
+    view = new CM.EditorView({ state: state, parent: document.getElementById("editor") });
+    dirty = false;
+  };
+
+  window.__setCodeEditorWrap = function (enabled) {
+    if (!view) return;
+    view.dispatch({
+      effects: wrapCompartment.reconfigure(enabled ? CM.EditorView.lineWrapping : []),
+    });
+  };
+
+  window.__getCodeEditorContent = function () {
+    return view ? view.state.doc.toString() : "";
+  };
+
+  window.__codeEditorIsDirty = function () {
+    return !!dirty;
+  };
+
+  window.__codeEditorClearDirty = function () {
+    dirty = false;
+  };
+})();
+</script>
+</body>
+</html>

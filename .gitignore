@@ -24,6 +24,11 @@ ErrorCrash.txt
 # Scratch clone of the marktext monorepo (reference only, used to build assets/muya/)
 marktext-develop/
 
+# Scratch build source for the vendored CodeMirror 6 bundle (node_modules/dist not
+# versioned — only assets/codemirror/lib/codemirror-bundle.js, the built output, is)
+codemirror-bundle-src/node_modules/
+codemirror-bundle-src/dist/
+
 # Jupyter/qtconsole runtime config
 .jupyter/
 

@@ -12,6 +12,8 @@ A project/activity focused organizer for Linux desktops to collect links to proj
 - **Central viewer** toggles between PDF, web browser, image viewer, help, and console
 - **Folder browser** with tree and Dolphin-style icon-grid views, plus right-click "Open in Viewer" actions for images/PDFs/Markdown/HTML
 - **Live markdown editor** with autosave, built on the Muya editor engine
+- **Code editor** for JS, Python, HTML, CSS, and PHP, built on CodeMirror 6 — syntax highlighting, save on demand (no autosave, by design), find & replace (Ctrl+F), go to line (Ctrl+Alt+G), code folding (Ctrl+Shift+[/]), undo/redo, multi-cursor / select-next-occurrence (Ctrl+D), and a line-wrap toggle (on by default) so long lines don't need horizontal scrolling
+- **Log files** (`.log` or a `tail_log` launcher item) open live-tailed (`tail -n 300 -f`) in the embedded terminal in Focus layout, instead of always spawning an external one
 - **Group-by-Type launcher view** — dynamically sorts launchers into Documentation / Websites / Resources without touching your category layout, remembered per project
 - **Quick project switching** via recent projects bar with drag-to-reorder
 - **Edit mode** for adding/modifying entries without editing JSON

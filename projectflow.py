@@ -727,6 +727,27 @@ class MuyaSession:
         self.autosave_timer.setInterval(autosave_interval_ms)
 
 
+class CodeEditorSession:
+    """Bundles the state needed to run one CodeMirror 6 code-editor instance inside a
+    QWebEngineView: which file it's editing, its language, content pending injection once
+    the page loads, and a dirty-state poll timer used ONLY to refresh the Save button's
+    UI indicator. Deliberately has NO autosave_timer field (unlike MuyaSession) — it's
+    easier to fat-finger an unwanted keystroke into a code file than into prose, so this
+    editor saves only via an explicit action (the Save button / Ctrl+S), never silently
+    on a timer. Keeping the field itself absent, not just unused, is the guardrail against
+    someone later wiring up autosave "for consistency" with Muya."""
+
+    def __init__(self, webview, dirty_poll_interval_ms=800):
+        self.webview = webview
+        self.editing = False
+        self.path = None
+        self.language = None
+        self.pending_content = None
+        self.dirty = False
+        self.dirty_poll_timer = QTimer()
+        self.dirty_poll_timer.setInterval(dirty_poll_interval_ms)
+
+
 class ProjectFlowApp(QMainWindow):
     def __init__(self, config_file_arg=None):
         super().__init__()
@@ -771,6 +792,14 @@ class ProjectFlowApp(QMainWindow):
         self._notes_muya_session.autosave_timer.timeout.connect(
             lambda: self._muya_autosave_tick(self._notes_muya_session)
         )
+        # Tracks an explicitly-opened non-project note in the Focus-layout Notes tab (see
+        # _open_note_in_notes_tab()/_open_markdown_file()) — None means "show the project's
+        # own note". Deliberately NOT reset in load_notes() (which reruns on every incidental
+        # refresh — editing a launcher, toggling theme — and would otherwise wipe this the
+        # same way load_notes() already wipes webview_md_path, a known "gotcha" documented
+        # for toggle_theme() elsewhere). Only switch_to_config() resets it, since only an
+        # actual project switch should fall back to the (new) project's own note.
+        self.notes_md_path = None
 
         # Third persistent webview, dedicated to the optional ttyd-backed real-terminal Console
         # (see resolve_console_backend/_ensure_ttyd_console). Same "never recreated on refresh,
@@ -780,6 +809,30 @@ class ProjectFlowApp(QMainWindow):
         self.console_ttyd_proc = None
         self._console_ttyd_cwd = None
         self._console_ttyd_port = None
+        # Tracks whether the webview's CURRENT page has actually finished loading (and thus
+        # window.term exists) — console_ttyd_proc being alive only means the OS process is
+        # up; the page itself loads asynchronously after setUrl(). Observed race: even the
+        # very first ttyd session auto-started during initial build_main_content() isn't
+        # necessarily done loading by the time something else tries to paste a command into
+        # it moments later. See _run_in_ttyd_when_ready().
+        self._console_ttyd_ready = False
+        self.console_ttyd_webview.loadFinished.connect(
+            lambda ok: setattr(self, '_console_ttyd_ready', ok)
+        )
+
+        # Fourth persistent webview, dedicated to the internal CodeMirror 6 code-editor
+        # (see CodeEditorSession, _open_code_file_in_editor, and the _code_editor_*/
+        # _load_code_editor_shell bridge methods). Same "never recreated on refresh,
+        # detach-then-readd" pattern as notes_webview/console_ttyd_webview above. No
+        # autosave_timer to wire up here — see CodeEditorSession's docstring for why.
+        self.code_webview = QWebEngineView()
+        self._code_session = CodeEditorSession(self.code_webview)
+        self.code_webview.loadFinished.connect(
+            lambda ok: self._on_code_editor_webview_load_finished(ok, self._code_session)
+        )
+        self._code_session.dirty_poll_timer.timeout.connect(
+            lambda: self._code_editor_dirty_poll_tick(self._code_session)
+        )
 
         # Debounce timer for alias file writes — prevents a write per keystroke
         # when the user types in the inline path/app fields.
@@ -863,13 +916,18 @@ class ProjectFlowApp(QMainWindow):
             reflow_fn(config_bar_widget.width())
 
     def closeEvent(self, event):
-        """Handle window close — terminate the ttyd console subprocess if one is running.
+        """Handle window close — confirm discarding unsaved code-editor changes first (the
+        one thing in this app with no autosave, see CodeEditorSession), then terminate the
+        ttyd console subprocess if one is running.
 
         Unlike every other subprocess this app spawns (external terminal/editor/file-manager
         launches, always started with start_new_session=True so they outlive the app), a ttyd
         console is an internal implementation detail: it must die with the app, not survive it,
         or every session leaves an orphaned process + open port behind.
         """
+        if not self._confirm_discard_code_changes():
+            event.ignore()
+            return
         self._stop_ttyd_console()
         super().closeEvent(event)
 
@@ -2267,9 +2325,13 @@ class ProjectFlowApp(QMainWindow):
         viewer_label = QLabel("Default Viewer:")
         viewer_label.setStyleSheet(label_style)
         self._proj_default_viewer = QComboBox()
-        # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Time); "help"
-        # isn't a tab (opened via the footer's "❓ Help" button instead), so it's appended last.
-        self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "time", "help"])
+        # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Code, Time);
+        # "help" isn't a tab (opened via the footer's "❓ Help" button instead), so it's
+        # appended last. Unlike pdf/image, there's no dedicated "Code File" field in this
+        # dialog yet — pinning a specific file for "code" is done via the viewer's own 📌
+        # (see Code Editor in CLAUDE.md); picking "code" here with no code_file set just
+        # opens the editor empty, same as "notes"/"time" having no resource field either.
+        self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "code", "time", "help"])
         current_viewer = getattr(self, 'config_column2_default', None) or ""
         self._proj_default_viewer.setCurrentText(current_viewer)
         self._proj_default_viewer.setStyleSheet(input_style)
@@ -3652,8 +3714,16 @@ class ProjectFlowApp(QMainWindow):
 
             if self.config_pdf_file:
                 config_data["pdf_file"] = self.config_pdf_file
+                # load_notes() prefers a saved pdf_state (remembered last-viewed file/page)
+                # over pdf_file, so a stale pdf_state left over from a previously pinned PDF
+                # would silently keep loading instead of this newly-set default. Keep it in
+                # sync (resetting the remembered page since it's a different file).
+                if config_data.get("pdf_state", {}).get("path") != self.config_pdf_file:
+                    config_data["pdf_state"] = {"path": self.config_pdf_file, "page": 0}
             elif "pdf_file" in config_data:
                 del config_data["pdf_file"]
+                if "pdf_state" in config_data:
+                    del config_data["pdf_state"]
 
             if self.config_webview_url:
                 config_data["webview_url"] = self.config_webview_url
@@ -3662,8 +3732,13 @@ class ProjectFlowApp(QMainWindow):
 
             if self.config_image_file:
                 config_data["image_file"] = self.config_image_file
+                # Same stale-state issue as pdf_state above.
+                if config_data.get("image_state", {}).get("path") != self.config_image_file:
+                    config_data["image_state"] = {"path": self.config_image_file}
             elif "image_file" in config_data:
                 del config_data["image_file"]
+                if "image_state" in config_data:
+                    del config_data["image_state"]
 
             if self.config_console_path:
                 config_data["console_path"] = self.config_console_path
@@ -3775,6 +3850,68 @@ class ProjectFlowApp(QMainWindow):
                     border: 1px solid {self.t('bg_category_hover')};
                 }}
             """
+
+    def _build_doc_preview_icon_button(self, path, app):
+        """Small preview/external-open icon button for a pooled Docs/AI item (view mode
+        only — see the is_pooled render branch in build_main_content()). Mirrors the subset
+        of the main per-item preview-button logic (firefox/chrome-wrapped or plain local
+        .md/.html/.htm files — the only shapes _classify_launcher_item()/AI discovery ever
+        pool into Docs) rather than the full elif chain, since pooled items can't be
+        directorydev/image/folder/terminal launchers. Returns None if nothing applies (e.g.
+        a .pdf/.txt doc), same as the main branch falling through to a plain button."""
+        exp_path = os.path.expanduser(path)
+        exp_lower = exp_path.lower()
+        is_local = self._is_local_path(path)
+
+        if app in ("firefox", "chrome") and exp_lower.endswith('.md') and is_local:
+            btn = QPushButton("📄")
+            btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in built-in editor")
+            btn.clicked.connect(
+                lambda checked=False, md=exp_path, a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_file(md)
+            )
+        elif app in ("firefox", "chrome") and exp_lower.endswith(('.html', '.htm')) and is_local:
+            btn = QPushButton("🌐")
+            btn.setToolTip("Preview / open externally")
+            btn.clicked.connect(
+                lambda checked=False, p=exp_path, a=app: self.open_in_app(p, a, force_external=True) if self.layout_mode == "focus" else self._open_file_in_webview(p)
+            )
+        elif app in ("firefox", "chrome"):
+            btn = QPushButton("🌐")
+            btn.setToolTip("Preview / open externally")
+            btn.clicked.connect(
+                lambda checked=False, url=path, a=app: self.open_in_app(url, a, force_external=True) if self.layout_mode == "focus" else self.preview_in_webview(url)
+            )
+        elif exp_lower.endswith(('.html', '.htm')) and is_local:
+            btn = QPushButton("🌐")
+            btn.setToolTip("Preview in built-in web viewer")
+            btn.clicked.connect(
+                lambda checked=False, p=exp_path, a=app: self.open_in_app(p, a, force_external=True) if self.layout_mode == "focus" else self._open_file_in_webview(p)
+            )
+        elif exp_lower.endswith('.md') and is_local:
+            btn = QPushButton("📄")
+            btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in built-in editor")
+            btn.clicked.connect(
+                lambda checked=False, md=exp_path, a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_file(md)
+            )
+        else:
+            return None
+
+        btn.setMaximumWidth(28)
+        btn.setMinimumHeight(30)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                border: 1px solid {self.t('bg_category_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        return btn
 
     def on_item_clicked(self, btn, path, app):
         """Handle item button click - update style and open"""
@@ -4184,6 +4321,8 @@ StartupNotify=true
                 self.config_webview_url = config_data.get('webview_url', None)
                 # Load default image file path if specified
                 self.config_image_file = config_data.get('image_file', None)
+                # Load default code file path if specified (pinned via the code editor's 📌)
+                self.config_code_file = config_data.get('code_file', None)
                 # Load default console path if specified
                 self.config_console_path = config_data.get('console_path', None)
                 # Load default folder path if specified
@@ -4239,6 +4378,7 @@ StartupNotify=true
                 self.config_pdf_file = None
                 self.config_webview_url = None
                 self.config_image_file = None
+                self.config_code_file = None
                 self.config_console_path = None
                 self.config_folder_path = None
                 self.config_column2_default = None
@@ -5044,6 +5184,18 @@ function filterAliases(q) {{
         self.image_zoom = 1.0
         self.image_label = None
         self.image_scroll = None
+        # Reset code-editor session state for the newly-loaded project. Any unsaved
+        # changes have already been through the confirm-discard guard in
+        # switch_to_config() before load_notes() is reached — this just prevents a
+        # stale path from the previous project leaking into build_main_content()'s
+        # pinned-code_file auto-load check (which only loads when session.path is unset).
+        if hasattr(self, '_code_session'):
+            self._code_session.editing = False
+            self._code_session.path = None
+            self._code_session.language = None
+            self._code_session.pending_content = None
+            self._code_session.dirty = False
+            self._code_session.dirty_poll_timer.stop()
 
         try:
             # Load notes from markdown file
@@ -5118,7 +5270,7 @@ function filterAliases(q) {{
                 # old configs that still have this saved rather than silently ignoring them.
                 if self.config_column2_default == "examples":
                     self.config_column2_default = "help"
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes"):
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes", "code"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -5528,6 +5680,12 @@ function filterAliases(q) {{
                     return
                 resource_key = "folder_path"
                 resource_value = self.folder_current_path
+            elif self.column2_mode == "code":
+                if not self._code_session.path:
+                    QMessageBox.information(self, "Set Default", "No code file loaded to set as default.")
+                    return
+                resource_key = "code_file"
+                resource_value = self._code_session.path
             elif self.column2_mode == "time":
                 resource_key = None
                 resource_value = None
@@ -5559,6 +5717,8 @@ function filterAliases(q) {{
                 self.config_webview_url = resource_value
             elif self.column2_mode == "image":
                 self.config_image_file = resource_value
+            elif self.column2_mode == "code":
+                self.config_code_file = resource_value
             elif self.column2_mode == "console":
                 self.config_console_path = resource_value
             elif self.column2_mode == "folder":
@@ -5681,6 +5841,8 @@ function filterAliases(q) {{
             self.notes_webview.setParent(self)
         if self.console_ttyd_webview is not None:
             self.console_ttyd_webview.setParent(self)
+        if self.code_webview is not None:
+            self.code_webview.setParent(self)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -5743,7 +5905,7 @@ function filterAliases(q) {{
             edit_shortcut = QShortcut(QKeySequence("Ctrl+E"), self)
             edit_shortcut.activated.connect(self.toggle_edit_mode)
             save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
-            save_shortcut.activated.connect(self.toggle_edit_mode)
+            save_shortcut.activated.connect(self._on_global_ctrl_s)
             self._search_shortcuts_created = True
 
         title_bar.addStretch()
@@ -7607,7 +7769,13 @@ function filterAliases(q) {{
                         # category is being rendered as a real Resources category — see
                         # _build_grouped_categories()'s self._grouped_hidden_item_ids. Kept
                         # at true index so drag/edit/delete stay correct for the items shown.
-                        if id(item) in getattr(self, '_grouped_hidden_item_ids', ()):
+                        # The `category_name != "Docs"` guard matters: an item pooled INTO
+                        # Docs is added to both buckets['Docs'] and this same hidden set (so
+                        # its real Resources category skips drawing it) — without the guard,
+                        # the Docs bucket's own render pass would immediately skip it too,
+                        # silently dropping every pooled Docs item (AI items are unaffected,
+                        # since they're never added to this set).
+                        if category_name != "Docs" and id(item) in getattr(self, '_grouped_hidden_item_ids', ()):
                             continue
                         # Handle both 2-tuple and 3-tuple formats
                         if len(item) == 2:
@@ -7644,10 +7812,14 @@ function filterAliases(q) {{
 
                         if is_pooled:
                             # Pooled AI/Docs item: no reordering/renaming to offer here (it isn't
-                            # filed in a category this view can manage), so the row is identical
-                            # in edit and view mode — a plain clickable button plus an inline 👁
-                            # hide toggle. Right-click still offers Edit/Delete/"Move to category"
-                            # when true_category is real (AI items have none, so they don't).
+                            # filed in a category this view can manage). Edit mode shows a plain
+                            # button plus an inline 👁 hide toggle (management controls have no
+                            # place on the front end); view mode instead shows the normal preview/
+                            # open-externally icon that any other launcher of this type would get
+                            # (see _build_doc_preview_icon_button) — the hide toggle would just be
+                            # clutter for someone not currently curating the Docs list. Right-click
+                            # still offers Edit/Delete/"Move to category" in both modes when
+                            # true_category is real (AI items have none, so they don't).
                             pooled_row = QWidget()
                             pooled_row_layout = QHBoxLayout(pooled_row)
                             pooled_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -7667,22 +7839,27 @@ function filterAliases(q) {{
                                 self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
                             pooled_row_layout.addWidget(btn, 1)
 
-                            # No hide toggle for the permanent pinned-notes entry (category_name
-                            # == "Docs", true_category is None, but it's not an AI item either) —
-                            # hiding it wouldn't even take effect, since its insertion into the
-                            # Docs bucket bypasses the override check entirely (see
-                            # _build_grouped_categories()'s notes_item handling).
-                            if category_name == "AI" or true_category is not None:
-                                hide_btn = QPushButton("👁")
-                                hide_btn.setFixedWidth(28)
-                                hide_btn.setMinimumHeight(30)
-                                hide_btn.setToolTip("Hide from Docs")
-                                hide_btn.setStyleSheet(self.get_item_button_style())
-                                if category_name == "AI":
-                                    hide_btn.clicked.connect(lambda checked=False, p=path: self._toggle_ai_item_hidden(p))
-                                else:
-                                    hide_btn.clicked.connect(lambda checked=False, p=path: self._hide_pooled_doc_item(p))
-                                pooled_row_layout.addWidget(hide_btn)
+                            if self.edit_mode:
+                                # No hide toggle for the permanent pinned-notes entry (category_name
+                                # == "Docs", true_category is None, but it's not an AI item either) —
+                                # hiding it wouldn't even take effect, since its insertion into the
+                                # Docs bucket bypasses the override check entirely (see
+                                # _build_grouped_categories()'s notes_item handling).
+                                if category_name == "AI" or true_category is not None:
+                                    hide_btn = QPushButton("👁")
+                                    hide_btn.setFixedWidth(28)
+                                    hide_btn.setMinimumHeight(30)
+                                    hide_btn.setToolTip("Hide from Docs")
+                                    hide_btn.setStyleSheet(self.get_item_button_style())
+                                    if category_name == "AI":
+                                        hide_btn.clicked.connect(lambda checked=False, p=path: self._toggle_ai_item_hidden(p))
+                                    else:
+                                        hide_btn.clicked.connect(lambda checked=False, p=path: self._hide_pooled_doc_item(p))
+                                    pooled_row_layout.addWidget(hide_btn)
+                            else:
+                                preview_btn = self._build_doc_preview_icon_button(path, app)
+                                if preview_btn:
+                                    pooled_row_layout.addWidget(preview_btn)
 
                             drop_zone_layout.addWidget(pooled_row)
                             if col_idx == 0 and not self.edit_mode:
@@ -7805,7 +7982,7 @@ function filterAliases(q) {{
                                     preview_btn = QPushButton("📄")
                                     preview_btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in built-in editor")
                                     preview_btn.clicked.connect(
-                                        lambda checked=False, md=_exp_path, a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_in_webview(md)
+                                        lambda checked=False, md=_exp_path, a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_file(md)
                                     )
                                 elif _exp_lower.endswith(('.html', '.htm')) and self._is_local_path(path):
                                     preview_btn = QPushButton("🌐")
@@ -7914,7 +8091,7 @@ function filterAliases(q) {{
                                 preview_btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in built-in editor")
                                 preview_btn.setStyleSheet(icon_btn_style)
                                 preview_btn.clicked.connect(
-                                    lambda checked=False, md=os.path.expanduser(path), a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_in_webview(md)
+                                    lambda checked=False, md=os.path.expanduser(path), a=app: self.open_in_app(md, a, force_external=True) if self.layout_mode == "focus" else self._open_markdown_file(md)
                                 )
                                 btn_layout.addWidget(preview_btn)
 
@@ -8140,10 +8317,10 @@ function filterAliases(q) {{
                     column_layout.addWidget(tagged_container)
 
             # "N hidden — Manage" — the only way back for items hidden via the inline 👁
-            # toggle (see _get_all_hidden_items()/_show_hidden_items_dialog()). Shown in
-            # both view and edit mode, since noticing something's missing isn't tied to
-            # editing.
-            if col_idx == 0 and self._is_grouped_view_active():
+            # toggle (see _get_all_hidden_items()/_show_hidden_items_dialog()). Edit-mode
+            # only, matching the hide toggle itself — show/hide is a curation action, not
+            # something the front end should expose.
+            if col_idx == 0 and self._is_grouped_view_active() and self.edit_mode:
                 hidden_count = len(self._get_all_hidden_items())
                 if hidden_count:
                     manage_hidden_btn = QPushButton(f"👁 {hidden_count} hidden — Manage")
@@ -8245,6 +8422,7 @@ function filterAliases(q) {{
                 tab_buttons = [
                     ("notes",    "Notes",    "Project notes"),
                     ("webview",  "Web",      "Web viewer"),
+                    ("code",     "Code",     "Code editor"),
                     ("console",  "Terminal", "Embedded console"),
                     ("pdf",      "PDF",      "PDF viewer"),
                     ("image",    "Image",    "Image viewer"),
@@ -8309,10 +8487,13 @@ function filterAliases(q) {{
                 for mode, label, tooltip in tab_buttons:
                     btn = QPushButton(label)
                     btn.setMinimumHeight(self.d('header_btn_height'))
-                    # Roughly matches the launcher column's own tab-button width (Files/Docs/
-                    # Resources/Apps, see build_main_content's Focus-layout tab row) so the
-                    # two adjacent tab rows read as visually consistent sizes.
-                    btn.setMinimumWidth(175)
+                    # Expanding + a stretch factor on addWidget (below) makes every tab
+                    # button grow to fill the row equally, rather than a fixed width —
+                    # with Code added as a 6th/7th tab, a flat 175px minimum per button
+                    # started overflowing the available width and getting clipped. A small
+                    # minimum keeps things sane if the row is ever squeezed very narrow.
+                    btn.setMinimumWidth(60)
+                    btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                     btn.setToolTip(tooltip)
 
                     icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{mode}.png")
@@ -8331,7 +8512,7 @@ function filterAliases(q) {{
                     # Connect click handler
                     btn.clicked.connect(lambda checked=False, m=mode: self.switch_to_viewer_mode(m))
 
-                    header_layout.addWidget(btn)
+                    header_layout.addWidget(btn, 1)
                     self.viewer_tab_buttons[mode] = btn
                     # Notes tab only visible in Focus layout
                     if mode == "notes":
@@ -8350,9 +8531,6 @@ function filterAliases(q) {{
                 viewer_pin_btn.setStyleSheet(tab_btn_style)
                 viewer_pin_btn.clicked.connect(self.set_viewer_as_default)
                 header_layout.addWidget(viewer_pin_btn)
-
-                # Add stretch to push buttons left
-                header_layout.addStretch()
 
                 self.column2_layout.addLayout(header_layout)
 
@@ -8466,6 +8644,22 @@ function filterAliases(q) {{
 
                 image_container_layout.addWidget(
                     self._make_viewer_footer("Open in Gwenview", "Open image in Gwenview", self.open_image_in_external_viewer)
+                )
+
+                # Code editor container — internal CodeMirror 6 editor for JS/Python/HTML/
+                # CSS/PHP (see CodeEditorSession, _open_code_file_in_editor). Its own
+                # toolbar (filename/language label, Save button — no URL bar/back/forward,
+                # unlike the webview toolbar) since this is a different tool, not a "page".
+                self.code_container = QWidget()
+                code_container_layout = QVBoxLayout(self.code_container)
+                code_container_layout.setContentsMargins(0, 0, 0, 0)
+
+                self.create_code_editor_toolbar(code_container_layout)
+                code_container_layout.addWidget(self.code_webview, 1)  # stretch to fill space
+
+                editor_name = os.path.basename(self.get_configured_editor()).capitalize()
+                code_container_layout.addWidget(
+                    self._make_viewer_footer(f"Open in {editor_name}", "Open this file in the configured editor", self.open_code_file_in_external_editor)
                 )
 
                 # Help viewer container — combines README + Launcher Examples as two HTML tabs
@@ -8721,6 +8915,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.folder_container)
                 self.column2_stack_layout.addWidget(self.time_container)
                 self.column2_stack_layout.addWidget(self.notes_viewer_container)
+                self.column2_stack_layout.addWidget(self.code_container)
 
                 # Show correct container based on mode
                 self.pdf_container.hide()
@@ -8731,12 +8926,16 @@ function filterAliases(q) {{
                 self.folder_container.hide()
                 self.time_container.hide()
                 self.notes_viewer_container.hide()
+                self.code_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
                 elif self.column2_mode == "webview":
                     self.webview_container.show()
                 elif self.column2_mode == "image":
                     self.image_container.show()
+                elif self.column2_mode == "code":
+                    self.code_container.show()
+                    self._update_code_editor_buttons()
                 elif self.column2_mode == "help":
                     self.help_container.show()
                     self.load_help_content()
@@ -8794,6 +8993,13 @@ function filterAliases(q) {{
                 if self.image_path:
                     self.load_image(self.image_path)
 
+                # Load pinned default code file if set (see set_viewer_as_default's "code"
+                # branch) — loads the lower-level session directly, not
+                # _open_code_file_in_editor(), since that also switches column2_mode and
+                # runs the discard-guard, neither of which apply during initial construction.
+                if getattr(self, 'config_code_file', None) and not self._code_session.path:
+                    self._open_path_in_code_editor_session(self._code_session, self.config_code_file)
+
         # Notes panel: hosts the persistent Muya editor (self.notes_webview). Placed directly
         # into whichever container matches the current layout below — no later reparenting
         # needed (notes_webview's own construction/detach in __init__/init_ui() already
@@ -8802,6 +9008,17 @@ function filterAliases(q) {{
         self.notes_panel = QWidget()
         notes_panel_layout = QVBoxLayout(self.notes_panel)
         notes_panel_layout.setContentsMargins(0, 4, 0, 0)  # Match column 1 top margin
+
+        # Toolbar (filename label + Open + Project Note buttons) only makes sense in Focus
+        # layout, where the Notes tab can show an arbitrary note (see notes_md_path) —
+        # Standard layout's Notes column is a fixed pane that only ever shows the project's
+        # own note, so there's nothing for a toolbar to do there.
+        self.notes_current_label = None
+        self.notes_open_btn = None
+        self.notes_home_btn = None
+        if self.layout_mode == "focus":
+            self.create_notes_toolbar(notes_panel_layout)
+
         notes_panel_layout.addWidget(self.notes_webview, 1)
 
         # Only reload notes content into the webview when the project, layout, or theme has
@@ -9262,6 +9479,9 @@ function filterAliases(q) {{
 
     def switch_to_config(self, config_path):
         """Switch to a different config file"""
+        if not self._confirm_discard_code_changes():
+            return
+
         # Update the current config file path
         self.current_config_file = config_path
 
@@ -9273,6 +9493,11 @@ function filterAliases(q) {{
 
         # Clear folder navigation so the new project starts at its own default folder
         self.folder_current_path = None
+
+        # Reset to the new project's own note — an arbitrary note explicitly loaded into
+        # the Notes tab for the OLD project has no meaning here (see notes_md_path's
+        # docstring in __init__ for why this reset lives here and not in load_notes()).
+        self.notes_md_path = None
 
         # Reload with the new project
         self.refresh_projects()
@@ -10109,6 +10334,16 @@ function filterAliases(q) {{
         self.edit_mode = not self.edit_mode
         self.refresh_projects()
 
+    def _on_global_ctrl_s(self):
+        """Global Ctrl+S handler. Historically bound directly to toggle_edit_mode — now
+        saves the code editor first when it's the active viewer, since Ctrl+S reads as
+        "save" there far more than as "toggle launcher edit mode". Falls through to the
+        original behavior otherwise, unchanged."""
+        if self.column2_mode == "code" and self._code_session.editing:
+            self._code_editor_save(self._code_session)
+            return
+        self.toggle_edit_mode()
+
     def _toggle_group_by_type(self):
         """Toggle the dynamic Group-by-Type launcher view (display-only, see _build_grouped_categories)."""
         self.group_by_type = not self.group_by_type
@@ -10879,6 +11114,8 @@ function filterAliases(q) {{
         self.time_container.hide()
         if hasattr(self, 'notes_viewer_container'):
             self.notes_viewer_container.hide()
+        if hasattr(self, 'code_container'):
+            self.code_container.hide()
 
         # Mode display info
         mode_info = {
@@ -10892,6 +11129,8 @@ function filterAliases(q) {{
         }
         if hasattr(self, 'notes_viewer_container'):
             mode_info["notes"] = ("Notes", "Project Notes", self.notes_viewer_container)
+        if hasattr(self, 'code_container'):
+            mode_info["code"] = ("Code", "Code Editor", self.code_container)
 
         if mode not in mode_info:
             mode = "folder"
@@ -10907,6 +11146,8 @@ function filterAliases(q) {{
             self.populate_folder_browser(self.folder_current_path)
         elif mode == "time":
             self._kimai_load_entries()
+        elif mode == "code":
+            self._update_code_editor_buttons()
 
         # Update tab button styling
         self.update_viewer_tab_styling()
@@ -11078,6 +11319,17 @@ function filterAliases(q) {{
         self.md_preview_btn.setToolTip("Save and switch to the read-only rendered preview")
         self.md_preview_btn.clicked.connect(self._muya_switch_to_preview)
         toolbar_layout.addWidget(self.md_preview_btn)
+
+        # "Edit Source" — opt-in counterpart to local .html/.htm's default behavior
+        # (render it). Only visible when the webview is currently showing a local HTML
+        # file as rendered content (not Muya-editing markdown). Mirrors the code editor's
+        # own "👁 Rendered" button (create_code_editor_toolbar) going the other direction.
+        self.html_source_btn = QPushButton("</> Edit Source")
+        self.html_source_btn.setStyleSheet(btn_style)
+        self.html_source_btn.setToolTip("Edit this file's source in the internal code editor")
+        self.html_source_btn.clicked.connect(self._open_html_source_from_webview)
+        self.html_source_btn.setVisible(False)
+        toolbar_layout.addWidget(self.html_source_btn)
 
         parent_layout.addWidget(toolbar_widget)
         self._update_md_edit_buttons()
@@ -11294,6 +11546,79 @@ function filterAliases(q) {{
         if os.path.exists(expanded_path):
             subprocess.Popen(["gwenview", expanded_path], start_new_session=True)
 
+    def create_code_editor_toolbar(self, parent_layout):
+        """Create a toolbar for the internal code editor: filename label, Save button
+        (no URL bar/back/forward — this is a different tool from the webview, not a
+        'page'), and a Rendered-preview toggle shown only for .html/.htm files."""
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 5)
+        toolbar_layout.setSpacing(5)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+
+        self.code_open_btn = QPushButton("📂 Open")
+        self.code_open_btn.setStyleSheet(btn_style)
+        self.code_open_btn.setToolTip("Open a file in the code editor")
+        self.code_open_btn.clicked.connect(self.open_code_file)
+        toolbar_layout.addWidget(self.code_open_btn)
+
+        self.code_filename_label = QLabel(os.path.basename(self._code_session.path) if self._code_session.path else "")
+        self.code_filename_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; margin-right: 5px;")
+        toolbar_layout.addWidget(self.code_filename_label)
+
+        toolbar_layout.addStretch()
+
+        # Line wrapping is off by default in CM6's basicSetup (long lines just scroll
+        # horizontally) — this toggle flips a runtime Compartment (__setCodeEditorWrap in
+        # editor.html), so it doesn't reload the file or touch undo history/dirty state.
+        # Persisted per-machine (like viewer_height/folder_view_mode), not per-project —
+        # it's a personal reading preference, not project content.
+        self.code_wrap_btn = QPushButton("↩ Wrap")
+        self.code_wrap_btn.setStyleSheet(btn_style)
+        self.code_wrap_btn.setToolTip("Wrap long lines instead of scrolling horizontally")
+        self.code_wrap_btn.setCheckable(True)
+        self.code_wrap_btn.setChecked(self.settings.get('code_editor_wrap', True))
+        self.code_wrap_btn.clicked.connect(self._code_editor_toggle_wrap)
+        toolbar_layout.addWidget(self.code_wrap_btn)
+
+        self.code_source_toggle_btn = QPushButton("👁 Rendered")
+        self.code_source_toggle_btn.setStyleSheet(btn_style)
+        self.code_source_toggle_btn.setToolTip("Switch back to the rendered HTML preview")
+        self.code_source_toggle_btn.clicked.connect(self._code_editor_switch_to_rendered)
+        self.code_source_toggle_btn.setVisible(False)
+        toolbar_layout.addWidget(self.code_source_toggle_btn)
+
+        self.code_save_btn = QPushButton("💾 Save")
+        self.code_save_btn.setStyleSheet(btn_style)
+        self.code_save_btn.setToolTip("Save changes to disk (Ctrl+S)")
+        self.code_save_btn.clicked.connect(lambda: self._code_editor_save(self._code_session))
+        self.code_save_btn.setEnabled(bool(self._code_session.editing and self._code_session.path))
+        toolbar_layout.addWidget(self.code_save_btn)
+
+        parent_layout.addWidget(toolbar_widget)
+
     def create_help_toolbar(self, parent_layout):
         """Create a toolbar for the help viewer"""
         toolbar_widget = QWidget()
@@ -11474,12 +11799,20 @@ function filterAliases(q) {{
         this port directly and get a shell — a malicious-webpage attack class localhost binding
         alone doesn't prevent. `-O` makes ttyd reject connections whose Origin header doesn't
         match, closing that off.
+
+        Returns True if a fresh navigation was triggered (webview.setUrl() called — the page
+        won't be interactive until its loadFinished fires), False if an existing session was
+        reused (already loaded, safe to interact with immediately) or startup failed. Callers
+        that need to run a command right after ensuring the console (e.g.
+        _open_log_file_in_console) use this to know whether they must wait for loadFinished
+        first — pasting into the *old* page moments before setUrl() tears it down is a real,
+        observed race otherwise.
         """
         cwd = os.path.expanduser(cwd)
         if (self.console_ttyd_proc is not None
                 and self.console_ttyd_proc.poll() is None
                 and self._console_ttyd_cwd == cwd):
-            return  # already running for this directory — reuse it
+            return False  # already running for this directory — reuse it
 
         self._stop_ttyd_console()
 
@@ -11491,7 +11824,7 @@ function filterAliases(q) {{
                 start_new_session=False,  # must die with the app, not survive it
             )
         except FileNotFoundError:
-            return  # ttyd not on PATH — resolve_console_backend() should have already avoided this
+            return False  # ttyd not on PATH — resolve_console_backend() should have already avoided this
 
         port = None
         deadline = time.monotonic() + 3.0
@@ -11506,12 +11839,14 @@ function filterAliases(q) {{
 
         if port is None:
             proc.terminate()
-            return
+            return False
 
         self.console_ttyd_proc = proc
         self._console_ttyd_cwd = cwd
         self._console_ttyd_port = port
+        self._console_ttyd_ready = False
         self.console_ttyd_webview.setUrl(QUrl(f"http://127.0.0.1:{port}/"))
+        return True
 
     def _stop_ttyd_console(self):
         """Terminate the current ttyd subprocess, if any."""
@@ -11556,10 +11891,80 @@ function filterAliases(q) {{
         """
         if self.console_ttyd_proc is None or self.console_ttyd_proc.poll() is not None:
             self._ensure_ttyd_console(self.console_path or "~")
+        self._run_in_ttyd_when_ready(command)
+
+    def _run_in_ttyd_when_ready(self, command, attempts=0):
+        """Pastes+submits `command` in the live ttyd terminal once its page has actually
+        finished loading (self._console_ttyd_ready), rather than as soon as console_ttyd_proc
+        reports the OS process alive. Those are NOT the same thing: setUrl() triggers an
+        async page load, and the gap is real — even the very first ttyd session auto-started
+        during initial build_main_content() isn't necessarily done loading (window.term
+        doesn't exist yet) by the time something else tries to paste into it moments later
+        (observed empirically: the paste is silently lost, no error). Polls every 100ms for
+        up to ~5s rather than hanging forever if something goes wrong.
+
+        Once ready, an additional fixed 500ms settle delay is applied before actually
+        pasting — loadFinished firing only means the page's own HTML/JS has loaded, not that
+        xterm.js's WebSocket connection to ttyd's backing PTY has finished its handshake.
+        Confirmed empirically: pasting immediately on the ready transition is silently
+        dropped nearly every time (no error, paste just never reaches the PTY), while the
+        same paste 500ms later lands reliably every time tested — a real gap between "page
+        loaded" and "terminal actually ready for input", not a page-load race.
+        """
+        if self._console_ttyd_ready:
+            QTimer.singleShot(500, lambda: self._paste_and_submit_in_ttyd(command))
+            return
+        if attempts >= 50:
+            return
+        QTimer.singleShot(100, lambda: self._run_in_ttyd_when_ready(command, attempts + 1))
+
+    def _paste_and_submit_in_ttyd(self, command):
+        """The actual paste-and-Enter JS call — split out from _run_alias_in_ttyd_console so
+        _run_in_ttyd_when_ready() can share it.
+
+        The trailing no-op callback is load-bearing, not decoration: page().runJavaScript()
+        called WITHOUT a callback was observed to silently no-op on this exact script often
+        enough to be unusable (confirmed empirically — same script, same state, only
+        difference being presence of a callback argument) — some PyQt6/QtWebEngine internal
+        fire-and-forget path apparently doesn't reliably run to completion. Passing any
+        callback, even one that discards the result, made it reliable every time tested.
+        """
         self.console_ttyd_webview.page().runJavaScript(
             f"window.term && window.term.paste({json.dumps(command)});"
-            f"try {{ window.term._core.coreService.triggerDataEvent('\\r', true); }} catch(e) {{}}"
+            f"try {{ window.term._core.coreService.triggerDataEvent('\\r', true); }} catch(e) {{}}",
+            lambda _result: None,
         )
+
+    def _resolve_tail_log_target(self, expanded_path):
+        """Mirrors handle_tail_log()'s file resolution (launch_handlers.py, the external-
+        terminal handler for app == "tail_log") — given a directory, prefer debug.log,
+        fall back to error.log, default to debug.log if neither exists yet (tail -f will
+        just wait for it to appear). Given a file path directly, use it as-is."""
+        if os.path.isfile(expanded_path):
+            return expanded_path
+        if os.path.isdir(expanded_path):
+            debug_log = os.path.join(expanded_path, 'debug.log')
+            error_log = os.path.join(expanded_path, 'error.log')
+            if os.path.exists(debug_log):
+                return debug_log
+            if os.path.exists(error_log):
+                return error_log
+            return debug_log
+        if os.path.splitext(expanded_path)[1]:
+            return expanded_path
+        return os.path.join(expanded_path, 'debug.log')
+
+    def _open_log_file_in_console(self, expanded_path, lines=300):
+        """Focus-layout internal routing for tail_log launcher items and .log files: tails
+        the file in the live embedded terminal (tail -n <lines> -f) instead of spawning an
+        external terminal, reusing the same paste-and-submit mechanism as the alias quick-
+        jump buttons. Only reachable when the ttyd backend is active (checked by the caller)
+        — qtconsole's kernel would hang forever on a `!tail -f`, since -f never exits."""
+        log_file = self._resolve_tail_log_target(expanded_path)
+        if self.column2_mode != "console":
+            self.switch_to_viewer_mode("console")
+        command = f"tail -n {lines} -f {shlex.quote(log_file)}"
+        self._run_alias_in_ttyd_console(command)
 
     def _show_alias_overflow_menu(self, aliases, anchor_btn):
         """Show the aliases past the console toolbar's cap (see create_console_toolbar) in a
@@ -12371,7 +12776,7 @@ function filterAliases(q) {{
             self.switch_to_viewer_mode(tile['target'])
             return
         if tile['kind'] == 'markdown':
-            self._open_markdown_in_webview(tile['target'])
+            self._open_markdown_file(tile['target'])
             return
         app_name = tile['target']
         target = "about:blank" if app_name in ('firefox', 'chrome') else (
@@ -12418,7 +12823,9 @@ function filterAliases(q) {{
             if ext in ('.html', '.htm'):
                 self._open_file_in_webview(path)
             elif ext == '.md':
-                self._open_markdown_in_webview(path)
+                self._open_markdown_file(path)
+            elif ext in self._CODE_ROUTE_EXTENSIONS:
+                self._open_code_file_in_editor(path)
             else:
                 subprocess.Popen(["xdg-open", path], start_new_session=True)
 
@@ -12444,9 +12851,11 @@ function filterAliases(q) {{
         elif ext == '.pdf':
             self.preview_in_pdf_viewer(path)
         elif ext == '.md':
-            self._open_markdown_in_webview(path)
+            self._open_markdown_file(path)
         elif ext in ('.html', '.htm'):
             self._open_file_in_webview(path)
+        elif ext in self._CODE_ROUTE_EXTENSIONS:
+            self._open_code_file_in_editor(path)
         else:
             subprocess.Popen(["xdg-open", path], start_new_session=True)
 
@@ -12522,6 +12931,17 @@ function filterAliases(q) {{
     def _open_markdown_in_webview(self, path):
         """Open a markdown file — defaults to the live, auto-saving Muya editor."""
         self._open_markdown_in_muya_editor(path)
+
+    def _open_markdown_file(self, path):
+        """Layout-aware entry point for "open this markdown file" actions — used by every
+        click-routing call site instead of calling _open_markdown_in_webview() directly.
+        Focus layout consolidates all notes (project's own or otherwise) onto the Notes tab
+        (_open_note_in_notes_tab()); Standard layout is unchanged, since its Notes column is
+        a fixed pane that can only ever show the project's own note (see CLAUDE.md)."""
+        if self.layout_mode == "focus":
+            self._open_note_in_notes_tab(path)
+        else:
+            self._open_markdown_in_webview(path)
 
     def _open_markdown_preview(self, path):
         """Render a markdown file as themed, read-only HTML in the built-in webview panel"""
@@ -12646,15 +13066,109 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             }}
         """
 
-    def _open_notes_in_muya(self):
-        """Load the current project's notes into the persistent Notes-panel Muya session.
-        Content comes from self.notes_data (already read by load_notes()) rather than
-        re-reading the file, since the notes file may not exist yet for a brand-new project."""
-        content = self.notes_data.get("content", "") if self.notes_data else ""
-        self._load_muya_shell(
-            self._notes_muya_session, self.get_notes_file_path(), content,
-            extra_css=self._notes_paper_css()
+    def create_notes_toolbar(self, parent_layout):
+        """Create the Focus-layout Notes panel's toolbar: a filename label (blank when
+        showing the project's own note, so it's never ambiguous which note is on screen),
+        a "📂 Open" file picker for arbitrary notes, and a "🏠 Project Note" button (visible
+        only when viewing something else) to jump back. Mirrors create_code_editor_toolbar()'s
+        shape/style."""
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 5)
+        toolbar_layout.setSpacing(5)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+        """
+
+        self.notes_open_btn = QPushButton("📂 Open")
+        self.notes_open_btn.setStyleSheet(btn_style)
+        self.notes_open_btn.setToolTip("Open a note in the Notes tab")
+        self.notes_open_btn.clicked.connect(self.open_note_file)
+        toolbar_layout.addWidget(self.notes_open_btn)
+
+        self.notes_current_label = QLabel("")
+        self.notes_current_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; margin-right: 5px;")
+        toolbar_layout.addWidget(self.notes_current_label)
+
+        toolbar_layout.addStretch()
+
+        self.notes_home_btn = QPushButton("🏠 Project Note")
+        self.notes_home_btn.setStyleSheet(btn_style)
+        self.notes_home_btn.setToolTip("Back to this project's own note")
+        self.notes_home_btn.clicked.connect(lambda: self._open_note_in_notes_tab(self.get_notes_file_path()))
+        toolbar_layout.addWidget(self.notes_home_btn)
+
+        parent_layout.addWidget(toolbar_widget)
+        self._update_notes_toolbar()
+
+    def open_note_file(self):
+        """Notes toolbar "📂 Open" button: file picker for opening an arbitrary note, not
+        just the project's own — mirrors open_code_file()'s pattern."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Note", os.path.expanduser("~"), "Markdown Files (*.md);;All Files (*)"
         )
+        if file_path:
+            self._open_note_in_notes_tab(file_path)
+
+    def _update_notes_toolbar(self):
+        """Refreshes the Notes toolbar's filename label and Project-Note button visibility
+        to reflect self.notes_md_path. No-op if the toolbar doesn't exist (Standard layout,
+        or not yet built)."""
+        if not self.notes_current_label:
+            return
+        is_project_note = not self.notes_md_path
+        self.notes_current_label.setText("" if is_project_note else os.path.basename(self.notes_md_path))
+        self.notes_home_btn.setVisible(not is_project_note)
+
+    def _open_notes_in_muya(self):
+        """Load the current project's notes into the persistent Notes-panel Muya session —
+        UNLESS an arbitrary other note has been explicitly loaded (self.notes_md_path set,
+        see _open_note_in_notes_tab()), in which case that one is (re)loaded instead. This
+        is what makes the Notes tab "always shows the project note if another note not
+        loaded" — notes_md_path is only ever reset in switch_to_config(), so it survives
+        incidental refreshes (editing a launcher, toggling theme) and only resets on an
+        actual project switch.
+
+        The project-note branch sources content from self.notes_data (already read by
+        load_notes()) rather than re-reading the file, since the notes file may not exist
+        yet for a brand-new project; the arbitrary-note branch reads from disk via the same
+        _open_path_in_muya_session() the general webview uses — it's already generic over
+        which MuyaSession it targets."""
+        if self.notes_md_path and self.notes_md_path != self.get_notes_file_path():
+            self._open_path_in_muya_session(self._notes_muya_session, self.notes_md_path, extra_css=self._notes_paper_css())
+        else:
+            content = self.notes_data.get("content", "") if self.notes_data else ""
+            self._load_muya_shell(
+                self._notes_muya_session, self.get_notes_file_path(), content,
+                extra_css=self._notes_paper_css()
+            )
+        self._update_notes_toolbar()
+
+    def _open_note_in_notes_tab(self, path):
+        """Open any .md file in the Focus-layout Notes tab (the consolidated note viewer) —
+        stable public entry point used by every "open a markdown file" call site in Focus
+        layout (see _open_markdown_file()). Falls back to the project's own note
+        automatically once nothing else is explicitly loaded (notes_md_path reset happens
+        only in switch_to_config())."""
+        self.notes_md_path = path if path != self.get_notes_file_path() else None
+        if self.column2_mode != "notes":
+            self.switch_to_viewer_mode("notes")
+        self._open_notes_in_muya()
 
     def _open_markdown_in_muya_editor(self, path=None):
         """Switch the main webview into the Muya WYSIWYG markdown editor for the given file."""
@@ -12730,6 +13244,261 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.md_edit_btn.setVisible(is_md and not self._muya_session.editing)
         self.md_preview_btn.setVisible(is_md and self._muya_session.editing)
 
+        # "Edit Source" — visible only when the webview is showing a local .html/.htm
+        # file as rendered content (not markdown-editing, not a plain URL/non-HTML file).
+        if hasattr(self, 'html_source_btn'):
+            is_html_rendered = False
+            if not is_md and self.webview:
+                url = self.webview.url()
+                if url.isLocalFile():
+                    ext = os.path.splitext(url.toLocalFile())[1].lower()
+                    is_html_rendered = ext in ('.html', '.htm')
+            self.html_source_btn.setVisible(is_html_rendered)
+
+    def _open_html_source_from_webview(self):
+        """"</> Edit Source" button: open the currently-rendered local HTML file's source
+        in the internal code editor instead."""
+        if not self.webview:
+            return
+        url = self.webview.url()
+        if not url.isLocalFile():
+            return
+        self._open_code_file_in_editor(url.toLocalFile())
+
+    # --- CodeMirror 6 code-editor bridge ---------------------------------------------
+    # Parallel to the Muya bridge methods above, but deliberately NOT sharing a base
+    # class/session type with MuyaSession — see CodeEditorSession's docstring. The one
+    # method that ever writes to disk is _code_editor_save(); _code_editor_dirty_poll_tick
+    # only ever reads state for the Save button's UI indicator, never writes.
+
+    _CODE_EXT_LANGUAGE = {
+        '.js': 'js', '.mjs': 'js', '.jsx': 'js', '.cjs': 'js',
+        '.py': 'py', '.pyw': 'py',
+        '.html': 'html', '.htm': 'html',
+        '.css': 'css',
+        '.php': 'php', '.phtml': 'php',
+    }
+    # Extensions that should route into the new internal code editor by default —
+    # everything in _CODE_EXT_LANGUAGE except .html/.htm, which keep their existing
+    # default of opening rendered in the webview (see the "</> Edit Source" toggle for
+    # the opt-in path into the code editor instead).
+    _CODE_ROUTE_EXTENSIONS = tuple(e for e in _CODE_EXT_LANGUAGE if e not in ('.html', '.htm'))
+
+    def _code_editor_language_for(self, path):
+        """Maps a file extension to the short language key editor.html's langMap expects,
+        or None for an unrecognized extension (the editor still opens, just without a
+        language extension — plain text with line numbers, never refuses to open)."""
+        return self._CODE_EXT_LANGUAGE.get(os.path.splitext(path)[1].lower())
+
+    def _code_editor_syntax_colors(self):
+        """Small, hand-picked syntax-token palette (keyword/string/comment), independent
+        of themes.py — same reasoning as the Notes paper theme's hand-picked colors (see
+        CLAUDE.md): a 2-3 color accent scheme doesn't map cleanly onto the app's own
+        background/foreground palette, so it's picked to look right in each theme instead
+        of derived from it."""
+        if self.current_theme == "dark":
+            return {"keyword": "#ff7b72", "string": "#a5d6ff", "comment": "#8b949e"}
+        return {"keyword": "#cf222e", "string": "#0a3069", "comment": "#6e7781"}
+
+    def _load_code_editor_shell(self, session, path, content, language):
+        """Load the CodeMirror 6 editor shell into session.webview with the given content."""
+        if not session.webview:
+            return
+        editor_dir = os.path.join(self.script_dir, "assets", "codemirror")
+        editor_html = os.path.join(editor_dir, "editor.html")
+        if not os.path.exists(editor_html):
+            self.status_label.setText("✗ Code editor assets not found")
+            return
+
+        with open(editor_html, 'r', encoding='utf-8') as f:
+            shell_html = f.read()
+        is_dark = self.current_theme == "dark"
+        syntax_colors = self._code_editor_syntax_colors()
+        shell_html = (
+            shell_html.replace('__PF_BG__', self.t('bg_primary'))
+            .replace('__PF_FG__', self.t('fg_primary'))
+            .replace('__PF_FG_SECONDARY__', self.t('fg_secondary'))
+            .replace('__PF_GUTTER_BG__', self.t('bg_secondary'))
+            .replace('__PF_ACTIVE_LINE__', self.t('bg_secondary'))
+            .replace('__PF_SELECTION__', self.t('bg_category'))
+            .replace('__PF_IS_DARK__', 'true' if is_dark else 'false')
+            .replace('__PF_SYNTAX_JSON__', json.dumps(syntax_colors))
+            .replace('__PF_EXTRA_CSS__', '')
+        )
+
+        session.path = path
+        session.language = language
+        session.editing = True
+        session.pending_content = content
+        session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
+        if not session.dirty_poll_timer.isActive():
+            session.dirty_poll_timer.start()
+
+    def _open_path_in_code_editor_session(self, session, path):
+        """Read a file from disk and load it into the given CodeEditorSession's editor."""
+        if not path or not session.webview:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.status_label.setText(f"✗ Could not open {os.path.basename(path)}: {e}")
+            return
+        language = self._code_editor_language_for(path)
+        self._load_code_editor_shell(session, path, content, language)
+
+    def _on_code_editor_webview_load_finished(self, ok, session):
+        """Fires for every navigation of the code-editor webview. Injects pending content
+        once loaded — mirrors _on_muya_webview_load_finished."""
+        if ok and session.pending_content is not None:
+            wrap_enabled = self.settings.get('code_editor_wrap', True)
+            js = f"window.__initCodeEditor({json.dumps(session.pending_content)}, {json.dumps(session.language)}, {json.dumps(wrap_enabled)})"
+            session.webview.page().runJavaScript(js)
+            session.pending_content = None
+            session.dirty = False
+            self._update_code_editor_buttons()
+
+    def _code_editor_dirty_poll_tick(self, session):
+        """Runs every ~800ms while editing; refreshes the Save button's dirty indicator
+        ONLY — never writes to disk (see CodeEditorSession's docstring)."""
+        if not session.editing or not session.webview:
+            session.dirty_poll_timer.stop()
+            return
+
+        def on_dirty(is_dirty):
+            is_dirty = bool(is_dirty)
+            if is_dirty != session.dirty:
+                session.dirty = is_dirty
+                self._update_code_editor_buttons()
+
+        session.webview.page().runJavaScript(
+            "window.__codeEditorIsDirty ? window.__codeEditorIsDirty() : false", on_dirty
+        )
+
+    def _code_editor_save(self, session):
+        """The only method that ever writes code-editor content to disk. Pulls the current
+        content out of the editor and writes it, only in response to an explicit user
+        action (Save button / Ctrl+S) — never called from a timer."""
+        if not session.editing or not session.path or not session.webview:
+            return
+
+        def on_content(content):
+            if content is None:
+                self.status_label.setText("✗ Save failed: no content from editor")
+                return
+            try:
+                with open(session.path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                session.webview.page().runJavaScript("window.__codeEditorClearDirty && window.__codeEditorClearDirty()")
+                session.dirty = False
+                self._update_code_editor_buttons()
+                self.status_label.setText(f"✓ Saved {os.path.basename(session.path)}")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
+            except OSError as e:
+                self.status_label.setText(f"✗ Save failed: {e}")
+
+        session.webview.page().runJavaScript(
+            "window.__getCodeEditorContent ? window.__getCodeEditorContent() : null", on_content
+        )
+
+    def _code_editor_toggle_wrap(self):
+        """Toggle line-wrapping in the code editor. Flips a runtime CM6 Compartment
+        (__setCodeEditorWrap in editor.html) rather than reloading the file, so it never
+        touches undo history or the dirty flag. Persisted per-machine in settings, applied
+        to future __initCodeEditor() calls too (see _on_code_editor_webview_load_finished)."""
+        enabled = self.code_wrap_btn.isChecked() if hasattr(self, 'code_wrap_btn') else True
+        self.settings['code_editor_wrap'] = enabled
+        self.save_settings()
+        if self._code_session.webview:
+            js = f"window.__setCodeEditorWrap && window.__setCodeEditorWrap({json.dumps(enabled)})"
+            self._code_session.webview.page().runJavaScript(js)
+
+    def _confirm_discard_code_changes(self):
+        """Returns True if it's safe to proceed (no dirty code file open, or the user
+        confirmed discarding it), False if the caller should abort. Uses the timer-polled
+        session.dirty flag directly (up to ~800ms stale) rather than a synchronous re-query
+        — acceptable for a discard-confirmation on non-realtime paths (app close, project
+        switch, opening a different file), and avoids restructuring those call sites into
+        async callback chains for a rare edge case."""
+        session = self._code_session
+        if not (session.editing and session.dirty and session.path):
+            return True
+        reply = QMessageBox.question(
+            self, "Unsaved Changes",
+            f"'{os.path.basename(session.path)}' has unsaved changes. Discard them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def open_code_file(self):
+        """Toolbar "📂 Open" button: file picker for opening an arbitrary file in the code
+        editor, not just files already referenced by the project — mirrors open_pdf_file()/
+        open_image_file()'s existing QFileDialog pattern."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open File", os.path.expanduser("~"),
+            "Code Files (*.js *.jsx *.mjs *.cjs *.py *.html *.htm *.css *.php);;All Files (*)"
+        )
+        if file_path:
+            self._open_code_file_in_editor(file_path)
+
+    def _open_code_file_in_editor(self, path=None):
+        """Stable public entry point for opening a file in the internal code editor —
+        used by all click-routing call sites. Guards against silently discarding a
+        different, currently-dirty file first."""
+        path = path or self._code_session.path
+        if not path:
+            return
+        if self._code_session.editing and self._code_session.path != path:
+            if not self._confirm_discard_code_changes():
+                return
+        if self.column2_mode != "code":
+            self.switch_to_viewer_mode("code")
+        self._open_path_in_code_editor_session(self._code_session, path)
+        self._update_code_editor_buttons()
+
+    def _update_code_editor_buttons(self):
+        """Refreshes the Save button's label/enabled-state and the filename/language label
+        to reflect the current CodeEditorSession — mirrors _update_md_edit_buttons."""
+        session = self._code_session
+        if hasattr(self, 'code_save_btn'):
+            if session.dirty:
+                self.code_save_btn.setText("💾 Save (unsaved changes)")
+            else:
+                self.code_save_btn.setText("💾 Save")
+            self.code_save_btn.setEnabled(bool(session.editing and session.path))
+        if hasattr(self, 'code_filename_label'):
+            self.code_filename_label.setText(os.path.basename(session.path) if session.path else "")
+        if hasattr(self, 'code_source_toggle_btn'):
+            is_html = bool(session.path) and os.path.splitext(session.path)[1].lower() in ('.html', '.htm')
+            self.code_source_toggle_btn.setVisible(is_html)
+
+    def _code_editor_switch_to_rendered(self):
+        """"👁 Rendered" button: leave the code editor for the currently-open .html/.htm
+        file and show the rendered read-only preview instead — the counterpart to the
+        webview toolbar's "</> Edit Source" button. Guards on unsaved changes first."""
+        session = self._code_session
+        if not session.path:
+            return
+        path = session.path
+        if session.dirty and not self._confirm_discard_code_changes():
+            return
+        session.editing = False
+        session.dirty = False
+        session.dirty_poll_timer.stop()
+        self._open_file_in_webview(path)
+
+    def open_code_file_in_external_editor(self):
+        """Footer "Open in {editor}" button — opens the currently-open file (as it exists
+        on disk) in the configured external editor, matching the equivalent footer button
+        on every other viewer (PDF/image/folder/webview). Doesn't touch the internal
+        editor's own unsaved state either way — it just opens a separate external window."""
+        path = self._code_session.path
+        if not path or not os.path.exists(path):
+            return
+        editor = self.get_configured_editor()
+        subprocess.Popen([editor, path], start_new_session=True)
+
     def _build_folder_context_menu(self, path, item_type):
         """Build the right-click menu for a folder-browser entry — shared by the tree and icon views."""
         menu = QMenu(self)
@@ -12770,7 +13539,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 viewer_action.triggered.connect(lambda: self.preview_in_pdf_viewer(path))
             elif ext == '.md':
                 viewer_action = menu.addAction("📝 Open in Markdown Editor")
-                viewer_action.triggered.connect(lambda: self._open_markdown_in_webview(path))
+                viewer_action.triggered.connect(lambda: self._open_markdown_file(path))
             elif ext in ('.html', '.htm'):
                 viewer_action = menu.addAction("🌐 Open in Web Viewer")
                 viewer_action.triggered.connect(lambda: self._open_file_in_webview(path))
@@ -13637,7 +14406,7 @@ Project created: {date_str}
                 ext = os.path.splitext(expanded_path)[1].lower()
                 if app in ("firefox", "chrome") or expanded_path.startswith(("http://", "https://")):
                     if ext == ".md" and self._is_local_path(path):
-                        self._open_markdown_in_webview(expanded_path)
+                        self._open_markdown_file(expanded_path)
                     elif ext in (".html", ".htm") and self._is_local_path(path):
                         self._open_file_in_webview(expanded_path)
                     else:
@@ -13650,10 +14419,16 @@ Project created: {date_str}
                     self.preview_in_pdf_viewer(expanded_path)
                     return
                 if ext == ".md" and self._is_local_path(path):
-                    self._open_markdown_in_webview(expanded_path)
+                    self._open_markdown_file(expanded_path)
                     return
                 if ext in (".html", ".htm") and self._is_local_path(path):
                     self._open_file_in_webview(expanded_path)
+                    return
+                if ext in self._CODE_ROUTE_EXTENSIONS and self._is_local_path(path):
+                    self._open_code_file_in_editor(expanded_path)
+                    return
+                if (app == "tail_log" or (ext == ".log" and self._is_local_path(path))) and self.resolve_console_backend() == "ttyd":
+                    self._open_log_file_in_console(expanded_path)
                     return
                 if os.path.isdir(expanded_path) and app not in ("terminal", "konsole", "editor", "file_manager", "dolphin", "directorydev"):
                     self.preview_in_folder_browser(expanded_path)
