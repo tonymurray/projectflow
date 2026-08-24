@@ -7499,20 +7499,22 @@ function filterAliases(q) {{
                     # editing still falls back to today's raw category list (see the
                     # focus_launcher_tab_active dispatch above), unchanged for now.
                     if self.layout_mode == "focus":
-                        # Blue (bg_category/bg_category_hover) rather than the wide-viewer
-                        # tab row's green — matches the category header bars ("Docs - Open
-                        # All" etc.) these tabs are effectively switching between.
-                        # Resting state uses bg_category_active (the darkest of the three blue
-                        # shades) rather than bg_category — swapped so active (below) can be
-                        # the *brighter* bg_category, matching the viewer tab row's own
-                        # brighter-on-active convention (bg_green_1 resting -> bg_green_3
-                        # active) instead of running the opposite direction. Hover uses
-                        # bg_category_hover, which sits between the other two in brightness,
-                        # so the three states form one continuous dark->medium->bright
-                        # progression: resting -> hover -> active.
+                        # Blue (tab_launcher_resting/active/bg_category_hover) rather than
+                        # the wide-viewer tab row's green — matches the category header bars
+                        # ("Docs - Open All" etc.) these tabs are effectively switching
+                        # between. tab_launcher_resting/tab_launcher_active are a dedicated
+                        # pair (not the general bg_category/bg_category_hover, reused ~30
+                        # places elsewhere) specifically because "brighter = active" (matching
+                        # the viewer tab row's bg_green_1->bg_green_3 convention) flips which
+                        # of {bg_category, a scaled variant} is naturally the brighter one
+                        # between themes — see themes.py's comment on this pair for why. Hover
+                        # uses bg_category_hover, which in both themes happens to sit between
+                        # the resting and active values in brightness, so the three states
+                        # still form one continuous dim->medium->bright progression:
+                        # resting -> hover -> active.
                         launcher_tab_style = f"""
                             QPushButton {{
-                                background-color: {self.t('bg_category_active')};
+                                background-color: {self.t('tab_launcher_resting')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
                                 border-radius: 3px;
@@ -7524,20 +7526,13 @@ function filterAliases(q) {{
                                 color: {self.t('fg_on_dark')};
                             }}
                         """
-                        # bg_category (the row's original base blue, now used only here) is
-                        # the brightest of the three shades — active fill, no border, mirrors
-                        # the viewer tab row's own bg_green_3 active fill (see
-                        # active_tab_style's comment in the viewer tab row section for the
-                        # fuller history of what was tried before landing on "just use a
-                        # different shade, no border"). bg_category_active's distance from
-                        # bg_category was deliberately scaled to match bg_green_1/bg_green_3's
-                        # luminance gap in magnitude — bg_category_hover's own gap from
-                        # bg_category was visibly weaker by comparison (see themes.py comment
-                        # for the numbers) — that magnitude match is preserved by this swap,
-                        # only which end is "resting" vs "active" changed.
+                        # Active fill, no border — mirrors the viewer tab row's own
+                        # bg_green_3 active fill (see active_tab_style's comment in the
+                        # viewer tab row section for the fuller history of what was tried
+                        # before landing on "just use a different shade, no border").
                         launcher_tab_active_style = f"""
                             QPushButton {{
-                                background-color: {self.t('bg_category')};
+                                background-color: {self.t('tab_launcher_active')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
                                 border-radius: 3px;
@@ -7545,7 +7540,7 @@ function filterAliases(q) {{
                                 font-size: 11px;
                             }}
                             QPushButton:hover {{
-                                background-color: {self.t('bg_category')};
+                                background-color: {self.t('tab_launcher_active')};
                                 color: {self.t('fg_on_dark')};
                             }}
                         """

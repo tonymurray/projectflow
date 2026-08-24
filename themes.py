@@ -58,12 +58,17 @@ THEMES = {
         # Category/accent colors
         "bg_category": "#3498db",
         "bg_category_hover": "#2980b9",
-        # Launcher tab row's active-tab fill only (not the general hover color above, which
-        # is reused in ~30 other places) — scaled down from bg_category so its luminance
-        # drop (-49.9) matches the viewer tab row's bg_green_1->bg_green_3 rise (+49.9) in
-        # magnitude; bg_category_hover's own drop was only -22.0, visibly weaker. See
-        # CLAUDE.md's Active-tab border color note for the calculation.
-        "bg_category_active": "#21608a",
+        # Dedicated resting/active pair for the launcher tab row specifically (not the
+        # general bg_category/bg_category_hover above, which are reused in ~30 other
+        # places). Active must be *brighter* than resting to match the viewer tab row's
+        # convention (see CLAUDE.md's Active-tab indicator note) — but which of
+        # bg_category/a scaled variant is naturally brighter flips between themes: in light
+        # theme bg_category (L=135.6) is already the brighter of the two so it's reused as
+        # tab_launcher_active, and tab_launcher_resting is a new color scaled *down* from it
+        # (L=85.6, a -49.9 drop, sized to match the viewer row's own bg_green_1->bg_green_3
+        # gap in magnitude). Dark theme is the mirror image — see dark section below.
+        "tab_launcher_resting": "#21608a",
+        "tab_launcher_active": "#3498db",
         "bg_success": "#27ae60",
         "bg_success_hover": "#2ecc71",
         "bg_danger": "#e74c3c",
@@ -158,10 +163,12 @@ THEMES = {
         # Category/accent colors
         "bg_category": "#283136",
         "bg_category_hover": "#394459",
-        # See light theme's bg_category_active comment — scaled up from bg_category so its
-        # luminance rise (+61.9) matches bg_green_1->bg_green_3's (+61.6); bg_category_hover's
-        # own rise was only +19.7.
-        "bg_category_active": "#5c717c",
+        # Mirror image of light theme's pair (see that section's comment): here bg_category
+        # (L=47.4) is already the *dimmer* of the two, so it's reused as tab_launcher_resting,
+        # and tab_launcher_active is a new color scaled *up* from it (L=109.3, a +61.9 rise,
+        # sized to match dark theme's own bg_green_1->bg_green_3 gap of +61.6).
+        "tab_launcher_resting": "#283136",
+        "tab_launcher_active": "#5c717c",
         "bg_success": "#1a5a3a",
         "bg_success_hover": "#228b4a",
         "bg_danger": "#8b2a2a",
