@@ -2,6 +2,17 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-25
+
+### Changed
+- App icon (`assets/icon.svg`/`.png`) now has subtly rounded corners instead of a hard square.
+- Pin buttons (viewer tab row, launcher tab row, Folder viewer's own toolbar) now use a real icon instead of the 📌 emoji — Google's Material Symbols "keep" (thumbtack) glyph, in a fixed-white variant for the colored tab-row backgrounds and a theme-matched light/dark pair for the plain Folder-viewer toolbar button.
+- Active-tab indicator on both tab rows reworked to rely purely on background-color contrast rather than a border, matching how `:hover` already signals state elsewhere. Both rows now read brighter-fill = selected: the viewer tab row already worked this way; the launcher tab row's direction was swapped to match, backed by a new dedicated `bg_category_active` color whose contrast against the resting blue was deliberately computed to match the viewer row's own contrast magnitude, rather than picking an arbitrary shade.
+
+### Fixed
+- The Terminal tab in the viewer tab row always showed a border regardless of selection state, making it look permanently "selected" next to the other tabs — removed; it now looks identical to every other tab when inactive.
+- Dark theme's viewer tab row background gradient (`bg_green_1`–`bg_green_4`) was four identical placeholder colors, making the active and inactive tab backgrounds indistinguishable in dark mode — now a real 4-stop progression, matching how light theme's gradient already worked.
+
 ## 2026-08-24
 
 ### Added

@@ -7502,9 +7502,17 @@ function filterAliases(q) {{
                         # Blue (bg_category/bg_category_hover) rather than the wide-viewer
                         # tab row's green — matches the category header bars ("Docs - Open
                         # All" etc.) these tabs are effectively switching between.
+                        # Resting state uses bg_category_active (the darkest of the three blue
+                        # shades) rather than bg_category — swapped so active (below) can be
+                        # the *brighter* bg_category, matching the viewer tab row's own
+                        # brighter-on-active convention (bg_green_1 resting -> bg_green_3
+                        # active) instead of running the opposite direction. Hover uses
+                        # bg_category_hover, which sits between the other two in brightness,
+                        # so the three states form one continuous dark->medium->bright
+                        # progression: resting -> hover -> active.
                         launcher_tab_style = f"""
                             QPushButton {{
-                                background-color: {self.t('bg_category')};
+                                background-color: {self.t('bg_category_active')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
                                 border-radius: 3px;
@@ -7516,18 +7524,28 @@ function filterAliases(q) {{
                                 color: {self.t('fg_on_dark')};
                             }}
                         """
+                        # bg_category (the row's original base blue, now used only here) is
+                        # the brightest of the three shades — active fill, no border, mirrors
+                        # the viewer tab row's own bg_green_3 active fill (see
+                        # active_tab_style's comment in the viewer tab row section for the
+                        # fuller history of what was tried before landing on "just use a
+                        # different shade, no border"). bg_category_active's distance from
+                        # bg_category was deliberately scaled to match bg_green_1/bg_green_3's
+                        # luminance gap in magnitude — bg_category_hover's own gap from
+                        # bg_category was visibly weaker by comparison (see themes.py comment
+                        # for the numbers) — that magnitude match is preserved by this swap,
+                        # only which end is "resting" vs "active" changed.
                         launcher_tab_active_style = f"""
                             QPushButton {{
-                                background-color: {self.t('bg_category_hover')};
+                                background-color: {self.t('bg_category')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
                                 border-radius: 3px;
                                 padding: 5px 8px;
                                 font-size: 11px;
-                                border: 2px solid {self.t('fg_on_dark')};
                             }}
                             QPushButton:hover {{
-                                background-color: {self.t('bg_category_hover')};
+                                background-color: {self.t('bg_category')};
                                 color: {self.t('fg_on_dark')};
                             }}
                         """
@@ -7563,25 +7581,19 @@ function filterAliases(q) {{
                         # launcher_tab_default overrides the last-opened tab on load (see
                         # load_config()) the same way column2_default already does for
                         # viewers. No dynamic "currently pinned" highlight, matching every
-                        # other 📌 button in the app.
-                        pin_tab_btn_style = f"""
-                            QPushButton {{
-                                background-color: {self.t('bg_button')};
-                                color: {self.t('fg_primary')};
-                                border: 1px solid {self.t('border')};
-                                border-radius: 3px;
-                                font-size: 12px;
-                            }}
-                            QPushButton:hover {{
-                                background-color: {self.t('bg_button_hover')};
-                                color: {self.t('fg_on_dark')};
-                            }}
-                        """
-                        pin_tab_btn = QPushButton("📌")
+                        # other pin button in the app. Styled with launcher_tab_style (the
+                        # same blue bg_category used by the tabs it pins) rather than a plain
+                        # bg_button style, now that it carries a white icon matching the tabs'
+                        # own white icons instead of a bare "📌" glyph.
+                        pin_tab_btn = QPushButton()
+                        pin_tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", "pin.png")
+                        if os.path.exists(pin_tab_icon_path):
+                            pin_tab_btn.setIcon(QIcon(pin_tab_icon_path))
+                            pin_tab_btn.setIconSize(QSize(16, 16))
                         pin_tab_btn.setFixedWidth(28)
                         pin_tab_btn.setMinimumHeight(self.d('header_btn_height'))
                         pin_tab_btn.setToolTip(f"Pin \"{self.active_launcher_tab.title()}\" as default launcher tab for this project")
-                        pin_tab_btn.setStyleSheet(pin_tab_btn_style)
+                        pin_tab_btn.setStyleSheet(launcher_tab_style)
                         pin_tab_btn.clicked.connect(self._set_launcher_tab_as_default)
                         launcher_tabs_layout.addWidget(pin_tab_btn)
 
@@ -8434,7 +8446,7 @@ function filterAliases(q) {{
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
                     tab_buttons.append(("time", "⏱ Time", "Kimai time tracker"))
 
-                # Normal tab button style
+                # Normal tab button style — bg_green_1 (the darkest stop) at rest.
                 tab_btn_style = f"""
                     QPushButton {{
                         background-color: {self.t('bg_green_1')};
@@ -8450,7 +8462,22 @@ function filterAliases(q) {{
                     }}
                 """
 
-                # Active tab button style
+                # Active tab button style — bg_green_3 (the brightest stop), no border.
+                # A same-hue *darker* active fill (mirroring the launcher tab row's
+                # bg_category/bg_category_hover direction) was tried and reverted: dark
+                # theme's darkest green (bg_green_1, #123d28) sits almost exactly as dark as
+                # the page background (#181B1D) behind the tab row, so the active tab nearly
+                # vanished while the brighter *inactive* tabs drew all the attention — the
+                # opposite of what "active" should signal. The launcher row's own
+                # darker-when-active look isn't a deliberate "darker = active" design
+                # language to match — it only has two blue shades total, so "active" simply
+                # reuses the only other one available (which happens to be darker). Brighter
+                # rather than darker is also the more conventional reading of "selected"
+                # (most prominent, not least). No border either way, per the same reasoning
+                # as the launcher row: once the fill genuinely differs, a same-hue border on
+                # top is redundant (see CLAUDE.md's Active-tab border color note for the
+                # fuller history — fg_on_dark, fg_secondary, and a bg_green_1 border were all
+                # tried before landing here).
                 active_tab_style = f"""
                     QPushButton {{
                         background-color: {self.t('bg_green_3')};
@@ -8459,7 +8486,6 @@ function filterAliases(q) {{
                         border-radius: 3px;
                         padding: 5px 8px;
                         font-size: 11px;
-                        border: 2px solid {self.t('fg_on_dark')};
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_green_3')};
@@ -8467,8 +8493,13 @@ function filterAliases(q) {{
                     }}
                 """
 
-                # Console tab — always has a subtle border, to stand out slightly (built-in
-                # real-terminal access rather than a document viewer)
+                # Console tab (inactive state) — plain, identical to every other inactive tab.
+                # This used to always carry a 1px solid fg_on_dark border to "stand out
+                # slightly as built-in real-terminal access," but that border used the exact
+                # same bright color as the active-tab border (just 1px thinner), so next to
+                # the plain borderless Edit/PDF/etc tabs it read as "selected" even when it
+                # wasn't — confirmed via screenshot, not just a theoretical concern. Border is
+                # now reserved solely for genuine selection, matching every other tab.
                 console_tab_btn_style = f"""
                     QPushButton {{
                         background-color: {self.t('bg_green_1')};
@@ -8477,7 +8508,6 @@ function filterAliases(q) {{
                         border-radius: 3px;
                         padding: 5px 8px;
                         font-size: 11px;
-                        border: 1px solid {self.t('fg_on_dark')};
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_green_2')};
@@ -8528,7 +8558,11 @@ function filterAliases(q) {{
                 # pin button on the launcher tab row (see build_main_content's Focus-layout
                 # tab row) for consistency. set_viewer_as_default() already dispatches on
                 # self.column2_mode, so one button works for whichever tab is active.
-                viewer_pin_btn = QPushButton("📌")
+                viewer_pin_btn = QPushButton()
+                viewer_pin_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", "pin.png")
+                if os.path.exists(viewer_pin_icon_path):
+                    viewer_pin_btn.setIcon(QIcon(viewer_pin_icon_path))
+                    viewer_pin_btn.setIconSize(QSize(16, 16))
                 viewer_pin_btn.setFixedWidth(28)
                 viewer_pin_btn.setMinimumHeight(self.d('header_btn_height'))
                 viewer_pin_btn.setToolTip("Set current viewer as default for this project")
@@ -11186,7 +11220,9 @@ function filterAliases(q) {{
         if not hasattr(self, 'viewer_tab_buttons'):
             return
 
-        # Normal and active button styles
+        # Normal and active button styles — mirrors tab_btn_style/active_tab_style in
+        # build_main_content() (bg_green_1 resting, bg_green_3 active, no border — see that
+        # definition's comment for the fuller history of what was tried and reverted).
         normal_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_green_1')};
@@ -11210,7 +11246,6 @@ function filterAliases(q) {{
                 border-radius: 3px;
                 padding: 5px 8px;
                 font-size: 11px;
-                border: 2px solid {self.t('fg_on_dark')};
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_green_3')};
@@ -11218,6 +11253,8 @@ function filterAliases(q) {{
             }}
         """
 
+        # Mirrors console_tab_btn_style in build_main_content() — no special border, see
+        # that definition's comment for why (used to always have one, read as "selected").
         console_normal_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_green_1')};
@@ -11226,7 +11263,6 @@ function filterAliases(q) {{
                 border-radius: 3px;
                 padding: 5px 8px;
                 font-size: 11px;
-                border: 1px solid {self.t('fg_on_dark')};
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_green_2')};
@@ -12129,7 +12165,9 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(self.folder_path_label, 1)
 
         # Pin default button
-        default_btn = QPushButton("📌")
+        default_btn = QPushButton()
+        default_btn.setIcon(self._pin_icon())
+        default_btn.setIconSize(QSize(16, 16))
         default_btn.setStyleSheet(btn_style)
         default_btn.setToolTip("Set this folder as default for this project")
         default_btn.clicked.connect(self.set_viewer_as_default)
@@ -12410,6 +12448,20 @@ function filterAliases(q) {{
         icon = getattr(self, cache_attr, None)
         if icon is None:
             fname = "open-folder-dark.png" if self.current_theme == "dark" else "open-folder-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
+    def _pin_icon(self):
+        """Plain single-color 'pin' icon for pin buttons that sit on a plain, theme-dependent
+        button background (e.g. the Folder viewer's own toolbar pin) — same light/dark PNG
+        pair convention as _open_icon(). Pin buttons on a colored bar (launcher tab row's blue
+        bg_category, viewer tab row's green bg_green_1) use the fixed-white
+        assets/tab-icons/pin.png instead, matching how those rows' other icons are white."""
+        cache_attr = f'_pin_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "pin-dark.png" if self.current_theme == "dark" else "pin-light.png"
             icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
             setattr(self, cache_attr, icon)
         return icon

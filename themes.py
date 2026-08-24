@@ -58,6 +58,12 @@ THEMES = {
         # Category/accent colors
         "bg_category": "#3498db",
         "bg_category_hover": "#2980b9",
+        # Launcher tab row's active-tab fill only (not the general hover color above, which
+        # is reused in ~30 other places) — scaled down from bg_category so its luminance
+        # drop (-49.9) matches the viewer tab row's bg_green_1->bg_green_3 rise (+49.9) in
+        # magnitude; bg_category_hover's own drop was only -22.0, visibly weaker. See
+        # CLAUDE.md's Active-tab border color note for the calculation.
+        "bg_category_active": "#21608a",
         "bg_success": "#27ae60",
         "bg_success_hover": "#2ecc71",
         "bg_danger": "#e74c3c",
@@ -152,6 +158,10 @@ THEMES = {
         # Category/accent colors
         "bg_category": "#283136",
         "bg_category_hover": "#394459",
+        # See light theme's bg_category_active comment — scaled up from bg_category so its
+        # luminance rise (+61.9) matches bg_green_1->bg_green_3's (+61.6); bg_category_hover's
+        # own rise was only +19.7.
+        "bg_category_active": "#5c717c",
         "bg_success": "#1a5a3a",
         "bg_success_hover": "#228b4a",
         "bg_danger": "#8b2a2a",
@@ -165,12 +175,17 @@ THEMES = {
         "bg_navy_hover": "#394459",
         "bg_navy_checked": "#b86a1a",
 
-        # Green gradient for bottom buttons (darker variants)
-        "bg_green_1": "#202B31",
-        "bg_green_2": "#202B31",
-        "bg_green_3": "#202B31",
-        "bg_green_4": "#202B31",
-        "bg_green_4": "#202B31",
+        # Green gradient for bottom buttons (darker variants) — was previously a flat
+        # #202B31 for all four stops (a placeholder that was never filled in), which made
+        # the viewer tab row's active-vs-inactive background identical in dark mode and left
+        # a border as the *only* selection cue — colliding with the Terminal tab's own
+        # always-on border (see CLAUDE.md's Viewer tab buttons bullet) and making it look
+        # permanently selected. Now a real 4-stop progression built from the same green
+        # family as the existing bg_success/bg_success_hover accent, darkest to brightest.
+        "bg_green_1": "#123d28",
+        "bg_green_2": "#1a5a3a",
+        "bg_green_3": "#228b4a",
+        "bg_green_4": "#2fae5c",
 
         # Recent/All configs
         "bg_config_current": "#394459",
