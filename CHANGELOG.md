@@ -2,6 +2,21 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-24
+
+### Added
+- **Internal code editor** (CodeMirror 6-based, Focus layout): syntax highlighting, find/replace, goto-line, folding, multi-cursor, and a line-wrap toggle, all via CM6's bundled `basicSetup`. Explicit Save button/Ctrl+S rather than autosave (code is easier to fat-finger than prose), a file-picker "Open" button for arbitrary files, and an "Open in {editor}" footer button matching every other viewer. Vendored as a static bundle (`codemirror-bundle-src/` → `assets/codemirror/`), same pattern as the existing Muya markdown editor. Local `.py`/`.js`/`.css`/`.php` files now open here by default in Focus layout; `.html` keeps rendering by default with an opt-in "Edit Source" toggle. The tab itself is labeled **"Edit"** (internally still `column2_mode == "code"`).
+- **Live log tailing** (Focus layout): `.log` files and `tail_log` launcher items now tail live (`tail -n 300 -f`) in the embedded ttyd terminal instead of always spawning an external one, when the ttyd console backend is active. Fixed two real timing bugs in the underlying paste-into-ttyd mechanism along the way (process-alive ≠ page-loaded; page-loaded ≠ WebSocket-ready), which also benefits the pre-existing alias quick-jump buttons.
+- **Notes/webview consolidation** (Focus layout): every "open this `.md` file" action (launcher click, folder browser, Apps tab, context menu) now opens into the Notes tab instead of a separate general-webview session, falling back to the project's own note whenever nothing else has been explicitly loaded. Notes gained a small toolbar: an "Open" file-picker button (shared new open-folder icon — see below), a filename label (reads `"{Project Name} project notes"` when showing the project's own note, matching the pinned Docs entry's title), and a "🏠 Project Note" button to jump back. Standard layout is unchanged (its Notes column is a fixed pane, not a switchable tab).
+- **Open-button icon**: a single flat monochrome open-folder icon (`assets/icons/open-folder.svg`, rendered to theme-matched light/dark PNGs) replaces the previous mix of 📂/📤 emoji on every file-picker "Open" button (Code editor, Notes, PDF, Image, Terminal) — the emoji rendered as a yellow/manila Windows-style folder on many systems, inconsistent with the app's flat icon language everywhere else.
+
+### Changed
+- Viewer tab row now stretches to fill available width instead of a flat per-button minimum, since the Edit (code) tab pushed the row to 6-7 tabs and started clipping; Edit moved to sit before Terminal.
+
+### Fixed
+- A newly pinned PDF default could be silently overridden by a stale remembered `pdf_state` from a previous PDF; `_save_project_config()` now keeps `pdf_state`/`image_state` in sync with `pdf_file`/`image_file`.
+- **Archive/Joplin/external-editor controls in the Notes tab could silently act on the wrong file**: `archive_notes()`, `view_archive()`, `sync_to_joplin()`, and the "Open in {editor}" footer are all hardcoded to the *project's own* notes/archive paths, not whatever's actually displayed. With an arbitrary note loaded (via the new consolidated Notes tab above), clicking Archive would read the arbitrary note's content but write it into the *project's* archive, then wipe the *project's own* notes file to empty — real data loss. These controls are now hidden whenever a note other than the project's own is being viewed, and reappear when you jump back via "🏠 Project Note".
+
 ## 2026-08-23
 
 ### Added

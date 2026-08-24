@@ -8422,7 +8422,7 @@ function filterAliases(q) {{
                 tab_buttons = [
                     ("notes",    "Notes",    "Project notes"),
                     ("webview",  "Web",      "Web viewer"),
-                    ("code",     "Code",     "Code editor"),
+                    ("code",     "Edit",     "Code editor"),
                     ("console",  "Terminal", "Embedded console"),
                     ("pdf",      "PDF",      "PDF viewer"),
                     ("image",    "Image",    "Image viewer"),
@@ -8570,7 +8570,7 @@ function filterAliases(q) {{
                 self.pdf_label = QLabel()
                 self.pdf_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
                 self.pdf_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; font-size: 14px;")
-                self._set_viewer_placeholder(self.pdf_label, "pdf", "No PDF loaded\n\nUse the 📂 button to open a PDF file")
+                self._set_viewer_placeholder(self.pdf_label, "pdf", "No PDF loaded\n\nUse the Open button to open a PDF file")
                 self.pdf_scroll.setWidget(self.pdf_label)
 
                 pdf_container_layout.addWidget(self.pdf_scroll)
@@ -8637,7 +8637,7 @@ function filterAliases(q) {{
                 self.image_label = QLabel()
                 self.image_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
                 self.image_label.setStyleSheet(f"background-color: {self.t('bg_viewer')}; color: {self.t('fg_muted')}; font-size: 14px;")
-                self._set_viewer_placeholder(self.image_label, "image", "No image loaded\n\nUse the 📂 button to open an image")
+                self._set_viewer_placeholder(self.image_label, "image", "No image loaded\n\nUse the Open button to open an image")
                 self.image_scroll.setWidget(self.image_label)
 
                 image_container_layout.addWidget(self.image_scroll)
@@ -9031,6 +9031,24 @@ function filterAliases(q) {{
         if notes_should_reload:
             self._open_notes_in_muya()
 
+        # Archive/Joplin/external-editor controls — all keyed to the project's own
+        # get_notes_file_path()/get_archive_file_path() (archive_notes(), view_archive(),
+        # sync_to_joplin(), open_note_in_external_editor() none of them take a path
+        # parameter), not to whatever's actually displayed. Showing them while an arbitrary
+        # note is loaded (Focus layout's Notes tab, see _open_note_in_notes_tab()) would act
+        # on the wrong file — archive_notes() in particular would stash the arbitrary note's
+        # content into the PROJECT's archive and then wipe the PROJECT's own notes file to
+        # empty via save_notes(""), silently destroying unrelated data. Wrapped in one
+        # container widget (self.notes_archive_section) rather than gated at construction
+        # time, since switching notes (_open_note_in_notes_tab()) does NOT rebuild
+        # notes_panel — only _update_notes_toolbar() re-runs — so visibility has to be a
+        # live toggle, not a one-time decision baked in when the panel was built.
+        archive_section = QWidget()
+        archive_section_layout = QVBoxLayout(archive_section)
+        archive_section_layout.setContentsMargins(0, 0, 0, 0)
+        archive_section_layout.setSpacing(0)
+        self.notes_archive_section = archive_section
+
         # Add archive buttons at the bottom right
         archive_bar = QHBoxLayout()
         archive_bar.setContentsMargins(0, 5, 0, 0)
@@ -9091,7 +9109,7 @@ function filterAliases(q) {{
             """)
         archive_bar.addWidget(view_archive_btn)
 
-        notes_panel_layout.addLayout(archive_bar)
+        archive_section_layout.addLayout(archive_bar)
 
         # "Open in {editor}" footer — same _make_viewer_footer() thin right-aligned strip
         # used by every other viewer (PDF/Web/Image/Console/Folder/Help), for consistency,
@@ -9099,13 +9117,16 @@ function filterAliases(q) {{
         # controls above.
         external_editor = self.settings.get("open_note_external")
         if external_editor:
-            notes_panel_layout.addWidget(
+            archive_section_layout.addWidget(
                 self._make_viewer_footer(
                     f"Open in {external_editor.capitalize()}",
                     f"Open note in {external_editor}",
                     self.open_note_in_external_editor,
                 )
             )
+
+        notes_panel_layout.addWidget(archive_section)
+        archive_section.setVisible(not getattr(self, 'notes_md_path', None))
 
         # Place notes_panel into whichever container matches the current layout — decided
         # once, here, instead of built into the Standard-layout slot and reparented later.
@@ -10711,7 +10732,9 @@ function filterAliases(q) {{
         """
 
         # Open button
-        open_btn = QPushButton("📤")
+        open_btn = QPushButton(" Open")
+        open_btn.setIcon(self._open_icon())
+        open_btn.setIconSize(QSize(16, 16))
         open_btn.setStyleSheet(btn_style)
         open_btn.setToolTip("Open a PDF file")
         open_btn.clicked.connect(self.open_pdf_file)
@@ -11130,7 +11153,7 @@ function filterAliases(q) {{
         if hasattr(self, 'notes_viewer_container'):
             mode_info["notes"] = ("Notes", "Project Notes", self.notes_viewer_container)
         if hasattr(self, 'code_container'):
-            mode_info["code"] = ("Code", "Code Editor", self.code_container)
+            mode_info["code"] = ("Edit", "Code Editor", self.code_container)
 
         if mode not in mode_info:
             mode = "folder"
@@ -11498,7 +11521,9 @@ function filterAliases(q) {{
         """
 
         # Open button
-        open_btn = QPushButton("Open")
+        open_btn = QPushButton(" Open")
+        open_btn.setIcon(self._open_icon())
+        open_btn.setIconSize(QSize(16, 16))
         open_btn.setStyleSheet(btn_style)
         open_btn.setToolTip("Open an image file")
         open_btn.clicked.connect(self.open_image_file)
@@ -11578,7 +11603,9 @@ function filterAliases(q) {{
             }}
         """
 
-        self.code_open_btn = QPushButton("📂 Open")
+        self.code_open_btn = QPushButton(" Open")
+        self.code_open_btn.setIcon(self._open_icon())
+        self.code_open_btn.setIconSize(QSize(16, 16))
         self.code_open_btn.setStyleSheet(btn_style)
         self.code_open_btn.setToolTip("Open a file in the code editor")
         self.code_open_btn.clicked.connect(self.open_code_file)
@@ -11711,7 +11738,9 @@ function filterAliases(q) {{
         """
 
         # Open folder button
-        open_btn = QPushButton("Open")
+        open_btn = QPushButton(" Open")
+        open_btn.setIcon(self._open_icon())
+        open_btn.setIconSize(QSize(16, 16))
         open_btn.setStyleSheet(btn_style)
         open_btn.setToolTip("Navigate to a directory")
         open_btn.clicked.connect(self.console_open_directory)
@@ -12366,6 +12395,20 @@ function filterAliases(q) {{
     def _folder_theme_icon(self):
         """Folder icon shared by all folder browser views (tree, icon grid, launcher panel)."""
         return self._blue_folder_icon()
+
+    def _open_icon(self):
+        """Plain single-color 'open folder' icon for Open-file buttons (Code/Notes 'Open',
+        PDF/Image/Terminal 'Open' toolbar buttons) — replaces the 📂/📤 emoji, which render
+        as a yellow/manila Windows-style folder on many systems. Pre-rendered PNGs (not the
+        dynamic QPainter approach used by _folder_icon()) since this needs a light-on-dark vs
+        dark-on-light variant matched to fg_primary, not an arbitrary single color."""
+        cache_attr = f'_open_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "open-folder-dark.png" if self.current_theme == "dark" else "open-folder-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
 
     def _render_folder_tree(self, entries, target=None):
         """Render scanned entries into a tree/details view — self.folder_browser by default,
@@ -13095,7 +13138,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             }}
         """
 
-        self.notes_open_btn = QPushButton("📂 Open")
+        self.notes_open_btn = QPushButton(" Open")
+        self.notes_open_btn.setIcon(self._open_icon())
+        self.notes_open_btn.setIconSize(QSize(16, 16))
         self.notes_open_btn.setStyleSheet(btn_style)
         self.notes_open_btn.setToolTip("Open a note in the Notes tab")
         self.notes_open_btn.clicked.connect(self.open_note_file)
@@ -13132,8 +13177,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if not self.notes_current_label:
             return
         is_project_note = not self.notes_md_path
-        self.notes_current_label.setText("" if is_project_note else os.path.basename(self.notes_md_path))
+        label_text = f"{self.get_project_name()} project notes" if is_project_note else os.path.basename(self.notes_md_path)
+        self.notes_current_label.setText(label_text)
         self.notes_home_btn.setVisible(not is_project_note)
+        if getattr(self, 'notes_archive_section', None):
+            self.notes_archive_section.setVisible(is_project_note)
 
     def _open_notes_in_muya(self):
         """Load the current project's notes into the persistent Notes-panel Muya session —
