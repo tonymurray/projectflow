@@ -7540,9 +7540,13 @@ function filterAliases(q) {{
                             ("files", "Files", "Browse files (opens into the viewer)"),
                             ("apps", "Apps", "Applications relevant to this project"),
                         ):
-                            tab_btn = QPushButton(tab_label)
+                            tab_btn = QPushButton(f" {tab_label}")
                             tab_btn.setMinimumHeight(self.d('header_btn_height'))
                             tab_btn.setToolTip(tab_tooltip)
+                            tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{tab_id}.png")
+                            if os.path.exists(tab_icon_path):
+                                tab_btn.setIcon(QIcon(tab_icon_path))
+                                tab_btn.setIconSize(QSize(16, 16))
                             tab_btn.setStyleSheet(
                                 launcher_tab_active_style if self.active_launcher_tab == tab_id
                                 else launcher_tab_style
