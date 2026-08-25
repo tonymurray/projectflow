@@ -744,8 +744,89 @@ class CodeEditorSession:
         self.language = None
         self.pending_content = None
         self.dirty = False
+        # What session.dirty should become once pending_content actually finishes loading
+        # (see _on_code_editor_webview_load_finished()) — plain 0/False for a fresh disk
+        # read, but True when restoring an Editor tab that had cached unsaved content (see
+        # CodeTabState/_activate_code_tab()): the freshly-loaded buffer is "clean" from
+        # CodeMirror's own perspective (nothing changed since __initCodeEditor()), even
+        # though the content itself differs from what's on disk, so the true dirty state
+        # has to be supplied externally rather than trusted from the editor.
+        self.pending_dirty = False
         self.dirty_poll_timer = QTimer()
         self.dirty_poll_timer.setInterval(dirty_poll_interval_ms)
+
+
+class PdfTabState:
+    """One open PDF tab: which file/URL, which page, and its PyMuPDF document object.
+
+    Unlike MuyaSession/CodeEditorSession (which each wrap a persistent QWebEngineView —
+    an expensive Chromium renderer process), a PDF tab is just a fitz.Document plus a couple
+    of Python ints. The multi-instance-tabs exploration plan (see ai/ or the plan history)
+    concluded PDF/Image are cheap enough that every open tab's document can just stay open
+    for the tab's lifetime — no lazy-loading/tab-cap needed here, unlike the webview-backed
+    viewer types. self.doc is None until _pdf_load_tab_doc() successfully opens it."""
+
+    def __init__(self, path, page=0):
+        self.path = path
+        self.page = page
+        self.doc = None
+        self.page_count = 0
+
+
+class ImageTabState:
+    """One open Image tab: which file, and its loaded QPixmap. Mirrors PdfTabState — same
+    "cheap enough to keep every tab's resource loaded" reasoning, just a QPixmap instead of
+    a fitz.Document and no page concept."""
+
+    def __init__(self, path):
+        self.path = path
+        self.pixmap = None
+
+
+class WebTabState:
+    """One open Web tab: a plain URL, a local HTML file, or a local markdown file (Muya
+    editor) — `kind` distinguishes them since they need different QUrl construction
+    (`QUrl(url)` vs `QUrl.fromLocalFile(path)`) and markdown needs the Muya bridge rather
+    than a plain navigation. Unlike PdfTabState/ImageTabState, the underlying resource here
+    (a QWebEngineView) is expensive — a real Chromium renderer process — so unlike PDF/Image,
+    only ONE is ever kept live (the app's existing persistent self.webview): switching tabs
+    re-navigates that single shared webview rather than creating one per tab. This is the
+    simplest faithful reading of the "lazy tab" design from the multi-instance-tabs
+    exploration plan — at most one instance of the expensive resource, ever, regardless of
+    how many tabs are remembered."""
+
+    def __init__(self, kind, value):
+        self.kind = kind    # "url" | "html_file" | "markdown"
+        self.value = value  # URL string, or local file path
+
+
+class NotesTabState:
+    """One open Notes tab (Focus layout only — see CLAUDE.md's Notes/webview consolidation
+    notes). `path=None` means "this project's own note", mirroring the pre-tab
+    `notes_md_path` convention exactly, so `_open_notes_in_muya()`'s existing dispatch logic
+    needs no changes at all — it already does the right thing based on that same value.
+    Like Web tabs, only the one persistent `self.notes_webview` is ever used; switching
+    tabs re-navigates it rather than creating N of them."""
+
+    def __init__(self, path=None):
+        self.path = path
+
+
+class CodeTabState:
+    """One open Editor tab: a file path, its CodeMirror language key, and — critically —
+    any UNSAVED content, cached here in Python memory (never written to disk) whenever
+    switching away from this tab while it's dirty. This is what lets Editor tabs coexist
+    with the code editor's deliberate no-autosave design: switching tabs must never force a
+    save or a discard, so a dirty tab's in-progress edits are preserved until you switch
+    back to it or explicitly save — see _activate_code_tab(). pending_unsaved_content and
+    dirty are session-only, never persisted (see the multi-instance-tabs exploration
+    notes) — only path/language are written to the project's config."""
+
+    def __init__(self, path, language):
+        self.path = path
+        self.language = language
+        self.pending_unsaved_content = None
+        self.dirty = False
 
 
 class ProjectFlowApp(QMainWindow):
@@ -800,6 +881,13 @@ class ProjectFlowApp(QMainWindow):
         # for toggle_theme() elsewhere). Only switch_to_config() resets it, since only an
         # actual project switch should fall back to the (new) project's own note.
         self.notes_md_path = None
+        # Multi-instance Notes tabs (see NotesTabState) — self.notes_tabs/notes_active_index
+        # are the source of truth, rebuilt from disk in load_notes() on every refresh (cheap:
+        # unlike PDF/Image tabs, a NotesTabState holds no attached resource, just a path).
+        # notes_md_path above remains the active-tab proxy for _open_notes_in_muya() to keep
+        # working unchanged.
+        self.notes_tabs = []
+        self.notes_active_index = -1
 
         # Third persistent webview, dedicated to the optional ttyd-backed real-terminal Console
         # (see resolve_console_backend/_ensure_ttyd_console). Same "never recreated on refresh,
@@ -833,6 +921,12 @@ class ProjectFlowApp(QMainWindow):
         self._code_session.dirty_poll_timer.timeout.connect(
             lambda: self._code_editor_dirty_poll_tick(self._code_session)
         )
+        # Multi-instance Editor tabs (see CodeTabState) — restored only on an actual
+        # project switch (load_config()'s is_project_switch block), NOT on every incidental
+        # refresh, since pending_unsaved_content must survive those (mirrors why
+        # notes_md_path isn't reset in load_notes() either).
+        self.code_tabs = []
+        self.code_active_index = -1
 
         # Debounce timer for alias file writes — prevents a write per keystroke
         # when the user types in the inline path/app fields.
@@ -4466,6 +4560,20 @@ StartupNotify=true
                     if self.config_launcher_tab_default:
                         self.active_launcher_tab = self.config_launcher_tab_default
 
+                    # Editor tabs (see CodeTabState) — restored here, gated on an actual
+                    # project switch, rather than in load_notes() (which reruns on every
+                    # incidental refresh and must NOT clobber cached unsaved content —
+                    # see self.code_tabs's own comment in __init__). Only path/language are
+                    # ever persisted; pending_unsaved_content/dirty always start fresh.
+                    self.code_tabs = []
+                    self.code_active_index = -1
+                    for _tab_data in config_data.get('code_tabs', []):
+                        self.code_tabs.append(CodeTabState(_tab_data.get('path'), _tab_data.get('language')))
+                    if self.code_tabs:
+                        self.code_active_index = config_data.get('code_active_tab', 0)
+                        if not (0 <= self.code_active_index < len(self.code_tabs)):
+                            self.code_active_index = 0
+
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
                     self.resolve_relative_paths_in_config()
@@ -4498,6 +4606,8 @@ StartupNotify=true
                 if is_project_switch:
                     self.group_by_type = (self.layout_mode == "focus")
                     self.active_launcher_tab = 'files'
+                    self.code_tabs = []
+                    self.code_active_index = -1
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -5271,7 +5381,19 @@ function filterAliases(q) {{
     def load_notes(self):
         """Load notes from markdown file, PDF state and webview state from JSON config"""
         self.notes_data = {}
-        # Initialize PDF state variables
+        # Rebuilt fresh from disk on every call, like pdf_tabs/image_tabs/web_tabs — cheap
+        # here since a NotesTabState holds no attached resource, just a path. Deliberately
+        # separate from self.notes_md_path (NOT reset here — see that variable's own
+        # comment in __init__ for why), which remains the active-tab proxy.
+        self.notes_tabs = []
+        self.notes_active_index = -1
+        # Initialize PDF state variables. self.pdf_tabs is the source of truth for the
+        # multi-tab PDF viewer (see PdfTabState); the rest (pdf_doc/pdf_path/
+        # pdf_current_page/pdf_page_count) are proxies that always mirror whichever tab is
+        # currently active (kept for every existing render/zoom/nav function to use
+        # unchanged — see _activate_pdf_tab()).
+        self.pdf_tabs = []
+        self.pdf_active_index = -1
         self.pdf_doc = None
         self.pdf_current_page = 0
         self.pdf_page_count = 0
@@ -5279,22 +5401,42 @@ function filterAliases(q) {{
         self.pdf_path = None
         self.pdf_label = None
         self.pdf_scroll = None
-        # Initialize webview state variables (self.webview itself lives in __init__)
+        # Initialize webview state variables (self.webview itself lives in __init__).
+        # self.web_tabs is the source of truth for the multi-tab Web viewer (see
+        # WebTabState) — webview_url/webview_md_path remain proxies mirroring whichever
+        # tab is active, for every existing webview function to keep using unchanged.
+        # Unlike PDF/Image tabs, only ONE real QWebEngineView is ever kept live (the
+        # existing persistent self.webview) — switching web tabs re-navigates it rather
+        # than creating N Chromium renderer processes (see WebTabState).
+        self.web_tabs = []
+        self.web_active_index = -1
         self.webview_url = None
         self.webview_md_path = None
         self.webview_url_bar = None
         self.column2_mode = "pdf"  # "pdf", "webview", or "image"
-        # Initialize image state variables
+        # Initialize image state variables. self.image_tabs is the source of truth for the
+        # multi-tab Image viewer (see ImageTabState, mirrors the PDF viewer's PdfTabState);
+        # image_path/image_pixmap/image_zoom remain proxies mirroring whichever tab is
+        # active, for every existing render/zoom function to keep using unchanged.
+        self.image_tabs = []
+        self.image_active_index = -1
         self.image_path = None
         self.image_zoom = 1.0
         self.image_label = None
         self.image_scroll = None
-        # Reset code-editor session state for the newly-loaded project. Any unsaved
-        # changes have already been through the confirm-discard guard in
-        # switch_to_config() before load_notes() is reached — this just prevents a
-        # stale path from the previous project leaking into build_main_content()'s
-        # pinned-code_file auto-load check (which only loads when session.path is unset).
-        if hasattr(self, '_code_session'):
+        # Reset code-editor session state — but ONLY on an actual project switch, not on
+        # every incidental load_notes() call (this method runs on every refresh_projects(),
+        # e.g. toggling edit mode). Unconditionally wiping session.path/dirty on every
+        # incidental refresh (the original behavior here) silently broke the Save button —
+        # _code_editor_save() early-returns once session.path is None, so any refresh while
+        # editing a non-pinned file made Ctrl+S/Save quietly stop working, even though the
+        # live CodeMirror buffer still had real unsaved keystrokes sitting in the DOM
+        # untouched. Tracked the same way load_config()'s is_project_switch is, since that
+        # variable isn't available here (load_notes() runs independently of load_config()'s
+        # call in the same refresh_projects() sequence).
+        _code_is_project_switch = self.current_config_file != getattr(self, '_code_session_loaded_for', None)
+        self._code_session_loaded_for = self.current_config_file
+        if hasattr(self, '_code_session') and _code_is_project_switch:
             self._code_session.editing = False
             self._code_session.path = None
             self._code_session.language = None
@@ -5332,32 +5474,110 @@ function filterAliases(q) {{
                         with open(self.current_config_file, 'w') as f:
                             json.dump(config_data, f, indent=2)
 
-                # Load PDF state
-                if "pdf_state" in config_data:
+                # Load PDF tabs. "pdf_tabs" (a list) is the current format; "pdf_state" (a
+                # single dict) is the pre-multi-tab format — migrated here into a one-item
+                # list rather than requiring a one-time file rewrite, the same way
+                # load_config() elsewhere translates old config values on read instead of
+                # forcing a migration step.
+                if "pdf_tabs" in config_data:
+                    for tab_data in config_data["pdf_tabs"]:
+                        self.pdf_tabs.append(PdfTabState(tab_data.get("path"), tab_data.get("page", 0)))
+                    self.pdf_active_index = config_data.get("pdf_active_tab", 0)
+                    if not (0 <= self.pdf_active_index < len(self.pdf_tabs)):
+                        self.pdf_active_index = 0 if self.pdf_tabs else -1
+                elif "pdf_state" in config_data:
                     pdf_state = config_data["pdf_state"]
-                    self.pdf_path = pdf_state.get("path")
-                    self.pdf_current_page = pdf_state.get("page", 0)
-                # Load webview state
+                    if pdf_state.get("path"):
+                        self.pdf_tabs.append(PdfTabState(pdf_state.get("path"), pdf_state.get("page", 0)))
+                        self.pdf_active_index = 0
+                if 0 <= self.pdf_active_index < len(self.pdf_tabs):
+                    active = self.pdf_tabs[self.pdf_active_index]
+                    self.pdf_path = active.path
+                    self.pdf_current_page = active.page
+                # Load webview state. "mode" drives self.column2_mode regardless of tabs
+                # (which viewer tab was last active — unrelated to Web-tab content).
+                # "web_tabs" (a list) is the current tab-content format; the old single
+                # "url" field is migrated into a one-item list on read, classifying it the
+                # same way the pre-multi-tab restore logic did (local .md -> markdown,
+                # other local file -> html_file, else a plain url).
                 if "webview_state" in config_data:
                     webview_state = config_data["webview_state"]
-                    self.webview_url = webview_state.get("url")
                     self.column2_mode = webview_state.get("mode", "pdf")
-                # Load image state
-                if "image_state" in config_data:
+                    if "web_tabs" in config_data:
+                        for tab_data in config_data["web_tabs"]:
+                            self.web_tabs.append(WebTabState(tab_data.get("kind", "url"), tab_data.get("value")))
+                        self.web_active_index = config_data.get("web_active_tab", 0)
+                        if not (0 <= self.web_active_index < len(self.web_tabs)):
+                            self.web_active_index = 0 if self.web_tabs else -1
+                    elif webview_state.get("url"):
+                        _old_url = webview_state.get("url")
+                        _url_obj = QUrl(_old_url)
+                        if _url_obj.isLocalFile() and _url_obj.toLocalFile().endswith('.md'):
+                            self.web_tabs.append(WebTabState("markdown", _url_obj.toLocalFile()))
+                        elif _url_obj.isLocalFile():
+                            self.web_tabs.append(WebTabState("html_file", _url_obj.toLocalFile()))
+                        else:
+                            self.web_tabs.append(WebTabState("url", _old_url))
+                        self.web_active_index = 0
+                    if 0 <= self.web_active_index < len(self.web_tabs):
+                        self.webview_url = self.web_tabs[self.web_active_index].value
+                # Load image tabs. "image_tabs" (a list) is the current format;
+                # "image_state" (a single dict) is the pre-multi-tab format — migrated here
+                # into a one-item list, same pattern as pdf_tabs/pdf_state above.
+                if "image_tabs" in config_data:
+                    for tab_data in config_data["image_tabs"]:
+                        self.image_tabs.append(ImageTabState(tab_data.get("path")))
+                    self.image_active_index = config_data.get("image_active_tab", 0)
+                    if not (0 <= self.image_active_index < len(self.image_tabs)):
+                        self.image_active_index = 0 if self.image_tabs else -1
+                elif "image_state" in config_data:
                     image_state = config_data["image_state"]
-                    self.image_path = image_state.get("path")
+                    if image_state.get("path"):
+                        self.image_tabs.append(ImageTabState(image_state.get("path")))
+                        self.image_active_index = 0
+                if 0 <= self.image_active_index < len(self.image_tabs):
+                    self.image_path = self.image_tabs[self.image_active_index].path
 
-            # Use config-specified PDF file as fallback if no saved path
-            if not self.pdf_path and hasattr(self, 'config_pdf_file') and self.config_pdf_file:
+                # Load Notes tabs (Focus layout only, but harmless to read regardless — see
+                # NotesTabState). No legacy migration: notes_md_path was never persisted
+                # before multi-tab support, so "notes_tabs" is new-key-only territory.
+                if "notes_tabs" in config_data:
+                    for tab_data in config_data["notes_tabs"]:
+                        self.notes_tabs.append(NotesTabState(tab_data.get("path")))
+                    self.notes_active_index = config_data.get("notes_active_tab", 0)
+                    if not (0 <= self.notes_active_index < len(self.notes_tabs)):
+                        self.notes_active_index = 0 if self.notes_tabs else -1
+
+            # Use config-specified PDF file as fallback if no tabs were restored
+            if not self.pdf_tabs and hasattr(self, 'config_pdf_file') and self.config_pdf_file:
+                self.pdf_tabs.append(PdfTabState(self.config_pdf_file))
+                self.pdf_active_index = 0
                 self.pdf_path = self.config_pdf_file
+                self.pdf_current_page = 0
 
-            # Use config-specified webview URL, falling back to saved URL
-            if hasattr(self, 'config_webview_url') and self.config_webview_url:
+            # Use config-specified webview URL as fallback if no tabs were restored.
+            # Deliberate behavior change from the pre-multi-tab version of this code, which
+            # unconditionally overwrote webview_url with the pinned default on every single
+            # load — harmless for one value, but would wipe out multiple open web tabs on
+            # every project reload. Now matches the PDF/Image tabs' fallback-only
+            # precedence: the pinned default only matters when nothing was remembered yet.
+            if not self.web_tabs and hasattr(self, 'config_webview_url') and self.config_webview_url:
+                self.web_tabs.append(WebTabState("url", self.config_webview_url))
+                self.web_active_index = 0
                 self.webview_url = self.config_webview_url
 
-            # Use config-specified image file as fallback if no saved path
-            if not self.image_path and hasattr(self, 'config_image_file') and self.config_image_file:
+            # Use config-specified image file as fallback if no tabs were restored
+            if not self.image_tabs and hasattr(self, 'config_image_file') and self.config_image_file:
+                self.image_tabs.append(ImageTabState(self.config_image_file))
+                self.image_active_index = 0
                 self.image_path = self.config_image_file
+
+            # Notes always shows something — fall back to a single tab for the project's
+            # own note (path=None) if nothing was restored, mirroring the pre-tab behavior
+            # where notes_md_path=None already meant exactly this.
+            if not self.notes_tabs:
+                self.notes_tabs.append(NotesTabState(None))
+                self.notes_active_index = 0
 
             # Use config-specified console path, falling back to the project's general folder_path
             # (its "home" directory) when no console-specific path was set — otherwise a project
@@ -5726,24 +5946,83 @@ function filterAliases(q) {{
             if "notes" in config_data:
                 del config_data["notes"]
 
-            # Update PDF state
+            # Update PDF state. self.pdf_current_page can change via page-nav buttons
+            # without going through _activate_pdf_tab(), so flush it back into the active
+            # tab's own record first — pdf_current_page is just a proxy for "whichever tab
+            # is active" (see PdfTabState/_activate_pdf_tab), the list is the source of truth.
+            if 0 <= self.pdf_active_index < len(getattr(self, 'pdf_tabs', [])):
+                self.pdf_tabs[self.pdf_active_index].page = self.pdf_current_page
+            if self.pdf_tabs:
+                config_data["pdf_tabs"] = [{"path": t.path, "page": t.page} for t in self.pdf_tabs]
+                config_data["pdf_active_tab"] = self.pdf_active_index
+            else:
+                config_data.pop("pdf_tabs", None)
+                config_data.pop("pdf_active_tab", None)
+            # Legacy single-PDF key, kept mirroring the active tab — lets a rollback to a
+            # version without multi-tab support (or any external tooling) still see
+            # something sensible instead of a suddenly-missing key.
             if self.pdf_path:
                 config_data["pdf_state"] = {
                     "path": self.pdf_path,
                     "page": self.pdf_current_page
                 }
+            elif "pdf_state" in config_data:
+                del config_data["pdf_state"]
 
-            # Update webview state
+            # Update webview state. "mode" is unrelated to Web-tab content (it's which
+            # viewer tab was last active, restored regardless of tabs) so it always gets
+            # written. "url" is kept as a legacy mirror of the active tab's value (same
+            # "harmless vestige once the list exists" reasoning as pdf_state/image_state)
+            # — only meaningful for non-markdown tabs, since a markdown tab's value is a
+            # local path, not really a "url" in the pre-multi-tab sense, but harmless
+            # either way since load_notes() only consults it when web_tabs is absent.
             config_data["webview_state"] = {
                 "url": self.webview_url,
                 "mode": self.column2_mode
             }
+            if self.web_tabs:
+                config_data["web_tabs"] = [{"kind": t.kind, "value": t.value} for t in self.web_tabs]
+                config_data["web_active_tab"] = self.web_active_index
+            else:
+                config_data.pop("web_tabs", None)
+                config_data.pop("web_active_tab", None)
 
-            # Update image state
+            # Update image tabs — mirrors the PDF tabs handling above.
+            if self.image_tabs:
+                config_data["image_tabs"] = [{"path": t.path} for t in self.image_tabs]
+                config_data["image_active_tab"] = self.image_active_index
+            else:
+                config_data.pop("image_tabs", None)
+                config_data.pop("image_active_tab", None)
+            # Legacy single-image key, kept mirroring the active tab (same reasoning as
+            # pdf_state above).
             if self.image_path:
                 config_data["image_state"] = {
                     "path": self.image_path
                 }
+            elif "image_state" in config_data:
+                del config_data["image_state"]
+
+            # Update Notes tabs. Skipped entirely (keys removed) when it's just the trivial
+            # single "project's own note" tab — the common case for most projects — so a
+            # plain project's JSON doesn't gain clutter for a feature it never actually uses.
+            _notes_is_trivial = len(self.notes_tabs) <= 1 and (not self.notes_tabs or self.notes_tabs[0].path is None)
+            if not _notes_is_trivial:
+                config_data["notes_tabs"] = [{"path": t.path} for t in self.notes_tabs]
+                config_data["notes_active_tab"] = self.notes_active_index
+            else:
+                config_data.pop("notes_tabs", None)
+                config_data.pop("notes_active_tab", None)
+
+            # Update Editor tabs — path/language only, NEVER pending_unsaved_content/dirty
+            # (session-only, see CodeTabState's docstring for why actual code content has
+            # no business being written into the project's launcher-config JSON).
+            if self.code_tabs:
+                config_data["code_tabs"] = [{"path": t.path, "language": t.language} for t in self.code_tabs]
+                config_data["code_active_tab"] = self.code_active_index
+            else:
+                config_data.pop("code_tabs", None)
+                config_data.pop("code_active_tab", None)
 
             # Save back to config file
             with open(self.current_config_file, 'w') as f:
@@ -8671,6 +8950,13 @@ function filterAliases(q) {{
                 # Create PDF toolbar
                 self.create_pdf_toolbar(pdf_container_layout)
 
+                # Multi-instance tab strip (one button+close per open PdfTabState) — see
+                # _build_pdf_tab_strip()/PdfTabState. Just builds the (initially empty)
+                # strip widgets here; actually loading tabs' documents and activating one
+                # happens later in this method, once self.pdf_label exists (see the "Load
+                # all remembered PDF tabs" block below).
+                self._build_pdf_tab_strip(pdf_container_layout)
+
                 # Create PDF scroll area
                 self.pdf_scroll = QScrollArea()
                 self.pdf_scroll.setWidgetResizable(True)
@@ -8709,6 +8995,11 @@ function filterAliases(q) {{
                 # Create webview toolbar
                 self.create_webview_toolbar(webview_container_layout)
 
+                # Multi-instance tab strip — mirrors the PDF/Image viewers' (see
+                # _build_pdf_tab_strip()'s comment for why this is built here but actually
+                # populated/activated later in this method).
+                self._build_web_tab_strip(webview_container_layout)
+
                 # Webview is created once in __init__; just re-add it to the new layout.
                 # Dark mode may change between project loads — always (re)apply in both
                 # directions. ForceDarkMode is a persistent WebEngine setting that sticks until
@@ -8737,6 +9028,11 @@ function filterAliases(q) {{
 
                 # Create image toolbar
                 self.create_image_toolbar(image_container_layout)
+
+                # Multi-instance tab strip — mirrors the PDF viewer's (see
+                # _build_pdf_tab_strip()'s comment for why this is built here but actually
+                # populated with loaded content later in this method).
+                self._build_image_tab_strip(image_container_layout)
 
                 # Create image scroll area
                 self.image_scroll = QScrollArea()
@@ -8771,6 +9067,12 @@ function filterAliases(q) {{
                 code_container_layout.setContentsMargins(0, 0, 0, 0)
 
                 self.create_code_editor_toolbar(code_container_layout)
+
+                # Multi-instance tab strip — mirrors the PDF/Image/Web viewers' (see
+                # _build_pdf_tab_strip()'s comment for why this is built here but actually
+                # populated/activated later in this method).
+                self._build_code_tab_strip(code_container_layout)
+
                 code_container_layout.addWidget(self.code_webview, 1)  # stretch to fill space
 
                 editor_name = os.path.basename(self.get_configured_editor()).capitalize()
@@ -9120,28 +9422,50 @@ function filterAliases(q) {{
                 # space to collect at the bottom instead.
                 self.column2_layout.addStretch()
 
-                # Load PDF if path is saved
-                if self.pdf_path:
-                    self.load_pdf(self.pdf_path)
+                # Load every remembered PDF tab's document (self.pdf_tabs was populated
+                # from disk in load_notes(), with doc=None for each — reopened here every
+                # rebuild, matching the old single-PDF behavior of reloading on every
+                # refresh_projects() call) and activate whichever tab was active.
+                if self.pdf_tabs:
+                    for _pdf_tab in self.pdf_tabs:
+                        self._pdf_load_tab_doc(_pdf_tab)
+                    _restore_index = self.pdf_active_index if 0 <= self.pdf_active_index < len(self.pdf_tabs) else 0
+                    self._activate_pdf_tab(_restore_index)
 
-                # Load webview URL if set
-                if self.webview_url:
-                    _url_obj = QUrl(self.webview_url)
-                    if _url_obj.isLocalFile() and _url_obj.toLocalFile().endswith('.md'):
-                        self._open_markdown_in_webview(_url_obj.toLocalFile())
-                    else:
-                        self.webview.setUrl(_url_obj)
+                # Restore every remembered Web tab and activate whichever was active — same
+                # pattern as the PDF/Image tabs restore. _activate_web_tab() (not
+                # _open_web_tab()/_open_markdown_in_webview()) is used here deliberately: it
+                # just navigates to an existing tab, it doesn't create a new one.
+                if self.web_tabs:
+                    _restore_index = self.web_active_index if 0 <= self.web_active_index < len(self.web_tabs) else 0
+                    self._activate_web_tab(_restore_index)
 
-                # Load image if path is saved
-                if self.image_path:
-                    self.load_image(self.image_path)
+                # Load every remembered Image tab's pixmap (reopened every rebuild, same
+                # reasoning as the PDF tabs restore above) and activate whichever was active.
+                if self.image_tabs:
+                    for _image_tab in self.image_tabs:
+                        self._image_load_tab_pixmap(_image_tab)
+                    _restore_index = self.image_active_index if 0 <= self.image_active_index < len(self.image_tabs) else 0
+                    self._activate_image_tab(_restore_index)
 
-                # Load pinned default code file if set (see set_viewer_as_default's "code"
-                # branch) — loads the lower-level session directly, not
-                # _open_code_file_in_editor(), since that also switches column2_mode and
-                # runs the discard-guard, neither of which apply during initial construction.
-                if getattr(self, 'config_code_file', None) and not self._code_session.path:
-                    self._open_path_in_code_editor_session(self._code_session, self.config_code_file)
+                # Restore Editor tabs (see CodeTabState). Seed a first tab from the pinned
+                # default (set_viewer_as_default()'s "code" branch) if there are no tabs at
+                # all yet (a brand new project, or one that's never had a file opened).
+                # Gated like Notes' own reload-key (project or theme change only — an
+                # incidental refresh must not re-trigger _activate_code_tab()'s reload,
+                # which would visibly flicker the editor and, if unguarded, could risk
+                # losing an unflushed edit for no reason).
+                if not self.code_tabs and getattr(self, 'config_code_file', None):
+                    self.code_tabs.append(CodeTabState(
+                        self.config_code_file, self._code_editor_language_for(self.config_code_file)
+                    ))
+                    self.code_active_index = 0
+                code_reload_key = (self.current_config_file, self.current_theme)
+                code_should_reload = getattr(self, '_code_loaded_for', None) != code_reload_key
+                self._code_loaded_for = code_reload_key
+                if code_should_reload and self.code_tabs:
+                    _restore_code_index = self.code_active_index if 0 <= self.code_active_index < len(self.code_tabs) else 0
+                    self._activate_code_tab(_restore_code_index)
 
         # Notes panel: hosts the persistent Muya editor (self.notes_webview). Placed directly
         # into whichever container matches the current layout below — no later reparenting
@@ -9159,6 +9483,11 @@ function filterAliases(q) {{
         self.notes_current_label = None
         self.notes_open_btn = None
         self.notes_home_btn = None
+        # Reset before conditional (re)construction, same reasoning as the Quick File
+        # Browser Panel's widget references documented elsewhere — otherwise a Standard-
+        # layout rebuild leaves these pointing at widgets from a stale Focus-layout build.
+        self.notes_tab_strip_widget = None
+        self.notes_tab_strip_layout = None
         if self.layout_mode == "focus":
             self.create_notes_toolbar(notes_panel_layout)
 
@@ -9172,7 +9501,11 @@ function filterAliases(q) {{
         notes_should_reload = getattr(self, '_notes_loaded_for', None) != notes_reload_key
         self._notes_loaded_for = notes_reload_key
         if notes_should_reload:
-            self._open_notes_in_muya()
+            # self.notes_tabs was already (re)built from disk in load_notes(), above — just
+            # activate whichever tab was active (never _open_notes_tab(), which would create
+            # a brand new one instead of restoring the existing list).
+            _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
+            self._activate_notes_tab(_restore_notes_index)
 
         # Archive/Joplin/external-editor controls — all keyed to the project's own
         # get_notes_file_path()/get_archive_file_path() (archive_notes(), view_archive(),
@@ -10992,39 +11325,186 @@ function filterAliases(q) {{
 
         parent_layout.addWidget(toolbar_widget)
 
-    def load_pdf(self, path):
-        """Load a PDF file from local path or URL"""
+    def _pdf_load_tab_doc(self, tab):
+        """Open the PyMuPDF document for `tab` (local file or URL), storing the result on
+        the tab object itself. Split out from _open_pdf_tab() so build_main_content()'s
+        startup restore (opening every remembered tab) can reuse it without re-appending
+        to self.pdf_tabs. Returns True on success, False if the file/URL couldn't load."""
         try:
-            # Check if path is a URL
-            if path.startswith(('http://', 'https://')):
-                # Download PDF from URL
-                req = urllib.request.Request(path, headers={'User-Agent': 'Mozilla/5.0'})
+            if tab.path.startswith(('http://', 'https://')):
+                req = urllib.request.Request(tab.path, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=30) as response:
                     pdf_data = response.read()
-                self.pdf_doc = fitz.open(stream=pdf_data, filetype="pdf")
+                tab.doc = fitz.open(stream=pdf_data, filetype="pdf")
             else:
-                expanded_path = os.path.expanduser(path)
+                expanded_path = os.path.expanduser(tab.path)
                 if not os.path.exists(expanded_path):
                     return False
-                self.pdf_doc = fitz.open(expanded_path)
-
-            self.pdf_page_count = len(self.pdf_doc)
-            self.pdf_path = path
-
-            # Clamp current page to valid range
-            if self.pdf_current_page >= self.pdf_page_count:
-                self.pdf_current_page = 0
-
-            # Render initially, then fit to width after layout is complete
-            self.render_pdf_page()
-            QTimer.singleShot(0, self.pdf_fit_width)
-
-            self.save_notes()  # Save PDF state per config
-
+                tab.doc = fitz.open(expanded_path)
+            tab.page_count = len(tab.doc)
+            if tab.page >= tab.page_count:
+                tab.page = 0
             return True
         except Exception as e:
             print(f"Error loading PDF: {e}")
             return False
+
+    def _open_pdf_tab(self, path, page=0):
+        """Open `path` as a brand-new PDF tab and make it active. Always-new-tab policy —
+        every "open a PDF" action (launcher click, Open button, URL dialog) adds a tab
+        rather than replacing whatever's already open, per the multi-instance-tabs plan.
+        Returns True on success, False if the file/URL couldn't load (mirrors the old
+        load_pdf()'s return contract — callers check this for status-label feedback)."""
+        tab = PdfTabState(path, page)
+        if not self._pdf_load_tab_doc(tab):
+            return False
+        self.pdf_tabs.append(tab)
+        self._activate_pdf_tab(len(self.pdf_tabs) - 1)
+        self.save_notes()  # Persist the new tab list
+        return True
+
+    def _activate_pdf_tab(self, index):
+        """Make self.pdf_tabs[index] the active tab: flush the previously-active tab's page
+        position back into its own record, sync the active-tab proxy scalars (pdf_doc/
+        pdf_path/pdf_current_page/pdf_page_count — read by every existing render/zoom/nav
+        function, all unchanged), render, fit to width, and refresh the tab strip."""
+        if 0 <= self.pdf_active_index < len(self.pdf_tabs):
+            self.pdf_tabs[self.pdf_active_index].page = self.pdf_current_page
+        self.pdf_active_index = index
+        tab = self.pdf_tabs[index]
+        self.pdf_doc = tab.doc
+        self.pdf_path = tab.path
+        self.pdf_current_page = tab.page
+        self.pdf_page_count = tab.page_count
+        if tab.doc is not None:
+            self.render_pdf_page()
+            QTimer.singleShot(0, self.pdf_fit_width)
+        elif self.pdf_label is not None:
+            self._set_viewer_placeholder(self.pdf_label, "pdf", f"Could not load:\n{tab.path}")
+        self._rebuild_pdf_tab_strip()
+
+    def _close_pdf_tab(self, index):
+        """Close and discard the PDF tab at `index`, picking a sensible new active tab (the
+        one now at the same index, or the last remaining tab, or none if the list becomes
+        empty) and persisting the change."""
+        if not (0 <= index < len(self.pdf_tabs)):
+            return
+        closing_active = (index == self.pdf_active_index)
+        tab = self.pdf_tabs.pop(index)
+        if tab.doc is not None:
+            try:
+                tab.doc.close()
+            except Exception:
+                pass
+        if not self.pdf_tabs:
+            self.pdf_active_index = -1
+            self.pdf_doc = None
+            self.pdf_path = None
+            self.pdf_current_page = 0
+            self.pdf_page_count = 0
+            if self.pdf_label is not None:
+                self._set_viewer_placeholder(self.pdf_label, "pdf", "No PDF loaded\n\nUse the Open button to open a PDF file")
+            if hasattr(self, 'pdf_page_label'):
+                self.pdf_page_label.setText("0 / 0")
+            self._rebuild_pdf_tab_strip()
+        elif closing_active:
+            self._activate_pdf_tab(min(index, len(self.pdf_tabs) - 1))
+        else:
+            if index < self.pdf_active_index:
+                self.pdf_active_index -= 1
+            self._rebuild_pdf_tab_strip()
+        self.save_notes()
+
+    def _build_pdf_tab_strip(self, parent_layout):
+        """Build the row of PDF tab buttons (one per open PdfTabState, with a close button
+        each) — sits between the toolbar and the PDF scroll area. Rebuilt fresh on every
+        build_main_content() call like the rest of pdf_container; _rebuild_pdf_tab_strip()
+        clears and repopulates the same layout reference afterward for in-place updates
+        (opening/closing/switching a tab) without a full UI rebuild."""
+        self.pdf_tab_strip_widget = QWidget()
+        self.pdf_tab_strip_layout = QHBoxLayout(self.pdf_tab_strip_widget)
+        self.pdf_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
+        self.pdf_tab_strip_layout.setSpacing(2)
+        parent_layout.addWidget(self.pdf_tab_strip_widget)
+        self._rebuild_pdf_tab_strip()
+
+    def _viewer_tab_button_style(self, active):
+        """Shared style for both the label and close button of one multi-instance tab
+        (PDF, Image, and future Web/Notes/Editor tabs) — active tab gets the same
+        brighter-fill = selected convention as the main viewer tab row."""
+        if active:
+            return f"""
+                QPushButton {{
+                    background-color: {self.t('bg_green_3')};
+                    color: {self.t('fg_on_dark')};
+                    border: none;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                }}
+            """
+        return f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                padding: 3px 6px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+    def _build_tab_group_widget(self, label_text, tooltip, style, on_activate, on_close):
+        """One tab's label+close-button pair, grouped with zero internal spacing (no gap
+        between a tab's label and its own × — browser-tab convention) so the strip's own
+        spacing reads as the gap BETWEEN tabs, not within one. Shared by all three
+        multi-instance tab strips (PDF/Image/Web)."""
+        group = QWidget()
+        group_layout = QHBoxLayout(group)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.setSpacing(0)
+
+        label_btn = QPushButton(label_text)
+        label_btn.setToolTip(tooltip)
+        label_btn.setMaximumWidth(140)
+        label_btn.setStyleSheet(style)
+        label_btn.clicked.connect(on_activate)
+        group_layout.addWidget(label_btn)
+
+        close_btn = QPushButton("×")
+        close_btn.setFixedWidth(18)
+        close_btn.setStyleSheet(style)
+        close_btn.setToolTip("Close tab")
+        close_btn.clicked.connect(on_close)
+        group_layout.addWidget(close_btn)
+
+        return group
+
+    def _rebuild_pdf_tab_strip(self):
+        """Clear and repopulate self.pdf_tab_strip_layout from self.pdf_tabs — called after
+        every open/close/activate so the strip stays in sync without a full rebuild. A
+        no-op if the strip hasn't been built yet this pass (guards startup ordering)."""
+        if getattr(self, 'pdf_tab_strip_layout', None) is None:
+            return
+        while self.pdf_tab_strip_layout.count():
+            item = self.pdf_tab_strip_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        self.pdf_tab_strip_widget.setVisible(bool(self.pdf_tabs))
+        for i, tab in enumerate(self.pdf_tabs):
+            is_active = (i == self.pdf_active_index)
+            group = self._build_tab_group_widget(
+                os.path.basename(tab.path) or tab.path, tab.path,
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_pdf_tab(idx),
+                lambda checked=False, idx=i: self._close_pdf_tab(idx),
+            )
+            self.pdf_tab_strip_layout.addWidget(group)
+        self.pdf_tab_strip_layout.addStretch()
 
     def render_pdf_page(self):
         """Render the current PDF page"""
@@ -11078,8 +11558,7 @@ function filterAliases(q) {{
         )
 
         if file_path:
-            self.pdf_current_page = 0  # Reset to first page for new file
-            if self.load_pdf(file_path):
+            if self._open_pdf_tab(file_path):
                 self.status_label.setText(f"Loaded PDF: {os.path.basename(file_path)}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
 
@@ -11113,12 +11592,11 @@ function filterAliases(q) {{
                 if reply != QMessageBox.StandardButton.Yes:
                     return
 
-            self.pdf_current_page = 0  # Reset to first page for new file
             self.status_label.setText("Loading PDF from URL...")
             self.status_label.setStyleSheet("color: #f39c12; margin: 10px; font-weight: bold;")
             QApplication.processEvents()  # Update UI before blocking download
 
-            if self.load_pdf(url):
+            if self._open_pdf_tab(url):
                 # Extract filename from URL for display
                 filename = url.split('/')[-1].split('?')[0] or "remote PDF"
                 self.status_label.setText(f"Loaded: {filename}")
@@ -11585,60 +12063,181 @@ function filterAliases(q) {{
         if not self.webview:
             return
         if getattr(self, 'webview_md_path', None):
-            self._open_markdown_in_webview(self.webview_md_path)
+            # Reload the CURRENT tab's content in place — _open_markdown_in_muya_editor()
+            # (not _open_markdown_in_webview()) since the latter now creates a new tab.
+            self._open_markdown_in_muya_editor(self.webview_md_path)
         else:
             self.webview.reload()
 
-    def webview_home(self):
-        """Navigate to home URL from config"""
-        if self.webview and hasattr(self, 'config_webview_url') and self.config_webview_url:
+    def _web_tab_title(self, tab):
+        """Short display label for one Web tab's strip button."""
+        if tab.kind in ("markdown", "html_file"):
+            return os.path.basename(tab.value) or tab.value
+        parsed = urllib.parse.urlparse(tab.value)
+        return parsed.netloc or tab.value
+
+    def _activate_web_tab(self, index):
+        """Make self.web_tabs[index] the active tab. Flushes any unsaved markdown content
+        in the CURRENTLY displayed tab first (see _muya_flush_before_switch()) — without
+        this, switching away from a markdown tab faster than the ~1.2s autosave poll
+        silently dropped the last few seconds of edits, since the target tab's content
+        below replaces the page outright (a no-op for URL/HTML tabs, which aren't editing
+        anything)."""
+        self._muya_flush_before_switch(self._muya_session, lambda: self._do_activate_web_tab(index))
+
+    def _do_activate_web_tab(self, index):
+        """The actual tab switch, once any previous markdown tab's content has been safely
+        flushed: navigates the one shared self.webview to the target tab (markdown files go
+        through the existing Muya bridge; URLs/local HTML get a plain setUrl()) and
+        refreshes the tab strip. See WebTabState for why there's only ever one real webview
+        regardless of tab count."""
+        self.web_active_index = index
+        tab = self.web_tabs[index]
+        if self.column2_mode != "webview":
+            self.switch_to_viewer_mode("webview")
+        if tab.kind == "markdown":
+            self._open_markdown_in_muya_editor(tab.value)
+        else:
             self.webview_md_path = None
             self._muya_session.editing = False
             self._muya_session.autosave_timer.stop()
-            self.webview.setUrl(QUrl(self.config_webview_url))
+            if tab.kind == "html_file":
+                self.webview.setUrl(QUrl.fromLocalFile(tab.value))
+            else:
+                self.webview.setUrl(QUrl(tab.value))
+            self.webview_url = tab.value
             self._update_md_edit_buttons()
+        self._rebuild_web_tab_strip()
+
+    def _open_web_tab(self, kind, value):
+        """Open a new Web tab and make it active — always-new-tab policy, mirroring
+        _open_pdf_tab()/_open_image_tab(). Closes the oldest tab first once WEB_TAB_CAP is
+        reached (see that constant's comment for why this isn't about renderer-process
+        resource pressure)."""
+        if len(self.web_tabs) >= self.WEB_TAB_CAP:
+            self._close_web_tab(0)
+        self.web_tabs.append(WebTabState(kind, value))
+        self._activate_web_tab(len(self.web_tabs) - 1)
+        self.save_notes()
+
+    def _navigate_active_web_tab(self, kind, value):
+        """Navigate the CURRENTLY active tab to a new location in place (URL bar Enter,
+        Home button) rather than opening a new one — matches how a real browser's address
+        bar navigates the current tab, unlike clicking a launcher item (always a new tab,
+        see _open_web_tab()). Falls back to opening a new tab if none is active yet."""
+        if 0 <= self.web_active_index < len(self.web_tabs):
+            tab = self.web_tabs[self.web_active_index]
+            tab.kind = kind
+            tab.value = value
+            self._activate_web_tab(self.web_active_index)
+            self.save_notes()
+        else:
+            self._open_web_tab(kind, value)
+
+    def _close_web_tab(self, index):
+        """Close and discard the Web tab at `index`, picking a sensible new active tab
+        (mirrors _close_pdf_tab()/_close_image_tab())."""
+        if not (0 <= index < len(self.web_tabs)):
+            return
+        closing_active = (index == self.web_active_index)
+        self.web_tabs.pop(index)
+        if not self.web_tabs:
+            self.web_active_index = -1
+            self.webview_url = None
+            self.webview_md_path = None
+
+            def _clear_webview():
+                if self.webview:
+                    self.webview.setUrl(QUrl("about:blank"))
+                self._rebuild_web_tab_strip()
+                self.save_notes()
+
+            # Flush first (see _muya_flush_before_switch()) — closing your only open
+            # markdown tab shouldn't lose the last few unsaved seconds any more than
+            # switching away from it would.
+            self._muya_flush_before_switch(self._muya_session, _clear_webview)
+            return
+        elif closing_active:
+            self._activate_web_tab(min(index, len(self.web_tabs) - 1))
+        else:
+            if index < self.web_active_index:
+                self.web_active_index -= 1
+            self._rebuild_web_tab_strip()
+        self.save_notes()
+
+    def _build_web_tab_strip(self, parent_layout):
+        """Build the row of Web tab buttons — mirrors _build_pdf_tab_strip()."""
+        self.web_tab_strip_widget = QWidget()
+        self.web_tab_strip_layout = QHBoxLayout(self.web_tab_strip_widget)
+        self.web_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
+        self.web_tab_strip_layout.setSpacing(2)
+        parent_layout.addWidget(self.web_tab_strip_widget)
+        self._rebuild_web_tab_strip()
+
+    def _rebuild_web_tab_strip(self):
+        """Clear and repopulate self.web_tab_strip_layout from self.web_tabs — mirrors
+        _rebuild_pdf_tab_strip()."""
+        if getattr(self, 'web_tab_strip_layout', None) is None:
+            return
+        while self.web_tab_strip_layout.count():
+            item = self.web_tab_strip_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        self.web_tab_strip_widget.setVisible(bool(self.web_tabs))
+        for i, tab in enumerate(self.web_tabs):
+            is_active = (i == self.web_active_index)
+            group = self._build_tab_group_widget(
+                self._web_tab_title(tab), tab.value,
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_web_tab(idx),
+                lambda checked=False, idx=i: self._close_web_tab(idx),
+            )
+            self.web_tab_strip_layout.addWidget(group)
+        self.web_tab_strip_layout.addStretch()
+
+    def webview_home(self):
+        """Navigate to home URL from config — navigates the current tab in place."""
+        if self.webview and hasattr(self, 'config_webview_url') and self.config_webview_url:
+            self._navigate_active_web_tab("url", self.config_webview_url)
 
     def webview_navigate(self):
-        """Navigate to URL in URL bar"""
+        """Navigate to URL in URL bar — navigates the current tab in place, like a real
+        browser's address bar (unlike launcher clicks, which always open a new tab)."""
         if self.webview and self.webview_url_bar:
             url = self.webview_url_bar.text().strip()
             if url:
                 if not url.startswith(('http://', 'https://', 'file://')):
                     url = 'https://' + url
-                self.webview_md_path = None
-                self._muya_session.editing = False
-                self._muya_session.autosave_timer.stop()
-                self.webview.setUrl(QUrl(url))
-                self._update_md_edit_buttons()
+                self._navigate_active_web_tab("url", url)
 
     def on_webview_url_changed(self, url):
         """Handle URL changes in webview"""
         if self.webview_url_bar:
             self.webview_url_bar.setText(url.toString())
-        # Save the current URL
         self.webview_url = url.toString()
+        # Keep the active tab's remembered URL in sync as the user browses within it (e.g.
+        # clicking links) — matches how a real browser tab remembers wherever you've
+        # navigated to, not just where it was originally opened. Guarded to "url" tabs only:
+        # this signal also fires for the Muya shell's own internal navigation when a
+        # markdown/html_file tab is active, which must not clobber that tab's remembered path.
+        if 0 <= self.web_active_index < len(self.web_tabs) and self.web_tabs[self.web_active_index].kind == "url":
+            self.web_tabs[self.web_active_index].value = self.webview_url
         self.save_notes()
 
     def preview_in_webview(self, url):
-        """Preview a URL in the webview panel"""
+        """Preview a URL in the webview panel — always opens as a new tab (see
+        _open_web_tab()), even if the same URL is already open in another tab."""
         if not self.webview:
             return
-
-        # Switch to webview mode directly
-        if self.column2_mode != "webview":
-            self.switch_to_viewer_mode("webview")
-
-        # Load the URL
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
-        self.webview_md_path = None
-        self._muya_session.editing = False
-        self._muya_session.autosave_timer.stop()
-        self.webview.setUrl(QUrl(url))
-        self._update_md_edit_buttons()
+        self._open_web_tab("url", url)
 
     def preview_in_image_viewer(self, path):
-        """Preview an image in the image viewer panel"""
+        """Preview an image in the image viewer panel — always opens as a new tab (see
+        _open_image_tab()), even if the same file is already open in another tab."""
         if not hasattr(self, 'image_label') or not self.image_label:
             return
 
@@ -11646,14 +12245,14 @@ function filterAliases(q) {{
         if self.column2_mode != "image":
             self.switch_to_viewer_mode("image")
 
-        # Load the image
-        self.load_image(path)
+        self._open_image_tab(path)
 
     def preview_in_pdf_viewer(self, path):
-        """Preview a PDF in the PDF viewer panel"""
+        """Preview a PDF in the PDF viewer panel — always opens as a new tab (see
+        _open_pdf_tab()), even if the same file is already open in another tab."""
         if self.column2_mode != "pdf":
             self.switch_to_viewer_mode("pdf")
-        self.load_pdf(path)
+        self._open_pdf_tab(path)
 
     def _is_local_path(self, path):
         """Return True if path looks like a local file/folder (not remote/URL/command)"""
@@ -13111,9 +13710,9 @@ function filterAliases(q) {{
                 self.populate_folder_browser(path)
         elif item_type == "file":
             ext = os.path.splitext(path)[1].lower()
-            if ext in ('.html', '.htm'):
-                self._open_file_in_webview(path)
-            elif ext == '.md':
+            # .html/.htm default into the code editor now (see _CODE_ROUTE_EXTENSIONS) —
+            # local files open in the editor, only URLs open in the web viewer.
+            if ext == '.md':
                 self._open_markdown_file(path)
             elif ext in self._CODE_ROUTE_EXTENSIONS:
                 self._open_code_file_in_editor(path)
@@ -13143,8 +13742,8 @@ function filterAliases(q) {{
             self.preview_in_pdf_viewer(path)
         elif ext == '.md':
             self._open_markdown_file(path)
-        elif ext in ('.html', '.htm'):
-            self._open_file_in_webview(path)
+        # .html/.htm default into the code editor now (see _CODE_ROUTE_EXTENSIONS) — local
+        # files open in the editor, only URLs open in the web viewer.
         elif ext in self._CODE_ROUTE_EXTENSIONS:
             self._open_code_file_in_editor(path)
         else:
@@ -13208,20 +13807,19 @@ function filterAliases(q) {{
         self._build_folder_context_menu(path, item_type).exec(self.launcher_folder_icon_view.mapToGlobal(position))
 
     def _open_file_in_webview(self, path):
-        """Open a local file in the built-in webview panel"""
+        """Open a local HTML file in the built-in webview panel — always opens as a new tab
+        (see _open_web_tab()), even if the same file is already open in another tab."""
         if not self.webview:
             return
-        if self.column2_mode != "webview":
-            self.switch_to_viewer_mode("webview")
-        self.webview_md_path = None
-        self._muya_session.editing = False
-        self._muya_session.autosave_timer.stop()
-        self.webview.setUrl(QUrl.fromLocalFile(path))
-        self._update_md_edit_buttons()
+        self._open_web_tab("html_file", path)
 
     def _open_markdown_in_webview(self, path):
-        """Open a markdown file — defaults to the live, auto-saving Muya editor."""
-        self._open_markdown_in_muya_editor(path)
+        """Open a markdown file — defaults to the live, auto-saving Muya editor. Always
+        opens as a new tab (see _open_web_tab()); _open_markdown_in_muya_editor() itself
+        stays tab-agnostic (just loads content into the current tab) since it's also used
+        internally by _activate_web_tab() and the Edit/Preview toggle buttons to reload
+        whatever's already the active tab, not to open a new one."""
+        self._open_web_tab("markdown", path)
 
     def _open_markdown_file(self, path):
         """Layout-aware entry point for "open this markdown file" actions — used by every
@@ -13403,10 +14001,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.notes_home_btn = QPushButton("🏠 Project Note")
         self.notes_home_btn.setStyleSheet(btn_style)
         self.notes_home_btn.setToolTip("Back to this project's own note")
-        self.notes_home_btn.clicked.connect(lambda: self._open_note_in_notes_tab(self.get_notes_file_path()))
+        self.notes_home_btn.clicked.connect(self._navigate_notes_home)
         toolbar_layout.addWidget(self.notes_home_btn)
 
         parent_layout.addWidget(toolbar_widget)
+        self._build_notes_tab_strip(parent_layout)
         self._update_notes_toolbar()
 
     def open_note_file(self):
@@ -13455,16 +14054,118 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             )
         self._update_notes_toolbar()
 
+    def _notes_tab_title(self, tab):
+        """Short display label for one Notes tab's strip button."""
+        return "Project Note" if tab.path is None else os.path.basename(tab.path)
+
+    def _activate_notes_tab(self, index):
+        """Make self.notes_tabs[index] the active tab. Flushes any unsaved content in the
+        CURRENTLY displayed note first (see _muya_flush_before_switch()) — without this,
+        switching tabs faster than the ~1.2s autosave poll silently dropped the last few
+        seconds of edits, since _open_notes_in_muya() below replaces the page outright."""
+        self._muya_flush_before_switch(self._notes_muya_session, lambda: self._do_activate_notes_tab(index))
+
+    def _do_activate_notes_tab(self, index):
+        """The actual tab switch, once any previous note's content has been safely flushed.
+        Syncs the notes_md_path proxy (read by _open_notes_in_muya()'s existing dispatch,
+        unchanged) and refreshes the tab strip. Deliberately does NOT touch column2_mode —
+        callers that need to switch into the Notes viewer (_open_notes_tab()) do that
+        themselves before calling _activate_notes_tab(), matching how the pre-tab
+        _open_note_in_notes_tab() already ordered these two steps; calling
+        switch_to_viewer_mode() from here would also be unsafe during the initial
+        build_main_content() restore, which calls this before the rest of column2_stack
+        necessarily exists yet."""
+        self.notes_active_index = index
+        self.notes_md_path = self.notes_tabs[index].path
+        self._open_notes_in_muya()
+        self._rebuild_notes_tab_strip()
+
+    def _open_notes_tab(self, path):
+        """Open `path` as a new Notes tab and make it active — always-new-tab policy,
+        mirroring _open_pdf_tab()/_open_web_tab(). `path` equal to the project's own note
+        path is normalized to None (the NotesTabState convention), same as the old
+        _open_note_in_notes_tab() did."""
+        normalized = path if path != self.get_notes_file_path() else None
+        self.notes_tabs.append(NotesTabState(normalized))
+        if self.column2_mode != "notes":
+            self.switch_to_viewer_mode("notes")
+        self._activate_notes_tab(len(self.notes_tabs) - 1)
+        self.save_notes()
+
     def _open_note_in_notes_tab(self, path):
         """Open any .md file in the Focus-layout Notes tab (the consolidated note viewer) —
         stable public entry point used by every "open a markdown file" call site in Focus
-        layout (see _open_markdown_file()). Falls back to the project's own note
-        automatically once nothing else is explicitly loaded (notes_md_path reset happens
-        only in switch_to_config())."""
-        self.notes_md_path = path if path != self.get_notes_file_path() else None
-        if self.column2_mode != "notes":
-            self.switch_to_viewer_mode("notes")
-        self._open_notes_in_muya()
+        layout (see _open_markdown_file()). Always opens as a new tab (see
+        _open_notes_tab()) — the "🏠 Project Note" button uses _navigate_notes_home()
+        instead, which navigates the current tab in place rather than opening a new one."""
+        self._open_notes_tab(path)
+
+    def _navigate_notes_home(self):
+        """"🏠 Project Note" button: navigate the CURRENT tab back to the project's own note
+        in place, rather than opening a new tab — mirrors webview_home()'s in-place
+        navigation vs. _open_web_tab()'s always-new-tab for launcher clicks."""
+        if 0 <= self.notes_active_index < len(self.notes_tabs):
+            self.notes_tabs[self.notes_active_index].path = None
+            self._activate_notes_tab(self.notes_active_index)
+            self.save_notes()
+        else:
+            self._open_notes_tab(self.get_notes_file_path())
+
+    def _close_notes_tab(self, index):
+        """Close and discard the Notes tab at `index`, picking a sensible new active tab.
+        Unlike PDF/Image/Web, Notes must never end up with zero tabs — it always falls back
+        to showing the project's own note — so closing the last tab recreates a fresh
+        project-note tab instead of leaving an empty state."""
+        if not (0 <= index < len(self.notes_tabs)):
+            return
+        closing_active = (index == self.notes_active_index)
+        self.notes_tabs.pop(index)
+        if not self.notes_tabs:
+            self.notes_tabs.append(NotesTabState(None))
+            self._activate_notes_tab(0)
+        elif closing_active:
+            self._activate_notes_tab(min(index, len(self.notes_tabs) - 1))
+        else:
+            if index < self.notes_active_index:
+                self.notes_active_index -= 1
+            self._rebuild_notes_tab_strip()
+        self.save_notes()
+
+    def _build_notes_tab_strip(self, parent_layout):
+        """Build the row of Notes tab buttons — mirrors _build_pdf_tab_strip(). Focus
+        layout only (called from create_notes_toolbar(), itself Focus-layout-gated)."""
+        self.notes_tab_strip_widget = QWidget()
+        self.notes_tab_strip_layout = QHBoxLayout(self.notes_tab_strip_widget)
+        self.notes_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
+        self.notes_tab_strip_layout.setSpacing(2)
+        parent_layout.addWidget(self.notes_tab_strip_widget)
+        self._rebuild_notes_tab_strip()
+
+    def _rebuild_notes_tab_strip(self):
+        """Clear and repopulate self.notes_tab_strip_layout from self.notes_tabs — mirrors
+        _rebuild_pdf_tab_strip(). A no-op in Standard layout, where the strip is never built
+        (guarded by the getattr check, same as the other tab strips)."""
+        if getattr(self, 'notes_tab_strip_layout', None) is None:
+            return
+        while self.notes_tab_strip_layout.count():
+            item = self.notes_tab_strip_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        # Only worth showing once there's more than the trivial single project-note tab —
+        # otherwise it's a permanent, always-visible single button doing nothing useful.
+        self.notes_tab_strip_widget.setVisible(len(self.notes_tabs) > 1)
+        for i, tab in enumerate(self.notes_tabs):
+            is_active = (i == self.notes_active_index)
+            group = self._build_tab_group_widget(
+                self._notes_tab_title(tab), tab.path or "This project's own note",
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_notes_tab(idx),
+                lambda checked=False, idx=i: self._close_notes_tab(idx),
+            )
+            self.notes_tab_strip_layout.addWidget(group)
+        self.notes_tab_strip_layout.addStretch()
 
     def _open_markdown_in_muya_editor(self, path=None):
         """Switch the main webview into the Muya WYSIWYG markdown editor for the given file."""
@@ -13510,6 +14211,36 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 self.status_label.setText(f"✗ Autosave failed: {e}")
 
         session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
+
+    def _muya_flush_before_switch(self, session, callback):
+        """If `session` currently has unsaved changes, force-write them to disk BEFORE
+        `callback` runs — used before switching Notes/Web-markdown tabs (or closing one),
+        where the target content is about to replace the page via setHtml(), which
+        otherwise races with (and can silently lose) a pending autosave: the autosave timer
+        only polls every ~1.2s, so switching tabs faster than that — easy to do right after
+        typing — discarded the last few seconds of edits with no save ever happening. Always
+        calls `callback` exactly once, whether or not anything needed saving."""
+        if not (session.editing and session.path and session.webview):
+            callback()
+            return
+
+        def on_dirty(is_dirty):
+            if not is_dirty:
+                callback()
+                return
+
+            def on_markdown(markdown):
+                if markdown is not None:
+                    try:
+                        with open(session.path, 'w', encoding='utf-8') as f:
+                            f.write(markdown)
+                    except OSError as e:
+                        self.status_label.setText(f"✗ Autosave failed: {e}")
+                callback()
+
+            session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
+
+        session.webview.page().runJavaScript("window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty)
 
     def _muya_switch_to_preview(self):
         """Leave the main webview's Muya editor (autosaving first) and show the rendered read-only preview."""
@@ -13573,12 +14304,30 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         '.html': 'html', '.htm': 'html',
         '.css': 'css',
         '.php': 'php', '.phtml': 'php',
+        # No dedicated CodeMirror language package is vendored for JSON (see CLAUDE.md's
+        # Code Editor section) — reusing 'js' gives reasonable highlighting for free
+        # (valid JSON tokenizes fine as JS object/array literals) without a bundle rebuild.
+        '.json': 'js',
+        # Plain text has no language extension at all (None, via .get()'s default below) —
+        # basicSetup already handles that gracefully (plain text, line numbers, no
+        # highlighting, never refuses to open), so .txt doesn't need an entry here.
     }
-    # Extensions that should route into the new internal code editor by default —
-    # everything in _CODE_EXT_LANGUAGE except .html/.htm, which keep their existing
-    # default of opening rendered in the webview (see the "</> Edit Source" toggle for
-    # the opt-in path into the code editor instead).
-    _CODE_ROUTE_EXTENSIONS = tuple(e for e in _CODE_EXT_LANGUAGE if e not in ('.html', '.htm'))
+    # Extensions that route into the internal code editor by default. .html/.htm now
+    # default here too (previously excluded, opening rendered in the webview instead) —
+    # local FILES open in the editor, only URLs (and explicit firefox/chrome-app launcher
+    # items) open in the web viewer. The "👁 Rendered" toggle in the code editor (and
+    # "</> Edit Source" the other way from the webview) still exist for switching a given
+    # .html file between the two views. .txt/.json are added on top of _CODE_EXT_LANGUAGE's
+    # keys since they route here too despite having no language entry (plain text/JS-as-
+    # JSON respectively).
+    _CODE_ROUTE_EXTENSIONS = tuple(set(_CODE_EXT_LANGUAGE) | {'.txt'})
+
+    # Cap on simultaneously-remembered Web tabs (see WebTabState) — oldest tab is closed
+    # to make room once reached (_open_web_tab()). Since only one real QWebEngineView is
+    # ever live regardless of tab count (switching tabs re-navigates the same one), this
+    # isn't a renderer-process resource cap — it's just to keep the tab strip from growing
+    # unbounded over a long session.
+    WEB_TAB_CAP = 8
 
     def _code_editor_language_for(self, path):
         """Maps a file extension to the short language key editor.html's langMap expects,
@@ -13596,8 +14345,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return {"keyword": "#ff7b72", "string": "#a5d6ff", "comment": "#8b949e"}
         return {"keyword": "#cf222e", "string": "#0a3069", "comment": "#6e7781"}
 
-    def _load_code_editor_shell(self, session, path, content, language):
-        """Load the CodeMirror 6 editor shell into session.webview with the given content."""
+    def _load_code_editor_shell(self, session, path, content, language, initial_dirty=False):
+        """Load the CodeMirror 6 editor shell into session.webview with the given content.
+        initial_dirty is stashed onto session.pending_dirty and applied once loading
+        actually finishes (see _on_code_editor_webview_load_finished()) — used when
+        restoring an Editor tab whose cached content differs from disk (CodeMirror's own
+        dirty tracking would otherwise read false, since nothing's changed since THIS init)."""
         if not session.webview:
             return
         editor_dir = os.path.join(self.script_dir, "assets", "codemirror")
@@ -13626,6 +14379,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         session.language = language
         session.editing = True
         session.pending_content = content
+        session.pending_dirty = initial_dirty
         session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
         if not session.dirty_poll_timer.isActive():
             session.dirty_poll_timer.start()
@@ -13645,13 +14399,16 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def _on_code_editor_webview_load_finished(self, ok, session):
         """Fires for every navigation of the code-editor webview. Injects pending content
-        once loaded — mirrors _on_muya_webview_load_finished."""
+        once loaded — mirrors _on_muya_webview_load_finished. session.dirty becomes
+        session.pending_dirty (not a hardcoded False) — see _load_code_editor_shell()'s
+        docstring for why a restored Editor tab's true dirty state can't be trusted to
+        CodeMirror's own tracking."""
         if ok and session.pending_content is not None:
             wrap_enabled = self.settings.get('code_editor_wrap', True)
             js = f"window.__initCodeEditor({json.dumps(session.pending_content)}, {json.dumps(session.language)}, {json.dumps(wrap_enabled)})"
             session.webview.page().runJavaScript(js)
             session.pending_content = None
-            session.dirty = False
+            session.dirty = session.pending_dirty
             self._update_code_editor_buttons()
 
     def _code_editor_dirty_poll_tick(self, session):
@@ -13687,7 +14444,20 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                     f.write(content)
                 session.webview.page().runJavaScript("window.__codeEditorClearDirty && window.__codeEditorClearDirty()")
                 session.dirty = False
+                # Also clear the ACTIVE tab's own sticky dirty flag/cached content (see
+                # CodeTabState) — session.dirty alone isn't enough once tabs exist: a tab
+                # that was ever flushed while dirty (switched away from at least once) has
+                # tab.dirty=True independently, and that's what the tab strip's "●" and the
+                # close/discard confirmation actually check, not session.dirty. Without
+                # this, a successful save kept showing "unsaved changes" for any tab that
+                # had been backgrounded even once — the save genuinely worked, only the
+                # tab-level bookkeeping didn't know about it.
+                if 0 <= self.code_active_index < len(self.code_tabs):
+                    active_tab = self.code_tabs[self.code_active_index]
+                    active_tab.dirty = False
+                    active_tab.pending_unsaved_content = None
                 self._update_code_editor_buttons()
+                self._rebuild_code_tab_strip()
                 self.status_label.setText(f"✓ Saved {os.path.basename(session.path)}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
             except OSError as e:
@@ -13710,18 +14480,30 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self._code_session.webview.page().runJavaScript(js)
 
     def _confirm_discard_code_changes(self):
-        """Returns True if it's safe to proceed (no dirty code file open, or the user
-        confirmed discarding it), False if the caller should abort. Uses the timer-polled
-        session.dirty flag directly (up to ~800ms stale) rather than a synchronous re-query
-        — acceptable for a discard-confirmation on non-realtime paths (app close, project
-        switch, opening a different file), and avoids restructuring those call sites into
-        async callback chains for a rare edge case."""
+        """Returns True if it's safe to proceed (no dirty code file open anywhere, or the
+        user confirmed discarding all of it), False if the caller should abort. Checks
+        every Editor tab, not just the currently active one — with multiple tabs, a
+        BACKGROUND tab can hold cached pending_unsaved_content (see CodeTabState) that the
+        live session.dirty flag alone would never reveal, and that content is deliberately
+        never written to disk, so this is the only place that content's loss gets flagged
+        before something destroys it (app close, project switch). Uses the timer-polled
+        session.dirty flag for the active tab (up to ~800ms stale) rather than a synchronous
+        re-query — acceptable for a discard-confirmation on non-realtime paths, and avoids
+        restructuring those call sites into async callback chains for a rare edge case."""
         session = self._code_session
-        if not (session.editing and session.dirty and session.path):
+        dirty_paths = []
+        for i, tab in enumerate(self.code_tabs):
+            is_active_live_dirty = (i == self.code_active_index and session.editing and session.dirty)
+            if tab.dirty or is_active_live_dirty:
+                dirty_paths.append(os.path.basename(tab.path))
+        if not dirty_paths:
             return True
+        if len(dirty_paths) == 1:
+            message = f"'{dirty_paths[0]}' has unsaved changes. Discard them?"
+        else:
+            message = "These files have unsaved changes. Discard them?\n\n" + "\n".join(f"• {p}" for p in dirty_paths)
         reply = QMessageBox.question(
-            self, "Unsaved Changes",
-            f"'{os.path.basename(session.path)}' has unsaved changes. Discard them?",
+            self, "Unsaved Changes", message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -13733,25 +14515,155 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         open_image_file()'s existing QFileDialog pattern."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Open File", os.path.expanduser("~"),
-            "Code Files (*.js *.jsx *.mjs *.cjs *.py *.html *.htm *.css *.php);;All Files (*)"
+            "Code Files (*.js *.jsx *.mjs *.cjs *.py *.html *.htm *.css *.php *.json *.txt);;All Files (*)"
         )
         if file_path:
             self._open_code_file_in_editor(file_path)
 
+    def _code_tab_title(self, tab):
+        """Short display label for one Editor tab's strip button."""
+        return os.path.basename(tab.path) or tab.path
+
+    def _activate_code_tab(self, index):
+        """Make self.code_tabs[index] the active tab. Async: if the editor currently has
+        live dirty content, first flushes it out and caches it on the PREVIOUSLY active
+        tab's own CodeTabState — never force-saved, never discarded, since the whole point
+        of Editor tabs is that switching away from unsaved work must not require either —
+        then loads the target tab (_do_activate_code_tab). Deliberately flushes even when
+        `index` equals the tab already active (a theme change reloads the shell HTML from
+        scratch via setHtml(), which would otherwise silently discard live-typed,
+        never-flushed edits just because "switching to the same tab" sounds like a no-op)."""
+        session = self._code_session
+        prev_index = self.code_active_index
+        if session.editing and session.dirty and session.webview and 0 <= prev_index < len(self.code_tabs):
+            prev_tab = self.code_tabs[prev_index]
+
+            def on_flushed(content):
+                if content is not None:
+                    prev_tab.pending_unsaved_content = content
+                    prev_tab.dirty = True
+                self._do_activate_code_tab(index)
+
+            session.webview.page().runJavaScript(
+                "window.__getCodeEditorContent ? window.__getCodeEditorContent() : null", on_flushed
+            )
+        else:
+            self._do_activate_code_tab(index)
+
+    def _do_activate_code_tab(self, index):
+        """The actual tab switch, once any previous tab's content has been safely flushed
+        (see _activate_code_tab()). Uses the tab's cached pending_unsaved_content if it has
+        any, else reads fresh from disk."""
+        self.code_active_index = index
+        tab = self.code_tabs[index]
+        if tab.pending_unsaved_content is not None:
+            content = tab.pending_unsaved_content
+        else:
+            try:
+                with open(os.path.expanduser(tab.path), 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except OSError as e:
+                self.status_label.setText(f"✗ Could not open {os.path.basename(tab.path)}: {e}")
+                content = ""
+        self._load_code_editor_shell(self._code_session, tab.path, content, tab.language, initial_dirty=tab.dirty)
+        self._rebuild_code_tab_strip()
+        self._update_code_editor_buttons()
+
+    def _open_code_tab(self, path):
+        """Open `path` as a new Editor tab and make it active — always-new-tab policy,
+        mirroring _open_pdf_tab()/_open_web_tab()/_open_notes_tab(). Unlike the pre-tab
+        _open_code_file_in_editor(), opening a different file while the current tab has
+        unsaved changes no longer needs a discard confirmation — that tab's content gets
+        cached instead of destroyed (see _activate_code_tab())."""
+        language = self._code_editor_language_for(path)
+        self.code_tabs.append(CodeTabState(path, language))
+        if self.column2_mode != "code":
+            self.switch_to_viewer_mode("code")
+        self._activate_code_tab(len(self.code_tabs) - 1)
+        self.save_notes()
+
+    def _close_code_tab(self, index):
+        """Close the Editor tab at `index`. Unlike PDF/Image/Web/Notes tabs, this is the one
+        place actual unsaved work really could be lost (the Python-cached
+        pending_unsaved_content is never written to disk) — so closing a dirty tab asks for
+        confirmation, same wording as the pre-tab _confirm_discard_code_changes()."""
+        if not (0 <= index < len(self.code_tabs)):
+            return
+        tab = self.code_tabs[index]
+        is_active = (index == self.code_active_index)
+        tab_is_dirty = tab.dirty or (is_active and self._code_session.dirty)
+        if tab_is_dirty:
+            reply = QMessageBox.question(
+                self, "Unsaved Changes",
+                f"'{os.path.basename(tab.path)}' has unsaved changes. Discard them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self.code_tabs.pop(index)
+        if not self.code_tabs:
+            self.code_active_index = -1
+            self._code_session.editing = False
+            self._code_session.path = None
+            self._code_session.language = None
+            self._code_session.pending_content = None
+            self._code_session.dirty = False
+            self._code_session.dirty_poll_timer.stop()
+            self._rebuild_code_tab_strip()
+            self._update_code_editor_buttons()
+        elif is_active:
+            self._activate_code_tab(min(index, len(self.code_tabs) - 1))
+        else:
+            if index < self.code_active_index:
+                self.code_active_index -= 1
+            self._rebuild_code_tab_strip()
+        self.save_notes()
+
+    def _build_code_tab_strip(self, parent_layout):
+        """Build the row of Editor tab buttons — mirrors _build_pdf_tab_strip()."""
+        self.code_tab_strip_widget = QWidget()
+        self.code_tab_strip_layout = QHBoxLayout(self.code_tab_strip_widget)
+        self.code_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
+        self.code_tab_strip_layout.setSpacing(2)
+        parent_layout.addWidget(self.code_tab_strip_widget)
+        self._rebuild_code_tab_strip()
+
+    def _rebuild_code_tab_strip(self):
+        """Clear and repopulate self.code_tab_strip_layout from self.code_tabs — mirrors
+        _rebuild_pdf_tab_strip()."""
+        if getattr(self, 'code_tab_strip_layout', None) is None:
+            return
+        while self.code_tab_strip_layout.count():
+            item = self.code_tab_strip_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        self.code_tab_strip_widget.setVisible(bool(self.code_tabs))
+        for i, tab in enumerate(self.code_tabs):
+            is_active = (i == self.code_active_index)
+            label = self._code_tab_title(tab)
+            if tab.dirty or (is_active and self._code_session.dirty):
+                label += " ●"
+            group = self._build_tab_group_widget(
+                label, tab.path,
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_code_tab(idx),
+                lambda checked=False, idx=i: self._close_code_tab(idx),
+            )
+            self.code_tab_strip_layout.addWidget(group)
+        self.code_tab_strip_layout.addStretch()
+
     def _open_code_file_in_editor(self, path=None):
-        """Stable public entry point for opening a file in the internal code editor —
-        used by all click-routing call sites. Guards against silently discarding a
-        different, currently-dirty file first."""
+        """Stable public entry point for opening a file in the internal code editor — used
+        by all click-routing call sites. Always opens as a new tab (see _open_code_tab());
+        no discard-guard needed anymore since opening a different file no longer destroys
+        the current tab's unsaved content (it's cached, see _activate_code_tab())."""
         path = path or self._code_session.path
         if not path:
             return
-        if self._code_session.editing and self._code_session.path != path:
-            if not self._confirm_discard_code_changes():
-                return
-        if self.column2_mode != "code":
-            self.switch_to_viewer_mode("code")
-        self._open_path_in_code_editor_session(self._code_session, path)
-        self._update_code_editor_buttons()
+        self._open_code_tab(path)
 
     def _update_code_editor_buttons(self):
         """Refreshes the Save button's label/enabled-state and the filename/language label
@@ -13782,6 +14694,13 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         session.editing = False
         session.dirty = False
         session.dirty_poll_timer.stop()
+        # Remove this tab from the Editor tab strip — it's no longer "open in the editor",
+        # it's now showing rendered in the Web viewer instead.
+        if 0 <= self.code_active_index < len(self.code_tabs):
+            self.code_tabs.pop(self.code_active_index)
+            self.code_active_index = min(self.code_active_index, len(self.code_tabs) - 1) if self.code_tabs else -1
+            self._rebuild_code_tab_strip()
+            self.save_notes()
         self._open_file_in_webview(path)
 
     def open_code_file_in_external_editor(self):
@@ -14581,7 +15500,8 @@ Project created: {date_str}
         return html
 
     def open_image_file(self):
-        """Open an image file via file picker"""
+        """Open an image file via file picker — always opens as a new tab (see
+        _open_image_tab())."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Image",
@@ -14589,33 +15509,109 @@ Project created: {date_str}
             "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All Files (*)"
         )
         if file_path:
-            self.load_image(file_path)
+            self._open_image_tab(file_path)
 
-    def load_image(self, path):
-        """Load and display an image"""
-        expanded_path = os.path.expanduser(path)
+    def _image_load_tab_pixmap(self, tab):
+        """Load the QPixmap for `tab`, storing the result on the tab object itself. Split
+        out from _open_image_tab() so build_main_content()'s startup restore (loading every
+        remembered tab) can reuse it without re-appending to self.image_tabs. Returns True
+        on success, False if the file doesn't exist or isn't a valid image."""
+        expanded_path = os.path.expanduser(tab.path)
         if not os.path.exists(expanded_path):
-            self.status_label.setText(f"Image not found: {path}")
-            return
+            return False
+        pixmap = QPixmap(expanded_path)
+        if pixmap.isNull():
+            return False
+        tab.pixmap = pixmap
+        return True
 
-        try:
-            self.image_path = path
-            self.image_pixmap = QPixmap(expanded_path)
-            if self.image_pixmap.isNull():
-                self.status_label.setText(f"Failed to load image: {path}")
-                return
+    def _open_image_tab(self, path):
+        """Open `path` as a brand-new Image tab and make it active. Always-new-tab policy,
+        mirroring _open_pdf_tab() — every "open an image" action (launcher click, Open
+        button) adds a tab rather than replacing whatever's already open."""
+        tab = ImageTabState(path)
+        if not self._image_load_tab_pixmap(tab):
+            self.status_label.setText(f"Failed to load image: {path}")
+            return False
+        self.image_tabs.append(tab)
+        self._activate_image_tab(len(self.image_tabs) - 1)
+        self.save_notes()
+        self.status_label.setText(f"✓ Loaded image: {os.path.basename(path)}")
+        self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+        return True
 
-            # Defer fit-to-width to allow layout to settle (needed on startup)
+    def _activate_image_tab(self, index):
+        """Make self.image_tabs[index] the active tab: sync the active-tab proxy scalars
+        (image_path/image_pixmap — read by render_image()/image_fit_width()/zoom, all
+        unchanged), render, fit to width, and refresh the tab strip."""
+        self.image_active_index = index
+        tab = self.image_tabs[index]
+        self.image_path = tab.path
+        self.image_pixmap = tab.pixmap
+        if tab.pixmap is not None:
+            # Deferred fit-to-width to allow layout to settle (needed on startup/rebuild).
             QTimer.singleShot(500, self.image_fit_width)
-            self.save_notes()  # Save image path
-            self.status_label.setText(f"✓ Loaded image: {os.path.basename(path)}")
-            self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
-        except Exception as e:
-            self.status_label.setText(f"Error loading image: {e}")
+        elif self.image_label is not None:
+            self._set_viewer_placeholder(self.image_label, "image", f"Could not load:\n{tab.path}")
+        self._rebuild_image_tab_strip()
+
+    def _close_image_tab(self, index):
+        """Close and discard the Image tab at `index`, picking a sensible new active tab
+        (mirrors _close_pdf_tab())."""
+        if not (0 <= index < len(self.image_tabs)):
+            return
+        closing_active = (index == self.image_active_index)
+        self.image_tabs.pop(index)
+        if not self.image_tabs:
+            self.image_active_index = -1
+            self.image_path = None
+            self.image_pixmap = None
+            if self.image_label is not None:
+                self._set_viewer_placeholder(self.image_label, "image", "No image loaded\n\nUse the Open button to open an image")
+            self._rebuild_image_tab_strip()
+        elif closing_active:
+            self._activate_image_tab(min(index, len(self.image_tabs) - 1))
+        else:
+            if index < self.image_active_index:
+                self.image_active_index -= 1
+            self._rebuild_image_tab_strip()
+        self.save_notes()
+
+    def _build_image_tab_strip(self, parent_layout):
+        """Build the row of Image tab buttons — mirrors _build_pdf_tab_strip()."""
+        self.image_tab_strip_widget = QWidget()
+        self.image_tab_strip_layout = QHBoxLayout(self.image_tab_strip_widget)
+        self.image_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
+        self.image_tab_strip_layout.setSpacing(2)
+        parent_layout.addWidget(self.image_tab_strip_widget)
+        self._rebuild_image_tab_strip()
+
+    def _rebuild_image_tab_strip(self):
+        """Clear and repopulate self.image_tab_strip_layout from self.image_tabs — mirrors
+        _rebuild_pdf_tab_strip()."""
+        if getattr(self, 'image_tab_strip_layout', None) is None:
+            return
+        while self.image_tab_strip_layout.count():
+            item = self.image_tab_strip_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        self.image_tab_strip_widget.setVisible(bool(self.image_tabs))
+        for i, tab in enumerate(self.image_tabs):
+            is_active = (i == self.image_active_index)
+            group = self._build_tab_group_widget(
+                os.path.basename(tab.path) or tab.path, tab.path,
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_image_tab(idx),
+                lambda checked=False, idx=i: self._close_image_tab(idx),
+            )
+            self.image_tab_strip_layout.addWidget(group)
+        self.image_tab_strip_layout.addStretch()
 
     def render_image(self):
         """Render the image at current zoom level"""
-        if not hasattr(self, 'image_pixmap') or self.image_pixmap.isNull():
+        if not getattr(self, 'image_pixmap', None) or self.image_pixmap.isNull():
             return
 
         # Undo the placeholder's centered alignment (_set_viewer_placeholder) now that
@@ -14644,7 +15640,7 @@ Project created: {date_str}
 
     def image_fit_width(self):
         """Fit image to viewer width"""
-        if not hasattr(self, 'image_pixmap') or self.image_pixmap.isNull() or not self.image_scroll:
+        if not getattr(self, 'image_pixmap', None) or self.image_pixmap.isNull() or not self.image_scroll:
             return
 
         viewport_width = self.image_scroll.viewport().width() - 20
@@ -14717,9 +15713,11 @@ Project created: {date_str}
                 if ext == ".md" and self._is_local_path(path):
                     self._open_markdown_file(expanded_path)
                     return
-                if ext in (".html", ".htm") and self._is_local_path(path):
-                    self._open_file_in_webview(expanded_path)
-                    return
+                # .html/.htm now default into the code editor too, via
+                # _CODE_ROUTE_EXTENSIONS below — local files open in the editor, only URLs
+                # (and the explicit firefox/chrome-app case above) open in the web viewer.
+                # Use the "👁 Rendered"/"</> Edit Source" toggle to switch a given file
+                # between the two views.
                 if ext in self._CODE_ROUTE_EXTENSIONS and self._is_local_path(path):
                     self._open_code_file_in_editor(expanded_path)
                     return
