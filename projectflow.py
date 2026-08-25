@@ -8162,7 +8162,14 @@ function filterAliases(q) {{
                                 btn_layout.setSpacing(2)
                                 btn_layout.addWidget(btn, 1)
 
-                                # Add folder browser button
+                                # Add folder browser button — inverts like every other
+                                # preview icon in Focus layout (main click there now routes
+                                # these app types internally, via open_in_app()'s Focus
+                                # block, so the icon's job flips to "open externally"
+                                # instead — file manager/external terminal/external tail).
+                                # Standard layout is unaffected: main click already opens
+                                # externally there, so the icon keeps its original job of
+                                # previewing the folder internally.
                                 folder_btn = QPushButton()
                                 _fi = QIcon.fromTheme("folder")
                                 if _fi.isNull():
@@ -8171,10 +8178,10 @@ function filterAliases(q) {{
                                 folder_btn.setIconSize(QSize(16, 16))
                                 folder_btn.setMaximumWidth(28)
                                 folder_btn.setMinimumHeight(30)
-                                folder_btn.setToolTip("Open in folder browser")
+                                folder_btn.setToolTip("Open externally" if self.layout_mode == "focus" else "Open in folder browser")
                                 folder_btn.setStyleSheet(icon_btn_style)
                                 folder_btn.clicked.connect(
-                                    lambda checked=False, p=path: self.preview_in_folder_browser(p)
+                                    lambda checked=False, p=path, a=app: self.open_in_app(p, a, force_external=True) if self.layout_mode == "focus" else self.preview_in_folder_browser(p)
                                 )
                                 btn_layout.addWidget(folder_btn)
 
@@ -11353,6 +11360,22 @@ function filterAliases(q) {{
             self._kimai_load_entries()
         elif mode == "code":
             self._update_code_editor_buttons()
+        elif mode == "pdf":
+            # Re-fit/re-render on every switch INTO this tab, not just when the PDF was
+            # first loaded. pdf_fit_width() sizes to self.pdf_scroll.viewport().width(),
+            # which was very likely wrong at load time if the pdf_container happened to be
+            # hidden then (e.g. a project rebuild that lands on some other tab — the
+            # Settings viewer in particular, since "Edit Project"/its Save button now
+            # trigger a rebuild while column2_mode is frequently "settings") — a hidden
+            # widget's viewport reports a stale/default width, so the PDF gets rendered at
+            # the wrong zoom and nothing re-renders it later on its own. Cheap to redo
+            # (recompute zoom, redraw current page), so just always do it on entry.
+            if self.pdf_doc:
+                self.pdf_fit_width()
+        elif mode == "image":
+            # Same latent issue as "pdf" above, same fix — see that branch's comment.
+            if getattr(self, 'image_pixmap', None):
+                self.image_fit_width()
         elif mode == "settings":
             # Populate only if not already loaded for this project — see
             # _populate_settings_form()'s docstring for why this guard exists (preserves
@@ -12185,6 +12208,24 @@ function filterAliases(q) {{
             self.switch_to_viewer_mode("console")
         command = f"tail -n {lines} -f {shlex.quote(log_file)}"
         self._run_alias_in_ttyd_console(command)
+
+    def _open_terminal_launcher_in_console(self, expanded_path):
+        """Focus-layout internal routing for terminal/konsole launcher items: cd's into the
+        item's target directory (running its trailing command, if any — same "path command
+        args" convention the external terminal/konsole handler already parses) in the live
+        embedded terminal instead of spawning an external one, reusing the same paste-and-
+        submit mechanism as _open_log_file_in_console()/the alias quick-jump buttons. Only
+        reachable when the ttyd backend is active (checked by the caller) — qtconsole has no
+        live interactive shell to cd into, only discrete `!command` calls."""
+        parts = expanded_path.split()
+        workdir = parts[0]
+        command = " ".join(parts[1:]) if len(parts) > 1 else ""
+        if os.path.isfile(workdir):
+            workdir = os.path.dirname(workdir)
+        if self.column2_mode != "console":
+            self.switch_to_viewer_mode("console")
+        shell_cmd = f"cd {shlex.quote(workdir)}" + (f" && {command}" if command else "")
+        self._run_alias_in_ttyd_console(shell_cmd)
 
     def _show_alias_overflow_menu(self, aliases, anchor_btn):
         """Show the aliases past the console toolbar's cap (see create_console_toolbar) in a
@@ -14685,10 +14726,14 @@ Project created: {date_str}
                 if (app == "tail_log" or (ext == ".log" and self._is_local_path(path))) and self.resolve_console_backend() == "ttyd":
                     self._open_log_file_in_console(expanded_path)
                     return
-                if os.path.isdir(expanded_path) and app not in ("terminal", "konsole", "editor", "file_manager", "dolphin", "directorydev"):
+                if app in ("terminal", "konsole") and self.resolve_console_backend() == "ttyd":
+                    self._open_terminal_launcher_in_console(expanded_path)
+                    return
+                if os.path.isdir(expanded_path) and app not in ("terminal", "konsole", "editor", "directorydev"):
                     self.preview_in_folder_browser(expanded_path)
                     return
-                # Everything else (terminal, editor, ssh, npm, directorydev) falls through
+                # Everything else (terminal/konsole on the qtconsole backend, editor, ssh,
+                # npm, directorydev) falls through to the external launch below.
 
             # 0. File manager: use configured FM with optional home-tab behaviour
             if app in ("file_manager", "dolphin"):
