@@ -4489,9 +4489,14 @@ StartupNotify=true
                 self.config_project_name = None
                 self.config_project_color = None
                 self.config_path_mapping = False
-                self.layout_mode = 'standard'
+                # create_default_project() (just called above) writes "layout_mode": "focus"
+                # into the new file on disk — match that here too, rather than hardcoding
+                # 'standard' and silently overriding what was just written, which left a
+                # brand-new project opening in Standard layout until the next reload from
+                # disk (e.g. switching away and back) finally picked up the real value.
+                self.layout_mode = 'focus'
                 if is_project_switch:
-                    self.group_by_type = False
+                    self.group_by_type = (self.layout_mode == "focus")
                     self.active_launcher_tab = 'files'
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")

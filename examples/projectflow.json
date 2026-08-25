@@ -30,5 +30,6 @@
     []
   ],
   "column2_default": "examples",
-  "webview_url": "https://www.wikipedia.org/"
+  "webview_url": "https://www.wikipedia.org/",
+  "layout_mode": "focus"
 }
