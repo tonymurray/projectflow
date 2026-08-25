@@ -839,6 +839,21 @@ class ProjectFlowApp(QMainWindow):
         # WebEngine profile is initialised while the app name is still the stable
         # "ProjectFlow" — not the per-project "ProjectFlow-{name}" set in init_ui().
         # This gives a fixed cookie-storage path across all sessions.
+        #
+        # setPersistentStoragePath()/setCachePath() are pinned to a fixed,
+        # app-controlled directory rather than left at Qt's implicit default —
+        # without this, the default profile's storage location is undocumented
+        # and environment-dependent, which is a plausible cause of intermittent
+        # session/cookie loss (e.g. if it happened to resolve into a directory a
+        # system cache-cleaner treats as disposable). A real, inspectable folder
+        # makes cookie/session persistence (ForcePersistentCookies below)
+        # actually deterministic across restarts.
+        webengine_profile_dir = os.path.expanduser("~/.local/share/ProjectFlow/webengine-profile")
+        os.makedirs(webengine_profile_dir, exist_ok=True)
+        default_profile = QWebEngineProfile.defaultProfile()
+        default_profile.setPersistentStoragePath(webengine_profile_dir)
+        default_profile.setCachePath(os.path.join(webengine_profile_dir, "cache"))
+
         self.webview = QWebEngineView()
         self.webview.page().profile().setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
