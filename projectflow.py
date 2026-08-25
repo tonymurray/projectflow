@@ -33,7 +33,7 @@ import datetime
 import csv as _csv
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
+from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile, QWebEnginePage
 from PyQt6.QtCore import QUrl
 from themes import get_theme, detect_system_theme, THEMES, get_dimensions
 
@@ -835,29 +835,36 @@ class ProjectFlowApp(QMainWindow):
         self.config = {}
         self.config_file_arg = config_file_arg  # Store CLI argument
         self.edit_mode = False  # Track whether we're in edit mode
-        # Create the webview here, before init_ui() ever runs, so the default
-        # WebEngine profile is initialised while the app name is still the stable
-        # "ProjectFlow" — not the per-project "ProjectFlow-{name}" set in init_ui().
-        # This gives a fixed cookie-storage path across all sessions.
+        # Create the webview here, before init_ui() ever runs, so it's bound to a
+        # profile configured while the app name is still the stable "ProjectFlow" —
+        # not the per-project "ProjectFlow-{name}" set in init_ui().
         #
-        # setPersistentStoragePath()/setCachePath() are pinned to a fixed,
-        # app-controlled directory rather than left at Qt's implicit default —
-        # without this, the default profile's storage location is undocumented
-        # and environment-dependent, which is a plausible cause of intermittent
-        # session/cookie loss (e.g. if it happened to resolve into a directory a
-        # system cache-cleaner treats as disposable). A real, inspectable folder
-        # makes cookie/session persistence (ForcePersistentCookies below)
-        # actually deterministic across restarts.
+        # QWebEngineProfile.defaultProfile() is *permanently* off-the-record in this
+        # Qt/PyQt6 build (isOffTheRecord() == True, confirmed empirically with a
+        # standalone probe script) — no amount of setPersistentStoragePath() /
+        # setCachePath() / setPersistentCookiesPolicy() calls on it ever actually
+        # persists anything to disk. The path/cache-type getters faithfully echo
+        # back whatever was set, but Chromium still backs the profile with
+        # memory-only storage (httpCacheType stays MemoryHttpCache, cookies stay
+        # NoPersistentCookies-equivalent regardless of the policy set) since it has
+        # no storage name — that's what makes a profile off-the-record. This was
+        # the real reason logins never survived an app restart even after the
+        # 2026-08-25 storage-path fix (see CHANGELOG) — that fix pinned a path on a
+        # profile that was never going to write to disk. The actual fix is a
+        # *named* QWebEngineProfile: self.web_profile, explicitly assigned to
+        # self.webview/self.notes_webview via setPage() below, since a plain
+        # QWebEngineView() always binds itself to defaultProfile() otherwise.
         webengine_profile_dir = os.path.expanduser("~/.local/share/ProjectFlow/webengine-profile")
         os.makedirs(webengine_profile_dir, exist_ok=True)
-        default_profile = QWebEngineProfile.defaultProfile()
-        default_profile.setPersistentStoragePath(webengine_profile_dir)
-        default_profile.setCachePath(os.path.join(webengine_profile_dir, "cache"))
-
-        self.webview = QWebEngineView()
-        self.webview.page().profile().setPersistentCookiesPolicy(
+        self.web_profile = QWebEngineProfile("projectflow", self)
+        self.web_profile.setPersistentStoragePath(webengine_profile_dir)
+        self.web_profile.setCachePath(os.path.join(webengine_profile_dir, "cache"))
+        self.web_profile.setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
         )
+
+        self.webview = QWebEngineView()
+        self.webview.setPage(QWebEnginePage(self.web_profile, self.webview))
         self.webview.urlChanged.connect(self.on_webview_url_changed)
 
         # Muya markdown-editor session for the main viewer (see _open_markdown_in_muya_editor,
@@ -878,9 +885,7 @@ class ProjectFlowApp(QMainWindow):
         # there) rather than the notes_panel-style reparenting used elsewhere in Focus/Standard
         # layout switching.
         self.notes_webview = QWebEngineView()
-        self.notes_webview.page().profile().setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
-        )
+        self.notes_webview.setPage(QWebEnginePage(self.web_profile, self.notes_webview))
         self._notes_muya_session = MuyaSession(self.notes_webview)
         self.notes_webview.loadFinished.connect(
             lambda ok: self._on_muya_webview_load_finished(ok, self._notes_muya_session)
