@@ -882,6 +882,16 @@ class ProjectFlowApp(QMainWindow):
         self.init_dimensions()
         self.apply_global_styles()
 
+        # Persistent Project Settings form (see _build_settings_form()) — the Settings
+        # viewer (column2_mode == "settings") replaced what used to be a modal dialog.
+        # Built once here (needs self.t()/theme, hence after apply_global_styles() above)
+        # and reused across every build_main_content() rebuild, like notes_webview/
+        # code_webview, rather than recreated fresh each time. self._settings_loaded_for
+        # tracks which project's values are currently loaded into it; None forces the next
+        # visit to (re)populate — see _populate_settings_form().
+        self._build_settings_form()
+        self._settings_loaded_for = None
+
         # Setup first run (copy examples if needed)
         self.setup_first_run()
 
@@ -1114,43 +1124,6 @@ class ProjectFlowApp(QMainWindow):
                 background-color: {self.t('bg_button_hover')};
             }}
         """
-
-    def show_project_settings_dialog(self, initial_tab=0):
-        """Show project-specific settings dialog."""
-        # Get project name for title
-        project_name = self.get_project_name()
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Project Settings - {project_name}")
-        dialog.resize(780, 700)
-
-        layout = QVBoxLayout(dialog)
-
-        # Create tab widget
-        tabs = QTabWidget()
-        tabs.setStyleSheet(self._get_tab_style())
-
-        tabs.addTab(self._create_project_defaults_tab(), "Project Defaults")
-
-        # Set initial tab if specified
-        if initial_tab > 0 and initial_tab < tabs.count():
-            tabs.setCurrentIndex(initial_tab)
-
-        layout.addWidget(tabs)
-
-        # Button box
-        button_box = QDialogButtonBox()
-        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ButtonRole.ApplyRole)
-        cancel_btn = button_box.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
-        ok_btn = button_box.addButton("OK", QDialogButtonBox.ButtonRole.AcceptRole)
-
-        apply_btn.clicked.connect(lambda: self._apply_settings(dialog))
-        cancel_btn.clicked.connect(dialog.reject)
-        ok_btn.clicked.connect(lambda: self._save_project_settings_and_close(dialog))
-
-        layout.addWidget(button_box)
-
-        dialog.exec()
 
     def show_settings_dialog(self, initial_tab=0):
         """Show global application settings dialog.
@@ -2241,14 +2214,250 @@ class ProjectFlowApp(QMainWindow):
 
         dlg.exec()
 
-    def _create_project_defaults_tab(self):
-        """Create the project defaults tab for viewer settings"""
-        widget = QWidget()
-        main_layout = QVBoxLayout(widget)
+    def _build_settings_form(self):
+        """Build the persistent Project Settings form (self.settings_form), embedded as a
+        viewer (column2_mode == "settings") rather than a modal dialog. Built ONCE here and
+        reused across every build_main_content() rebuild — like notes_webview/code_webview,
+        not recreated fresh each time — so an unrelated refresh_projects() call elsewhere
+        (e.g. reordering a launcher while this viewer happens to be open) doesn't silently
+        wipe in-progress edits the way a plain per-rebuild QWidget container would. Field
+        widgets keep the same _proj_* attribute names the old dialog's
+        _create_project_defaults_tab() used, so _apply_settings() (invoked by the toolbar's
+        Save button, see create_settings_toolbar()) works completely unchanged.
+
+        Only structure is built here — no values are set, since self.config_* attributes
+        aren't populated yet this early in __init__ (load_config() runs after). See
+        _populate_settings_form(), called once a project is actually loaded and again
+        whenever this viewer is entered for a different project (self._settings_loaded_for,
+        checked in switch_to_viewer_mode() and build_main_content()'s mode dispatch, so a
+        repeat visit to the same project's settings doesn't reset in-progress edits either).
+        Styling (theme-dependent) is likewise applied separately by _style_settings_form(),
+        called here once and again on every rebuild in case the theme changed meanwhile.
+        """
+        self.settings_form = QWidget()
+        main_layout = QVBoxLayout(self.settings_form)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(12)
 
-        # Style for inputs
+        # Plain field labels collected here so _style_settings_form() can restyle them all
+        # identically in one pass; the two Desktop-Menu-Entry section labels have their own
+        # distinct bold/secondary styles and are restyled by name instead (see below).
+        self._settings_form_labels = []
+
+        def field_label(text):
+            lbl = QLabel(text)
+            self._settings_form_labels.append(lbl)
+            return lbl
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+        self._settings_form_layout = form_layout
+
+        # Project Name
+        self._proj_project_name = QLineEdit()
+        form_layout.addRow(field_label("Project Name:"), self._proj_project_name)
+
+        # Project Color
+        color_row = QHBoxLayout()
+        color_row.setSpacing(6)
+        self._proj_color_btn = QPushButton("Choose Color...")
+        self._proj_color_value = ""  # tracks the chosen color between picks
+        def _pick_project_color():
+            from PyQt6.QtWidgets import QColorDialog
+            from PyQt6.QtGui import QColor
+            used_colors = list(dict.fromkeys(
+                self._sorted_colors(list(set(getattr(self, '_color_cache', {}).values())))
+            ))
+            for i, hex_color in enumerate(used_colors[:16]):
+                QColorDialog.setCustomColor(i, QColor(hex_color))
+            initial = QColor(self._proj_color_value) if self._proj_color_value else QColor("#3498db")
+            chosen = QColorDialog.getColor(initial, self)
+            if chosen.isValid():
+                self._proj_color_value = chosen.name()
+                self._style_project_color_button()
+        self._proj_color_btn.clicked.connect(_pick_project_color)
+        color_row.addWidget(self._proj_color_btn)
+        self._proj_color_clear_btn = QPushButton("Clear")
+        def _clear_proj_color():
+            self._proj_color_value = ""
+            self._style_project_color_button()
+        self._proj_color_clear_btn.clicked.connect(_clear_proj_color)
+        color_row.addWidget(self._proj_color_clear_btn)
+        color_row.addStretch()
+        form_layout.addRow(field_label("Project Color:"), color_row)
+
+        # Layout mode (Standard 3-column vs Focus 2-column) — moved here from the
+        # title-bar ⊞/▣ toggle button so it lives alongside the project's other
+        # per-project defaults rather than as a persistent top-right button.
+        self._proj_use_three_columns = QCheckBox("Use three columns view")
+        form_layout.addRow(field_label("Layout:"), self._proj_use_three_columns)
+
+        # Default Viewer
+        self._proj_default_viewer = QComboBox()
+        # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Code, Time);
+        # "help" isn't a tab (opened via the footer's "❓ Help" button instead), so it's
+        # appended last. Unlike pdf/image, there's no dedicated "Code File" field in this
+        # form yet — pinning a specific file for "code" is done via the viewer's own 📌
+        # (see Code Editor in CLAUDE.md); picking "code" here with no code_file set just
+        # opens the editor empty, same as "notes"/"time" having no resource field either.
+        self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "code", "time", "help"])
+        form_layout.addRow(field_label("Default Viewer:"), self._proj_default_viewer)
+
+        # Default Launcher Tab (Focus layout) — pins Files/Docs/Resources/Apps, mirrors
+        # Default Viewer above (see _set_launcher_tab_as_default())
+        self._proj_default_launcher_tab = QComboBox()
+        # Order matches the launcher tab row (Docs, Resources, Files, Apps).
+        self._proj_default_launcher_tab.addItems(["", "docs", "resources", "files", "apps"])
+        form_layout.addRow(field_label("Default Launcher Tab:"), self._proj_default_launcher_tab)
+
+        # PDF File
+        pdf_layout = QHBoxLayout()
+        self._proj_pdf_file = QLineEdit()
+        self._proj_pdf_file.setPlaceholderText("Path to default PDF file")
+        self._proj_pdf_browse_btn = QPushButton("Browse")
+        self._proj_pdf_browse_btn.clicked.connect(lambda: self._browse_file(self._proj_pdf_file, "PDF Files (*.pdf);;All Files (*)"))
+        pdf_layout.addWidget(self._proj_pdf_file)
+        pdf_layout.addWidget(self._proj_pdf_browse_btn)
+        form_layout.addRow(field_label("PDF File:"), pdf_layout)
+
+        # Web URL
+        self._proj_webview_url = QLineEdit()
+        self._proj_webview_url.setPlaceholderText("https://example.com")
+        form_layout.addRow(field_label("Web URL:"), self._proj_webview_url)
+
+        # Image File
+        image_layout = QHBoxLayout()
+        self._proj_image_file = QLineEdit()
+        self._proj_image_file.setPlaceholderText("Path to default image file")
+        self._proj_image_browse_btn = QPushButton("Browse")
+        self._proj_image_browse_btn.clicked.connect(lambda: self._browse_file(self._proj_image_file, "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.svg);;All Files (*)"))
+        image_layout.addWidget(self._proj_image_file)
+        image_layout.addWidget(self._proj_image_browse_btn)
+        form_layout.addRow(field_label("Image File:"), image_layout)
+
+        # Console Path
+        console_layout = QHBoxLayout()
+        self._proj_console_path = QLineEdit()
+        self._proj_console_path.setPlaceholderText("Working directory for console")
+        self._proj_console_browse_btn = QPushButton("Browse")
+        self._proj_console_browse_btn.clicked.connect(lambda: self._browse_folder(self._proj_console_path))
+        console_layout.addWidget(self._proj_console_path)
+        console_layout.addWidget(self._proj_console_browse_btn)
+        form_layout.addRow(field_label("Console Path:"), console_layout)
+
+        # Folder Start Path
+        folder_start_layout = QHBoxLayout()
+        self._proj_folder_path = QLineEdit()
+        self._proj_folder_path.setPlaceholderText("Default folder for browser (leave blank for home)")
+        self._proj_folder_browse_btn = QPushButton("Browse")
+        self._proj_folder_browse_btn.clicked.connect(lambda: self._browse_folder(self._proj_folder_path))
+        folder_start_layout.addWidget(self._proj_folder_path)
+        folder_start_layout.addWidget(self._proj_folder_browse_btn)
+        form_layout.addRow(field_label("Folder Start Path:"), folder_start_layout)
+
+        # Terminal (per-config override)
+        self._proj_terminal = QComboBox()
+        self._proj_terminal.setEditable(True)
+        terminal_options = [
+            "",  # Empty = use global setting
+            "konsole", "gnome-terminal", "alacritty", "kitty", "wezterm",
+            "terminator", "tilix", "xfce4-terminal", "guake", "tilda",
+            "foot", "ghostty", "warp-terminal", "hyper", "tabby",
+            "urxvt", "xterm"
+        ]
+        self._proj_terminal.addItems(terminal_options)
+        form_layout.addRow(field_label("Terminal:"), self._proj_terminal)
+
+        # Browser Links (per-project override)
+        self._proj_browser_new_tab = QComboBox()
+        self._proj_browser_new_tab.addItems(["(use global setting)", "New tab", "New window"])
+        self._proj_browser_new_tab.setToolTip("Override global browser link behaviour for this project")
+        form_layout.addRow(field_label("Browser Links:"), self._proj_browser_new_tab)
+
+        # Kimai Project ID — row always exists (unlike the old dialog, which only created
+        # it when Kimai was configured); _populate_settings_form() toggles its visibility
+        # via QFormLayout.setRowVisible() instead, since this widget is now permanent.
+        self._settings_kimai_label = field_label("Kimai Project ID:")
+        kimai_pid_row = QHBoxLayout()
+        self._proj_kimai_project_id = QLineEdit()
+        self._proj_kimai_project_id.setPlaceholderText("Numeric project ID from Kimai")
+        self._proj_kimai_browse_btn = QPushButton("Browse…")
+        self._proj_kimai_browse_btn.clicked.connect(lambda: self._kimai_pick_project_into(self._proj_kimai_project_id))
+        kimai_pid_row.addWidget(self._proj_kimai_project_id)
+        kimai_pid_row.addWidget(self._proj_kimai_browse_btn)
+        form_layout.addRow(self._settings_kimai_label, kimai_pid_row)
+
+        main_layout.addLayout(form_layout)
+        main_layout.addSpacing(20)
+
+        # Project Actions section — moved here from the title-bar "🔍 Scan Docs" button.
+        # _show_doc_scan_dialog() itself is unchanged, still its own self-contained modal
+        # QDialog; only the entry point moved.
+        self._settings_actions_label = QLabel("Project Actions:")
+        main_layout.addWidget(self._settings_actions_label)
+
+        actions_btn_layout = QHBoxLayout()
+        self._settings_scan_docs_btn = QPushButton("🔍 Scan for docs")
+        self._settings_scan_docs_btn.setToolTip("Scan project folder for documentation files")
+        self._settings_scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
+        actions_btn_layout.addWidget(self._settings_scan_docs_btn)
+        actions_btn_layout.addStretch()
+        main_layout.addLayout(actions_btn_layout)
+
+        self._settings_scan_docs_desc = QLabel("Scans the default folder for .md, .html files, optionally add to documents/launchers.")
+        self._settings_scan_docs_desc.setWordWrap(True)
+        main_layout.addWidget(self._settings_scan_docs_desc)
+
+        main_layout.addSpacing(20)
+
+        # Desktop Menu Entry section
+        self._settings_menu_label = QLabel("Desktop Menu Entry:")
+        main_layout.addWidget(self._settings_menu_label)
+
+        self._settings_menu_desc = QLabel("Create a .desktop file for this project in your application menu. Includes a right-click menu to quickly switch between projects.")
+        self._settings_menu_desc.setWordWrap(True)
+        main_layout.addWidget(self._settings_menu_desc)
+
+        menu_btn_layout = QHBoxLayout()
+        self._settings_create_menu_btn = QPushButton("Create Menu Entry")
+        self._settings_create_menu_btn.setToolTip("Create/update .desktop file for this project")
+        self._settings_create_menu_btn.clicked.connect(self.regenerate_desktop_file)
+        menu_btn_layout.addWidget(self._settings_create_menu_btn)
+        menu_btn_layout.addStretch()
+        main_layout.addLayout(menu_btn_layout)
+
+        main_layout.addSpacing(20)
+
+        # Path mapping — moved to the very bottom, below Desktop Menu Entry, since it's a
+        # quite obscure setting (was previously a title-bar "⇄" toggle, easy to confuse
+        # with the Focus-layout toggle when always visible). Wrapped in its own container
+        # widget (rather than a QFormLayout row like the fields above) purely so
+        # _populate_settings_form() can hide/show the whole section — checkbox + help text
+        # — as one unit via plain setVisible(), since it's no longer inside form_layout.
+        # Deferred to Save like every other field here (read in _apply_settings()) rather
+        # than the old title-bar button's immediate self-toggle-and-refresh — toggling it
+        # used to trigger a full refresh_projects() on every click, which reloaded/rebuilt
+        # the whole app right under the user while they were still in the Settings viewer.
+        self._settings_path_mapping_section = QWidget()
+        path_mapping_layout = QVBoxLayout(self._settings_path_mapping_section)
+        path_mapping_layout.setContentsMargins(0, 0, 0, 0)
+        path_mapping_layout.setSpacing(4)
+        self._settings_path_mapping_checkbox = QCheckBox("Path mapping")
+        path_mapping_layout.addWidget(self._settings_path_mapping_checkbox)
+        self._settings_path_mapping_desc = QLabel("Remap to, for example, a mounted share from a network computer. See mapping paths in the main Settings.")
+        self._settings_path_mapping_desc.setWordWrap(True)
+        path_mapping_layout.addWidget(self._settings_path_mapping_desc)
+        main_layout.addWidget(self._settings_path_mapping_section)
+
+        main_layout.addStretch()  # Push form to top
+
+        self._style_settings_form()
+
+    def _style_settings_form(self):
+        """Re-apply theme-derived stylesheets to the persistent settings form's widgets.
+        Called once right after _build_settings_form() and again on every
+        build_main_content() rebuild — the widgets themselves survive rebuilds (see
+        _build_settings_form()'s docstring) but the active theme can change between them."""
         input_style = f"""
             QLineEdit, QComboBox {{
                 background-color: {self.t('bg_secondary')};
@@ -2263,231 +2472,6 @@ class ProjectFlowApp(QMainWindow):
             }}
         """
         label_style = f"color: {self.t('fg_primary')}; font-size: 13px;"
-
-        form_layout = QFormLayout()
-        form_layout.setSpacing(12)
-
-        # Project Name
-        name_label = QLabel("Project Name:")
-        name_label.setStyleSheet(label_style)
-        self._proj_project_name = QLineEdit()
-        self._proj_project_name.setText(getattr(self, 'config_project_name', None) or "")
-        self._proj_project_name.setPlaceholderText(f"Default: {self.get_project_name()}")
-        self._proj_project_name.setStyleSheet(input_style)
-        form_layout.addRow(name_label, self._proj_project_name)
-
-        # Project Color
-        color_label = QLabel("Project Color:")
-        color_label.setStyleSheet(label_style)
-        color_row = QHBoxLayout()
-        color_row.setSpacing(6)
-        current_color = getattr(self, 'config_project_color', None) or ""
-        self._proj_color_btn = QPushButton("Choose Color..." if not current_color else current_color)
-        if current_color:
-            self._proj_color_btn.setStyleSheet(
-                f"background-color: {current_color}; color: {'#000' if self._color_luminance(current_color) > 0.5 else '#fff'}; border: 1px solid {self.t('border')}; border-radius: 4px; padding: 6px;"
-            )
-        else:
-            self._proj_color_btn.setStyleSheet(input_style)
-        self._proj_color_value = current_color  # track chosen color
-        def _pick_project_color():
-            from PyQt6.QtWidgets import QColorDialog
-            from PyQt6.QtGui import QColor
-            used_colors = list(dict.fromkeys(
-                self._sorted_colors(list(set(getattr(self, '_color_cache', {}).values())))
-            ))
-            for i, hex_color in enumerate(used_colors[:16]):
-                QColorDialog.setCustomColor(i, QColor(hex_color))
-            initial = QColor(self._proj_color_value) if self._proj_color_value else QColor("#3498db")
-            chosen = QColorDialog.getColor(initial, self)
-            if chosen.isValid():
-                hex_color = chosen.name()
-                self._proj_color_value = hex_color
-                lum = self._color_luminance(hex_color)
-                self._proj_color_btn.setStyleSheet(
-                    f"background-color: {hex_color}; color: {'#000' if lum > 0.5 else '#fff'}; border: 1px solid {self.t('border')}; border-radius: 4px; padding: 6px;"
-                )
-                self._proj_color_btn.setText(hex_color)
-        self._proj_color_btn.clicked.connect(_pick_project_color)
-        color_row.addWidget(self._proj_color_btn)
-        clear_color_btn = QPushButton("Clear")
-        clear_color_btn.setStyleSheet(input_style)
-        def _clear_proj_color():
-            self._proj_color_value = ""
-            self._proj_color_btn.setStyleSheet(input_style)
-            self._proj_color_btn.setText("Choose Color...")
-        clear_color_btn.clicked.connect(_clear_proj_color)
-        color_row.addWidget(clear_color_btn)
-        color_row.addStretch()
-        form_layout.addRow(color_label, color_row)
-
-        # Default Viewer
-        viewer_label = QLabel("Default Viewer:")
-        viewer_label.setStyleSheet(label_style)
-        self._proj_default_viewer = QComboBox()
-        # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Code, Time);
-        # "help" isn't a tab (opened via the footer's "❓ Help" button instead), so it's
-        # appended last. Unlike pdf/image, there's no dedicated "Code File" field in this
-        # dialog yet — pinning a specific file for "code" is done via the viewer's own 📌
-        # (see Code Editor in CLAUDE.md); picking "code" here with no code_file set just
-        # opens the editor empty, same as "notes"/"time" having no resource field either.
-        self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "code", "time", "help"])
-        current_viewer = getattr(self, 'config_column2_default', None) or ""
-        self._proj_default_viewer.setCurrentText(current_viewer)
-        self._proj_default_viewer.setStyleSheet(input_style)
-        form_layout.addRow(viewer_label, self._proj_default_viewer)
-
-        # Default Launcher Tab (Focus layout) — pins Files/Docs/Resources/Apps, mirrors
-        # Default Viewer above (see _set_launcher_tab_as_default())
-        launcher_tab_label = QLabel("Default Launcher Tab:")
-        launcher_tab_label.setStyleSheet(label_style)
-        self._proj_default_launcher_tab = QComboBox()
-        # Order matches the launcher tab row (Docs, Resources, Files, Apps).
-        self._proj_default_launcher_tab.addItems(["", "docs", "resources", "files", "apps"])
-        current_launcher_tab = getattr(self, 'config_launcher_tab_default', None) or ""
-        self._proj_default_launcher_tab.setCurrentText(current_launcher_tab)
-        self._proj_default_launcher_tab.setStyleSheet(input_style)
-        form_layout.addRow(launcher_tab_label, self._proj_default_launcher_tab)
-
-        # PDF File
-        pdf_label = QLabel("PDF File:")
-        pdf_label.setStyleSheet(label_style)
-        pdf_layout = QHBoxLayout()
-        self._proj_pdf_file = QLineEdit()
-        self._proj_pdf_file.setText(getattr(self, 'config_pdf_file', None) or "")
-        self._proj_pdf_file.setPlaceholderText("Path to default PDF file")
-        self._proj_pdf_file.setStyleSheet(input_style)
-        pdf_browse = QPushButton("Browse")
-        pdf_browse.clicked.connect(lambda: self._browse_file(self._proj_pdf_file, "PDF Files (*.pdf);;All Files (*)"))
-        pdf_layout.addWidget(self._proj_pdf_file)
-        pdf_layout.addWidget(pdf_browse)
-        form_layout.addRow(pdf_label, pdf_layout)
-
-        # Web URL
-        web_label = QLabel("Web URL:")
-        web_label.setStyleSheet(label_style)
-        self._proj_webview_url = QLineEdit()
-        self._proj_webview_url.setText(getattr(self, 'config_webview_url', None) or "")
-        self._proj_webview_url.setPlaceholderText("https://example.com")
-        self._proj_webview_url.setStyleSheet(input_style)
-        form_layout.addRow(web_label, self._proj_webview_url)
-
-        # Image File
-        image_label = QLabel("Image File:")
-        image_label.setStyleSheet(label_style)
-        image_layout = QHBoxLayout()
-        self._proj_image_file = QLineEdit()
-        self._proj_image_file.setText(getattr(self, 'config_image_file', None) or "")
-        self._proj_image_file.setPlaceholderText("Path to default image file")
-        self._proj_image_file.setStyleSheet(input_style)
-        image_browse = QPushButton("Browse")
-        image_browse.clicked.connect(lambda: self._browse_file(self._proj_image_file, "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.svg);;All Files (*)"))
-        image_layout.addWidget(self._proj_image_file)
-        image_layout.addWidget(image_browse)
-        form_layout.addRow(image_label, image_layout)
-
-        # Console Path
-        console_label = QLabel("Console Path:")
-        console_label.setStyleSheet(label_style)
-        console_layout = QHBoxLayout()
-        self._proj_console_path = QLineEdit()
-        self._proj_console_path.setText(getattr(self, 'config_console_path', None) or "")
-        self._proj_console_path.setPlaceholderText("Working directory for console")
-        self._proj_console_path.setStyleSheet(input_style)
-        console_browse = QPushButton("Browse")
-        console_browse.clicked.connect(lambda: self._browse_folder(self._proj_console_path))
-        console_layout.addWidget(self._proj_console_path)
-        console_layout.addWidget(console_browse)
-        form_layout.addRow(console_label, console_layout)
-
-        # Folder Start Path
-        folder_label = QLabel("Folder Start Path:")
-        folder_label.setStyleSheet(label_style)
-        folder_start_layout = QHBoxLayout()
-        self._proj_folder_path = QLineEdit()
-        self._proj_folder_path.setText(getattr(self, 'config_folder_path', None) or "")
-        self._proj_folder_path.setPlaceholderText("Default folder for browser (leave blank for home)")
-        self._proj_folder_path.setStyleSheet(input_style)
-        folder_start_browse = QPushButton("Browse")
-        folder_start_browse.clicked.connect(lambda: self._browse_folder(self._proj_folder_path))
-        folder_start_layout.addWidget(self._proj_folder_path)
-        folder_start_layout.addWidget(folder_start_browse)
-        form_layout.addRow(folder_label, folder_start_layout)
-
-        # Terminal (per-config override)
-        terminal_label = QLabel("Terminal:")
-        terminal_label.setStyleSheet(label_style)
-        self._proj_terminal = QComboBox()
-        self._proj_terminal.setEditable(True)
-        terminal_options = [
-            "",  # Empty = use global setting
-            "konsole", "gnome-terminal", "alacritty", "kitty", "wezterm",
-            "terminator", "tilix", "xfce4-terminal", "guake", "tilda",
-            "foot", "ghostty", "warp-terminal", "hyper", "tabby",
-            "urxvt", "xterm"
-        ]
-        self._proj_terminal.addItems(terminal_options)
-        current_terminal = getattr(self, 'config_terminal', None) or ""
-        idx = self._proj_terminal.findText(current_terminal)
-        if idx >= 0:
-            self._proj_terminal.setCurrentIndex(idx)
-        else:
-            self._proj_terminal.setCurrentText(current_terminal)
-        self._proj_terminal.setStyleSheet(input_style)
-        global_terminal = self.get_configured_terminal()
-        self._proj_terminal.setToolTip(f"Override global terminal for this project (empty = use global: {global_terminal})")
-        form_layout.addRow(terminal_label, self._proj_terminal)
-
-        # Browser Links (per-project override)
-        browser_label = QLabel("Browser Links:")
-        browser_label.setStyleSheet(label_style)
-        self._proj_browser_new_tab = QComboBox()
-        self._proj_browser_new_tab.addItems(["(use global setting)", "New tab", "New window"])
-        per_config_browser = getattr(self, 'config_browser_new_tab', None)
-        if per_config_browser is True:
-            self._proj_browser_new_tab.setCurrentText("New tab")
-        elif per_config_browser is False:
-            self._proj_browser_new_tab.setCurrentText("New window")
-        self._proj_browser_new_tab.setStyleSheet(input_style)
-        self._proj_browser_new_tab.setToolTip("Override global browser link behaviour for this project")
-        form_layout.addRow(browser_label, self._proj_browser_new_tab)
-
-        # Kimai Project ID (only shown when Kimai is configured)
-        if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-            kimai_pid_label = QLabel("Kimai Project ID:")
-            kimai_pid_label.setStyleSheet(label_style)
-            kimai_pid_row = QHBoxLayout()
-            self._proj_kimai_project_id = QLineEdit()
-            current_kid = getattr(self, 'config_kimai_project_id', None)
-            self._proj_kimai_project_id.setText(str(current_kid) if current_kid else "")
-            self._proj_kimai_project_id.setPlaceholderText("Numeric project ID from Kimai")
-            self._proj_kimai_project_id.setStyleSheet(input_style)
-            kimai_pick_btn = QPushButton("Browse…")
-            kimai_pick_btn.setStyleSheet(input_style)
-            kimai_pick_btn.clicked.connect(lambda: self._kimai_pick_project_into(self._proj_kimai_project_id))
-            kimai_pid_row.addWidget(self._proj_kimai_project_id)
-            kimai_pid_row.addWidget(kimai_pick_btn)
-            form_layout.addRow(kimai_pid_label, kimai_pid_row)
-        else:
-            # Widget must always exist so _apply_settings can read it safely
-            self._proj_kimai_project_id = QLineEdit()
-
-        main_layout.addLayout(form_layout)
-
-        # Spacer
-        main_layout.addSpacing(20)
-
-        # Desktop Menu Entry section
-        menu_section_label = QLabel("Desktop Menu Entry:")
-        menu_section_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
-        main_layout.addWidget(menu_section_label)
-
-        menu_desc = QLabel("Create a .desktop file for this project in your application menu. Includes a right-click menu to quickly switch between projects.")
-        menu_desc.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
-        menu_desc.setWordWrap(True)
-        main_layout.addWidget(menu_desc)
-
-        menu_btn_layout = QHBoxLayout()
         btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
@@ -2501,17 +2485,127 @@ class ProjectFlowApp(QMainWindow):
                 color: {self.t('fg_on_dark')};
             }}
         """
-        create_desktop_btn = QPushButton("Create Menu Entry")
-        create_desktop_btn.setStyleSheet(btn_style)
-        create_desktop_btn.setToolTip("Create/update .desktop file for this project")
-        create_desktop_btn.clicked.connect(self.regenerate_desktop_file)
-        menu_btn_layout.addWidget(create_desktop_btn)
-        menu_btn_layout.addStretch()
-        main_layout.addLayout(menu_btn_layout)
 
-        main_layout.addStretch()  # Push form to top
+        for lbl in self._settings_form_labels:
+            lbl.setStyleSheet(label_style)
 
-        return widget
+        for widget in (
+            self._proj_project_name, self._proj_default_viewer, self._proj_default_launcher_tab,
+            self._proj_pdf_file, self._proj_webview_url, self._proj_image_file,
+            self._proj_console_path, self._proj_folder_path, self._proj_terminal,
+            self._proj_browser_new_tab, self._proj_kimai_project_id,
+        ):
+            widget.setStyleSheet(input_style)
+
+        for btn in (
+            self._proj_color_clear_btn, self._proj_pdf_browse_btn, self._proj_image_browse_btn,
+            self._proj_console_browse_btn, self._proj_folder_browse_btn, self._proj_kimai_browse_btn,
+            self._settings_create_menu_btn, self._settings_scan_docs_btn,
+        ):
+            btn.setStyleSheet(btn_style)
+
+        self._proj_use_three_columns.setStyleSheet(label_style)
+        self._settings_path_mapping_checkbox.setStyleSheet(label_style)
+        self._style_project_color_button()
+        section_label_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;"
+        desc_style = f"color: {self.t('fg_secondary')}; font-size: 12px;"
+        self._settings_menu_label.setStyleSheet(section_label_style)
+        self._settings_menu_desc.setStyleSheet(desc_style)
+        self._settings_actions_label.setStyleSheet(section_label_style)
+        self._settings_scan_docs_desc.setStyleSheet(desc_style)
+        self._settings_path_mapping_desc.setStyleSheet(desc_style)
+
+    def _style_project_color_button(self):
+        """Style self._proj_color_btn to preview the currently-chosen color (or a plain
+        unstyled look when none is chosen) — split out so both _style_settings_form()
+        (theme changes) and the color-pick/clear handlers (value changes) can call it."""
+        color = getattr(self, '_proj_color_value', '') or ''
+        if color:
+            lum = self._color_luminance(color)
+            self._proj_color_btn.setStyleSheet(
+                f"background-color: {color}; color: {'#000' if lum > 0.5 else '#fff'}; border: 1px solid {self.t('border')}; border-radius: 4px; padding: 6px;"
+            )
+            self._proj_color_btn.setText(color)
+        else:
+            self._proj_color_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_button')};
+                    color: {self.t('fg_primary')};
+                    border: 1px solid {self.t('border')};
+                    border-radius: 4px;
+                    padding: 6px;
+                }}
+            """)
+            self._proj_color_btn.setText("Choose Color...")
+
+    def _populate_settings_form(self):
+        """(Re)load field values from the current project's config into the persistent
+        settings form built by _build_settings_form(). Called once a project has actually
+        been loaded, and again whenever the Settings viewer is entered for a different
+        project than last populated (self._settings_loaded_for — see switch_to_viewer_mode()
+        and build_main_content()'s mode dispatch) — deliberately NOT called on every
+        incidental rebuild, so in-progress edits survive an unrelated refresh_projects()
+        triggered elsewhere while this viewer happens to be open."""
+        self._proj_project_name.setText(getattr(self, 'config_project_name', None) or "")
+        self._proj_project_name.setPlaceholderText(f"Default: {self.get_project_name()}")
+
+        self._proj_color_value = getattr(self, 'config_project_color', None) or ""
+        self._style_project_color_button()
+
+        self._proj_use_three_columns.setChecked(self.layout_mode != "focus")
+
+        self._proj_default_viewer.setCurrentText(getattr(self, 'config_column2_default', None) or "")
+        self._proj_default_launcher_tab.setCurrentText(getattr(self, 'config_launcher_tab_default', None) or "")
+
+        self._proj_pdf_file.setText(getattr(self, 'config_pdf_file', None) or "")
+        self._proj_webview_url.setText(getattr(self, 'config_webview_url', None) or "")
+        self._proj_image_file.setText(getattr(self, 'config_image_file', None) or "")
+        self._proj_console_path.setText(getattr(self, 'config_console_path', None) or "")
+        self._proj_folder_path.setText(getattr(self, 'config_folder_path', None) or "")
+
+        current_terminal = getattr(self, 'config_terminal', None) or ""
+        idx = self._proj_terminal.findText(current_terminal)
+        if idx >= 0:
+            self._proj_terminal.setCurrentIndex(idx)
+        else:
+            self._proj_terminal.setCurrentText(current_terminal)
+        global_terminal = self.get_configured_terminal()
+        self._proj_terminal.setToolTip(f"Override global terminal for this project (empty = use global: {global_terminal})")
+
+        per_config_browser = getattr(self, 'config_browser_new_tab', None)
+        if per_config_browser is True:
+            self._proj_browser_new_tab.setCurrentText("New tab")
+        elif per_config_browser is False:
+            self._proj_browser_new_tab.setCurrentText("New window")
+        else:
+            self._proj_browser_new_tab.setCurrentText("(use global setting)")
+
+        kimai_configured = bool(self.settings.get('kimai_url') and self.settings.get('kimai_token'))
+        self._settings_form_layout.setRowVisible(self._settings_kimai_label, kimai_configured)
+        current_kid = getattr(self, 'config_kimai_project_id', None)
+        self._proj_kimai_project_id.setText(str(current_kid) if current_kid else "")
+
+        self._settings_path_mapping_checkbox.setChecked(getattr(self, 'config_path_mapping', False))
+        self._settings_path_mapping_section.setVisible(bool(self.settings.get('path_mappings')))
+
+    def create_settings_toolbar(self, parent_layout):
+        """Toolbar for the Settings viewer (column2_mode == "settings") — rebuilt fresh
+        every build_main_content() call like every other viewer's toolbar (only
+        self.settings_form itself, added below this toolbar, is the persistent part).
+        No Save button here — there used to be one, but it duplicated the title-bar
+        "💾 Save" button (both called the same _save_project_and_exit_edit_mode()), which
+        read as two separate save actions. The title-bar button is now the only Save."""
+        toolbar = QHBoxLayout()
+        title_label = QLabel(f"Project Settings — {self.get_project_name()}")
+        title_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
+        toolbar.addWidget(title_label)
+        toolbar.addStretch()
+
+        hint_label = QLabel("💾 Save (top right) to save changes")
+        hint_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
+        toolbar.addWidget(hint_label)
+
+        parent_layout.addLayout(toolbar)
 
     def _show_item_edit_dialog(self, col_idx, category_name, item_data, tree=None, inline_widget=None):
         """Show dialog for adding/editing an item"""
@@ -3510,10 +3604,29 @@ class ProjectFlowApp(QMainWindow):
         if selected:
             self._path_mappings_table.removeRow(selected[0].row())
 
-    def _apply_settings(self, dialog):
+    def _apply_settings(self, dialog, save_project_settings=False):
         """Apply settings without closing the dialog"""
         # === Save Project Settings ===
-        if hasattr(self, '_proj_default_viewer'):
+        # Gated on an explicit save_project_settings flag rather than ambient state
+        # (column2_mode, edit_mode, hasattr checks) — the _proj_* field widgets are built
+        # once in __init__ (see _build_settings_form()) and always exist, so any ambient
+        # check risks also firing when this method is called from the unrelated global ⚙️
+        # Settings dialog's Apply/OK (which can be opened regardless of which viewer is
+        # active or whether an edit session is underway) or from the title-bar Save button
+        # while a different viewer tab happens to be frontmost (see the Settings-viewer
+        # cog shortcut in the viewer tab row, which exists precisely so you CAN wander off
+        # to another tab mid-edit). An explicit flag encodes caller intent directly instead
+        # of inferring it — see _save_project_and_exit_edit_mode(), the only caller that
+        # passes True.
+        if save_project_settings:
+            # Layout mode toggle — was the title-bar ⊞/▣ button, now this checkbox.
+            # toggle_layout_mode() already does the full switch (splitter sizes, Notes-tab
+            # visibility, Group-by-Type default, persistence, refresh) — reuse it as-is.
+            if hasattr(self, '_proj_use_three_columns'):
+                want_three_col = self._proj_use_three_columns.isChecked()
+                if want_three_col == (self.layout_mode == "focus"):
+                    self.toggle_layout_mode()
+
             # Project color (stored in the project config file)
             if hasattr(self, '_proj_color_value'):
                 self.config_project_color = self._proj_color_value or None
@@ -3540,6 +3653,9 @@ class ProjectFlowApp(QMainWindow):
 
             kimai_id_text = self._proj_kimai_project_id.text().strip()
             self.config_kimai_project_id = int(kimai_id_text) if kimai_id_text.isdigit() else None
+
+            if hasattr(self, '_settings_path_mapping_checkbox'):
+                self.config_path_mapping = self._settings_path_mapping_checkbox.isChecked()
 
             # Save config to JSON (columns already updated by tree editing)
             self._save_project_config()
@@ -3797,12 +3913,6 @@ class ProjectFlowApp(QMainWindow):
 
     def _save_settings_and_close(self, dialog):
         """Save settings and close the dialog"""
-        self._apply_settings(dialog)
-        dialog.accept()
-
-    def _save_project_settings_and_close(self, dialog):
-        """Save project settings, exit edit mode, and close the dialog"""
-        self.edit_mode = False
         self._apply_settings(dialog)
         dialog.accept()
 
@@ -4199,11 +4309,6 @@ StartupNotify=true
 
         self.layout_mode = "focus"
 
-        # Update toggle button appearance
-        if hasattr(self, 'layout_toggle_btn'):
-            self.layout_toggle_btn.setText("▣ 3 Columns")
-            self.layout_toggle_btn.setToolTip("Switch to Standard layout (3 columns)")
-
     def _enter_standard_layout(self):
         """Switch to Standard layout: restore right notes column, remove Notes viewer tab."""
         if not hasattr(self, 'notes_panel') or not hasattr(self, 'notepad_column_widget'):
@@ -4246,11 +4351,6 @@ StartupNotify=true
             self.viewer_tab_buttons['notes'].setVisible(False)
 
         self.layout_mode = "standard"
-
-        # Update toggle button appearance
-        if hasattr(self, 'layout_toggle_btn'):
-            self.layout_toggle_btn.setText("⊞ Focus")
-            self.layout_toggle_btn.setToolTip("Switch to Focus layout (launcher + wide viewer)")
 
     def get_config_file_to_use(self):
         """Determine which config file to use based on settings"""
@@ -5843,6 +5943,14 @@ function filterAliases(q) {{
             self.console_ttyd_webview.setParent(self)
         if self.code_webview is not None:
             self.code_webview.setParent(self)
+        # settings_form is a plain QWidget (not a QWebEngineView, so it doesn't have the
+        # "breaks if reparented after being shown" issue the webviews above have) but still
+        # needs this same detach-before-teardown treatment: it's the single persistent form
+        # whose in-progress field values (_proj_project_name etc.) must survive this rebuild
+        # — see _build_settings_form()'s docstring. Without this it would be destroyed along
+        # with the old central widget's tree by the setCentralWidget() call just below.
+        if getattr(self, 'settings_form', None) is not None:
+            self.settings_form.setParent(self)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -5918,11 +6026,12 @@ function filterAliases(q) {{
         # Edit toolbar on far right — buttons always use the same style
         _in_edit = getattr(self, 'edit_mode', False)
 
-        # All top-right title-bar buttons (Edit Project/Save, Layout toggle, and — while
-        # in edit mode — Project Details/Scan Docs) share this style: the same look as the
-        # footer buttons (New Project, Settings, etc: bg_button + a visible border) rather
-        # than the old green edit-toolbar style, with a border specifically so they read as
-        # distinct from the plain app background instead of blending into it.
+        # The Edit Project/Save button — the only top-right title-bar button now (Project
+        # Details/Scan Docs/path-mapping all moved into the Settings viewer itself, see
+        # _build_settings_form(); the Layout toggle moved there earlier too). Styled like
+        # the footer buttons (New Project, Settings, etc: bg_button + a visible border)
+        # rather than the old green edit-toolbar style, with a border specifically so it
+        # reads as distinct from the plain app background instead of blending into it.
         _topright_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
@@ -5944,66 +6053,13 @@ function filterAliases(q) {{
             }}
         """
 
-        if _in_edit:
-            proj_details_btn = QPushButton("Project Details")
-            proj_details_btn.setToolTip("Open project details editor")
-            proj_details_btn.setStyleSheet(_topright_btn_style)
-            proj_details_btn.clicked.connect(lambda: self.show_project_settings_dialog(0))
-            title_bar.addWidget(proj_details_btn)
-
-            scan_docs_btn = QPushButton("🔍 Scan Docs")
-            scan_docs_btn.setToolTip("Scan project folder for documentation files")
-            scan_docs_btn.setStyleSheet(_topright_btn_style)
-            scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
-            title_bar.addWidget(scan_docs_btn)
-
         self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  ✏️  Edit Project")
         self.edit_project_btn.setCheckable(True)
         self.edit_project_btn.setChecked(_in_edit)
-        self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts and launchers")
+        self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts, launchers, and settings")
         self.edit_project_btn.setStyleSheet(_topright_btn_style)
         self.edit_project_btn.clicked.connect(self.toggle_edit_mode)
         title_bar.addWidget(self.edit_project_btn)
-
-        # Path mapping toggle — only shown in edit mode when global mappings are configured
-        # (obscure setting; was getting confused with the Focus layout toggle when always visible)
-        if _in_edit and self.settings.get('path_mappings'):
-            _mapping_on = getattr(self, 'config_path_mapping', False)
-            _mapping_btn_style = f"""
-                QPushButton {{
-                    background-color: {self.t('bg_green_1') if _mapping_on else self.t('bg_button')};
-                    color: {self.t('fg_on_dark') if _mapping_on else self.t('fg_secondary')};
-                    font-weight: bold;
-                    border-radius: 3px;
-                    border: 1px solid {self.t('border')};
-                    padding: 4px 8px;
-                    font-size: 13px;
-                }}
-                QPushButton:hover {{
-                    background-color: {self.t('bg_green_2')};
-                    color: {self.t('fg_on_dark')};
-                }}
-            """
-            mapping_btn = QPushButton("⇄")
-            mapping_btn.setToolTip(
-                "Path mapping ON — paths are remapped via global mappings (click to disable)"
-                if _mapping_on else
-                "Path mapping OFF — paths used as-is (click to enable remapping)"
-            )
-            mapping_btn.setStyleSheet(_mapping_btn_style)
-            mapping_btn.clicked.connect(self._toggle_path_mapping)
-            title_bar.addWidget(mapping_btn)
-
-        # Layout toggle button — switches between Standard (3-col) and Focus (2-col) layouts
-        _is_focus = self.layout_mode == "focus"
-        self.layout_toggle_btn = QPushButton("▣ 3 Columns" if _is_focus else "⊞ Focus")
-        self.layout_toggle_btn.setToolTip(
-            "Switch to Standard layout (3 columns)" if _is_focus
-            else "Switch to Focus layout (launcher + wide viewer)"
-        )
-        self.layout_toggle_btn.setStyleSheet(_topright_btn_style)
-        self.layout_toggle_btn.clicked.connect(self.toggle_layout_mode)
-        title_bar.addWidget(self.layout_toggle_btn)
 
         parent_layout.addLayout(title_bar)
 
@@ -6741,24 +6797,6 @@ function filterAliases(q) {{
             if from_ and to_ and expanded.startswith(from_):
                 return to_ + expanded[len(from_):]
         return path
-
-    def _toggle_path_mapping(self):
-        """Toggle per-project path mapping on/off and persist to config file."""
-        self.config_path_mapping = not getattr(self, 'config_path_mapping', False)
-        try:
-            config_data = {}
-            if os.path.exists(self.current_config_file):
-                with open(self.current_config_file, 'r') as f:
-                    config_data = json.load(f)
-            if self.config_path_mapping:
-                config_data['path_mapping'] = True
-            else:
-                config_data.pop('path_mapping', None)
-            with open(self.current_config_file, 'w') as f:
-                json.dump(config_data, f, indent=2)
-        except Exception as e:
-            print(f"Error saving path_mapping: {e}")
-        self.refresh_projects()
 
     def _write_project_color(self, config_path, color_hex_or_none):
         """Patch project_color into a config JSON file directly."""
@@ -8430,11 +8468,15 @@ function filterAliases(q) {{
                 # environments/Nix setups (many common names resolved to nothing at all),
                 # so every tab now gets a guaranteed, consistent icon instead of some tabs
                 # having one and others not.
+                # Ordered action-first, viewing-last: Notes/Editor/Terminal are things you
+                # actively work in, Web/PDF/Image are things you mostly look at. "Editor"
+                # (not "Edit") to avoid reading like the title-bar "✏️ Edit Project" button
+                # right above this row — column2_mode stays "code" internally either way.
                 tab_buttons = [
                     ("notes",    "Notes",    "Project notes"),
-                    ("webview",  "Web",      "Web viewer"),
-                    ("code",     "Edit",     "Code editor"),
+                    ("code",     "Editor",   "Code editor"),
                     ("console",  "Terminal", "Embedded console"),
+                    ("webview",  "Web",      "Web viewer"),
                     ("pdf",      "PDF",      "PDF viewer"),
                     ("image",    "Image",    "Image viewer"),
                 ]
@@ -8546,6 +8588,35 @@ function filterAliases(q) {{
                     # Notes tab only visible in Focus layout
                     if mode == "notes":
                         btn.setVisible(self.layout_mode == "focus")
+
+                # Settings shortcut — always visible, to the LEFT of the pin button below.
+                # Effectively a second "Edit Project" entry point: clicking it while NOT in
+                # edit mode enters edit mode exactly like the title-bar button does (same
+                # toggle_edit_mode(), which also flips that button to "💾 Save"). Clicking it
+                # while ALREADY in edit mode must NOT re-toggle (that would exit edit mode
+                # and save) — it just needs to jump back to the Settings viewer, since its
+                # other job is recovering from having clicked over to another tab (Web/PDF/
+                # etc.) mid-edit. Hence the explicit edit_mode check in
+                # _settings_shortcut_clicked() rather than connecting straight to
+                # toggle_edit_mode(). Not part of set_viewer_as_default()'s pinnable modes
+                # (that function already returns early — no case — for "settings", so a
+                # project can never accidentally default-load into the Settings viewer).
+                # Registered into self.viewer_tab_buttons (even though it's not a full tab,
+                # not in the mode_info loop above) purely so update_viewer_tab_styling() —
+                # called by switch_to_viewer_mode() on every mode switch, without a full
+                # rebuild — keeps its active/resting style in sync like the real tabs.
+                settings_tab_btn = QPushButton()
+                settings_tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", "settings.png")
+                if os.path.exists(settings_tab_icon_path):
+                    settings_tab_btn.setIcon(QIcon(settings_tab_icon_path))
+                    settings_tab_btn.setIconSize(QSize(16, 16))
+                settings_tab_btn.setFixedWidth(28)
+                settings_tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                settings_tab_btn.setToolTip("Edit Project / Project Settings")
+                settings_tab_btn.setStyleSheet(active_tab_style if self.column2_mode == "settings" else tab_btn_style)
+                settings_tab_btn.clicked.connect(self._settings_shortcut_clicked)
+                header_layout.addWidget(settings_tab_btn)
+                self.viewer_tab_buttons['settings'] = settings_tab_btn
 
                 # Pin the current viewer as this project's default — a single shared button
                 # replacing the old per-viewer 📌 buttons that used to live in each viewer's
@@ -8694,6 +8765,23 @@ function filterAliases(q) {{
                 code_container_layout.addWidget(
                     self._make_viewer_footer(f"Open in {editor_name}", "Open this file in the configured editor", self.open_code_file_in_external_editor)
                 )
+
+                # Settings viewer container — Project Settings, embedded as a viewer instead
+                # of a modal dialog (see _build_settings_form()). Own toolbar (Save button)
+                # rebuilt fresh each time like the other viewers'; self.settings_form itself
+                # is the persistent part, just re-added into a scroll area here.
+                self.settings_container = QWidget()
+                settings_container_layout = QVBoxLayout(self.settings_container)
+                settings_container_layout.setContentsMargins(0, 0, 0, 0)
+
+                self.create_settings_toolbar(settings_container_layout)
+                self._style_settings_form()  # re-apply in case the theme changed since last build
+
+                settings_scroll = QScrollArea()
+                settings_scroll.setWidgetResizable(True)
+                settings_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+                settings_scroll.setWidget(self.settings_form)
+                settings_container_layout.addWidget(settings_scroll, 1)
 
                 # Help viewer container — combines README + Launcher Examples as two HTML tabs
                 # in a single page (see _build_help_html). Lives outside the normal project-viewer
@@ -8949,6 +9037,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.time_container)
                 self.column2_stack_layout.addWidget(self.notes_viewer_container)
                 self.column2_stack_layout.addWidget(self.code_container)
+                self.column2_stack_layout.addWidget(self.settings_container)
 
                 # Show correct container based on mode
                 self.pdf_container.hide()
@@ -8960,6 +9049,7 @@ function filterAliases(q) {{
                 self.time_container.hide()
                 self.notes_viewer_container.hide()
                 self.code_container.hide()
+                self.settings_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
                 elif self.column2_mode == "webview":
@@ -8982,6 +9072,14 @@ function filterAliases(q) {{
                     self._kimai_load_entries()
                 elif self.column2_mode == "notes":
                     self.notes_viewer_container.show()
+                elif self.column2_mode == "settings":
+                    self.settings_container.show()
+                    # Populate only if not already loaded for this project — see
+                    # _populate_settings_form()'s docstring for why this guard exists
+                    # (preserves in-progress edits across an unrelated rebuild).
+                    if getattr(self, '_settings_loaded_for', None) != self.current_config_file:
+                        self._populate_settings_form()
+                        self._settings_loaded_for = self.current_config_file
 
                 self.column2_layout.addWidget(self.column2_stack, 1)  # stretch factor to fill space
 
@@ -9552,6 +9650,13 @@ function filterAliases(q) {{
         # the Notes tab for the OLD project has no meaning here (see notes_md_path's
         # docstring in __init__ for why this reset lives here and not in load_notes()).
         self.notes_md_path = None
+
+        # Force the Settings viewer (see _build_settings_form()) to repopulate from the
+        # new project's own config next time it's shown, rather than keeping whatever the
+        # OLD project's fields held — any unsaved edits in the old project's Settings form
+        # are discarded here, same as they would be by navigating away in the old dialog
+        # without clicking OK.
+        self._settings_loaded_for = None
 
         # Reload with the new project
         self.refresh_projects()
@@ -10384,9 +10489,44 @@ function filterAliases(q) {{
         self._show_item_edit_dialog(0, first_category, None)
 
     def toggle_edit_mode(self):
-        """Toggle between view mode and edit mode"""
-        self.edit_mode = not self.edit_mode
-        self.refresh_projects()
+        """Toggle edit mode. Turning it ON also opens the Settings viewer directly (see
+        switch_to_viewer_mode()) — editing launchers and editing project settings are one
+        continuous edit session now, with a single entry point (there's no more separate
+        "Project Details" button). Turning it OFF (the "💾 Save" button — the ONLY Save
+        button; the Settings viewer used to have its own too, but that duplicated this one
+        and was removed) commits the Settings viewer's pending fields — see
+        _save_project_and_exit_edit_mode()."""
+        if self.edit_mode:
+            self._save_project_and_exit_edit_mode()
+        else:
+            self.edit_mode = True
+            # Rebuild first so the edit-mode launcher controls and settings_container
+            # actually exist before switch_to_viewer_mode() tries to show the latter.
+            self.refresh_projects()
+            self.switch_to_viewer_mode("settings")
+
+    def _settings_shortcut_clicked(self):
+        """Click handler for the viewer tab row's Settings cog icon — effectively a second
+        "Edit Project" entry point, but NOT a plain call to toggle_edit_mode(): that method
+        toggles, so calling it unconditionally would exit (and save) an edit session already
+        in progress instead of just jumping back to the Settings viewer, which is this
+        button's other job (recovering from having clicked over to another viewer tab
+        mid-edit). Checking edit_mode first makes both jobs work correctly: enters edit mode
+        when not already editing, or just switches viewers when already editing."""
+        if self.edit_mode:
+            self.switch_to_viewer_mode("settings")
+        else:
+            self.toggle_edit_mode()
+
+    def _save_project_and_exit_edit_mode(self):
+        """Save action for the title-bar Edit Project/Save toggle (the only Save button —
+        see toggle_edit_mode()). Combines committing the Settings form's pending fields
+        with exiting edit mode, since editing launchers and editing project settings are
+        now one continuous edit session reached through a single entry point."""
+        self.edit_mode = False
+        self._apply_settings(None, save_project_settings=True)
+        if hasattr(self, 'status_label'):
+            self.status_label.setText("✓ Project settings saved")
 
     def _on_global_ctrl_s(self):
         """Global Ctrl+S handler. Historically bound directly to toggle_edit_mode — now
@@ -11172,6 +11312,8 @@ function filterAliases(q) {{
             self.notes_viewer_container.hide()
         if hasattr(self, 'code_container'):
             self.code_container.hide()
+        if hasattr(self, 'settings_container'):
+            self.settings_container.hide()
 
         # Mode display info
         mode_info = {
@@ -11186,7 +11328,9 @@ function filterAliases(q) {{
         if hasattr(self, 'notes_viewer_container'):
             mode_info["notes"] = ("Notes", "Project Notes", self.notes_viewer_container)
         if hasattr(self, 'code_container'):
-            mode_info["code"] = ("Edit", "Code Editor", self.code_container)
+            mode_info["code"] = ("Editor", "Code Editor", self.code_container)
+        if hasattr(self, 'settings_container'):
+            mode_info["settings"] = ("Settings", "Project Settings", self.settings_container)
 
         if mode not in mode_info:
             mode = "folder"
@@ -11204,6 +11348,13 @@ function filterAliases(q) {{
             self._kimai_load_entries()
         elif mode == "code":
             self._update_code_editor_buttons()
+        elif mode == "settings":
+            # Populate only if not already loaded for this project — see
+            # _populate_settings_form()'s docstring for why this guard exists (preserves
+            # in-progress edits when re-entering the same project's settings viewer).
+            if getattr(self, '_settings_loaded_for', None) != self.current_config_file:
+                self._populate_settings_form()
+                self._settings_loaded_for = self.current_config_file
 
         # Update tab button styling
         self.update_viewer_tab_styling()

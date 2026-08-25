@@ -4,7 +4,13 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 
 ## 2026-08-25
 
+### Added
+- **Project Settings viewer**: per-project settings (previously a modal "Project Settings" dialog opened via a "Project Details" button) are now an embedded viewer (`column2_mode == "settings"`), built once and kept alive across UI rebuilds so in-progress edits survive an unrelated refresh elsewhere (e.g. reordering a launcher while it's open). Reached via the title-bar "✏️ Edit Project" button, which now opens it directly, or a new always-visible cog-icon shortcut in the viewer tab row (to the left of the pin button) that doubles as a second "Edit Project" entry point — clicking it enters edit mode if not already editing, or just jumps back to the Settings viewer if you'd wandered off to another tab mid-edit.
+- The old title-bar "⊞/▣ layout toggle", "🔍 Scan Docs", and "⇄ path mapping" buttons all moved into the Settings viewer as a "Use three columns view" checkbox, a "🔍 Scan for docs" button, and a "Path mapping" checkbox — each now with inline help text, and Path Mapping moved to the very bottom of the form since it's an obscure setting.
+
 ### Changed
+- The title-bar Edit Project/Save button and the Settings viewer now share a single Save action — the viewer briefly had its own "💾 Save" button too, which read as two separate saves for the same form; removed in favor of a hint label pointing at the title-bar button.
+- Viewer tab row reordered to Notes, Editor, Terminal, Web, PDF, Image (+ ⏱ Time) — action tabs (things you work in) first, viewing tabs (things you look at) last. The code editor's tab is renamed "Edit" → "Editor" so it no longer reads like the title-bar "✏️ Edit Project" button directly above it.
 - App icon (`assets/icon.svg`/`.png`) now has subtly rounded corners instead of a hard square.
 - Pin buttons (viewer tab row, launcher tab row, Folder viewer's own toolbar) now use a real icon instead of the 📌 emoji — Google's Material Symbols "keep" (thumbtack) glyph, in a fixed-white variant for the colored tab-row backgrounds and a theme-matched light/dark pair for the plain Folder-viewer toolbar button.
 - Active-tab indicator on both tab rows reworked to rely purely on background-color contrast rather than a border, matching how `:hover` already signals state elsewhere. Both rows now read brighter-fill = selected in both light and dark theme, backed by a new dedicated `tab_launcher_resting`/`tab_launcher_active` color pair for the launcher row whose contrast against each other was deliberately computed to match the viewer row's own `bg_green_1`/`bg_green_3` contrast magnitude, rather than picking an arbitrary shade.
@@ -13,6 +19,7 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 - The Terminal tab in the viewer tab row always showed a border regardless of selection state, making it look permanently "selected" next to the other tabs — removed; it now looks identical to every other tab when inactive.
 - Dark theme's viewer tab row background gradient (`bg_green_1`–`bg_green_4`) was four identical placeholder colors, making the active and inactive tab backgrounds indistinguishable in dark mode — now a real 4-stop progression, matching how light theme's gradient already worked.
 - The launcher tab row's active tab was backwards in dark theme (darker instead of brighter, opposite of the viewer tab row) — an earlier fix reused the same two color keys for "resting"/"active" in both themes, but which literal color was actually the brighter one flipped between themes, so it worked by coincidence in light mode and inverted in dark mode. Replaced with explicit per-theme `tab_launcher_resting`/`tab_launcher_active` keys so each theme supplies the correct color for each role directly.
+- Toggling "Path mapping" used to immediately rebuild the whole app (`refresh_projects()`) on every click, even mid-edit in the Settings viewer — it's now deferred to the Save button like every other field in that form.
 
 ## 2026-08-24
 
