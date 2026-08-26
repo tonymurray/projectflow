@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter, QSpinBox, QDateEdit, QTimeEdit
+    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
@@ -353,7 +353,16 @@ class CategoryDropZone(QWidget):
             if drop_idx != drag_idx:
                 self.app.handle_item_reorder(self.col_idx, self.category_name, drag_idx, drop_idx)
         else:
-            # Cross-category move
+            # Cross-category move. If this zone is the Docs bucket's real category and it
+            # doesn't exist on disk yet (see the construction-time resolve above, which
+            # defaults to "Documentation" without creating it), create it now — this is a
+            # direct result of the user's own drop action, not an incidental render side
+            # effect, and without it handle_item_move_to_category() would silently lose the
+            # item (it re-reads the config from disk and finds no destination category).
+            if self.category_name in ("Documentation", "Docs") and not any(
+                self.category_name in cd for cd in self.app.COLUMN_1
+            ):
+                self.category_name = self.app._ensure_documentation_category()
             self.app.handle_item_move_to_category(drag_cat, drag_idx, self.category_name, drop_idx)
 
         event.acceptProposedAction()
@@ -1335,7 +1344,7 @@ class ProjectFlowApp(QMainWindow):
         actions_layout.addWidget(upgrade_btn)
 
         if self.detect_desktop_environment() == 'kde':
-            servicemenu_btn = QPushButton("📂 Install Dolphin Service Menu")
+            servicemenu_btn = QPushButton("Install Dolphin Service Menu")
             servicemenu_btn.setStyleSheet(action_btn_style)
             servicemenu_btn.setToolTip("Install 'Add to ProjectFlow' right-click menu in Dolphin")
             servicemenu_btn.clicked.connect(self.install_kde_servicemenu)
@@ -2101,7 +2110,7 @@ class ProjectFlowApp(QMainWindow):
         path_edit = QLineEdit(scan_path)
         path_edit.setReadOnly(True)
         path_edit.setStyleSheet(input_style)
-        change_btn = QPushButton("📂 Change")
+        change_btn = QPushButton("Change")
         change_btn.setStyleSheet(btn_style)
         folder_row.addWidget(folder_lbl)
         folder_row.addWidget(path_edit, 1)
@@ -6211,6 +6220,30 @@ function filterAliases(q) {{
         title_bar = QHBoxLayout()
         title_bar.setContentsMargins(5, 5, 5, 10)
 
+        # Hamburger mega-menu button — a fast, additional way to switch projects (Pinned/
+        # Recent/All/Folder side by side in one popup) without scrolling to the always-visible
+        # Projects section below, which is untouched by this. See _show_project_mega_menu().
+        self.mega_menu_btn = QPushButton()
+        self.mega_menu_btn.setIcon(self._hamburger_icon())
+        self.mega_menu_btn.setIconSize(QSize(18, 18))
+        self.mega_menu_btn.setFixedSize(30, 30)
+        self.mega_menu_btn.setToolTip("Switch project")
+        self.mega_menu_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+        """)
+        self.mega_menu_btn.clicked.connect(self._show_project_mega_menu)
+        title_bar.addWidget(self.mega_menu_btn)
+
         # Project title on left (clickable search)
         config_name = self.get_project_name()
         if config_name.endswith('_config'):
@@ -6292,6 +6325,199 @@ function filterAliases(q) {{
         if hasattr(self, 'title_search'):
             self.title_search.enter_search_mode()
 
+    def _show_project_mega_menu(self):
+        """Popup mega-menu for fast project switching (☰ button, top-left of title bar) —
+        Pinned/Recent/All Projects/Folder Projects/By Color side by side, plus live search.
+        Purely additive: the always-visible Projects section (create_projects_section()) is
+        unaffected. Uses QWidgetAction to embed a fully custom widget inside a QMenu — the
+        standard Qt pattern for rich dropdown ("mega") menus, giving native popup
+        outside-click-and-Escape dismissal for free. Sized to ~90% of the current screen
+        (rather than QMenu's default shrink-to-content sizing) and centered on it, deliberately
+        oversized so it reads as a full pop-over rather than a small dropdown — the ~10%
+        margin left on each side is what keeps it legible as an overlay rather than looking
+        like it replaced the whole window."""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {self.t('bg_primary')};
+                border: 1px solid {self.t('border')};
+            }}
+        """)
+        screen = self.screen() or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        menu_width = int(avail.width() * 0.9)
+        menu_height = int(avail.height() * 0.9)
+
+        content = self._build_project_mega_menu_content(menu)
+        content.setFixedSize(menu_width, menu_height)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(content)
+        menu.addAction(action)
+
+        pos = QPoint(avail.x() + (avail.width() - menu_width) // 2,
+                     avail.y() + (avail.height() - menu_height) // 2)
+        menu.exec(pos)
+
+    def _build_project_mega_menu_content(self, menu):
+        """Builds the root widget for the project mega-menu popup (see
+        _show_project_mega_menu()) — five columns (Pinned/Recent/All Projects/Folder
+        Projects/By Color) plus a live search box filtering across all of them at once,
+        mirroring the launcher search box's widget-visibility-toggling pattern rather than
+        rebuilding on every keystroke. Archive is deliberately excluded — already the
+        deliberately de-emphasized mode in the main Projects section; a quick-switch menu
+        shouldn't surface archived projects by default. Column data is read directly from
+        settings (the same sources create_projects_section()'s _populate_*() methods use)
+        rather than calling those methods, since they render into self.projects_layout and
+        carry UI (drag-to-pin zones, sort-toggle headers) that doesn't belong in a transient
+        popup. Columns are given equal stretch and each scroll area is added with its own
+        stretch factor so, combined with the near-full-screen fixed size set by the caller,
+        the whole popup's space is actually used rather than shrinking to fit its content."""
+        root = QWidget()
+        root.setStyleSheet(f"background-color: {self.t('bg_primary')};")
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(28, 24, 28, 24)
+        root_layout.setSpacing(18)
+
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Search projects…")
+        search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 5px;
+                padding: 10px 12px;
+                font-size: 14px;
+            }}
+        """)
+        root_layout.addWidget(search_input)
+
+        columns_row = QHBoxLayout()
+        columns_row.setSpacing(24)
+        root_layout.addLayout(columns_row, 1)
+
+        search_refs = []  # (container_widget, lowercased display name) across all columns
+        column_scroll_areas = []  # (scroll_area, [container_widgets in this column])
+
+        def add_column(title, config_paths, empty_text, is_pinned, icon=None):
+            col_widget = QWidget()
+            col_layout = QVBoxLayout(col_widget)
+            col_layout.setContentsMargins(0, 0, 0, 0)
+            col_layout.setSpacing(10)
+
+            header_style = f"color: {self.t('fg_secondary')}; font-size: 13px; font-weight: bold;"
+            if icon is None:
+                header = QLabel(title)
+                header.setStyleSheet(header_style)
+                col_layout.addWidget(header)
+            else:
+                # Used for "All Projects" instead of the 📁/📂 emoji — those render as a
+                # yellow/manila folder in most color-emoji fonts. Never use a yellow folder
+                # glyph for folders/files anywhere in this project (user preference — see
+                # CLAUDE.md/_folder_icon()'s own docstring, which already avoids this same
+                # thing for the folder-browser icon). Reuses the app's existing hand-drawn
+                # blue folder icon (_blue_folder_icon()) instead, for consistency.
+                header_row = QWidget()
+                header_row_layout = QHBoxLayout(header_row)
+                header_row_layout.setContentsMargins(0, 0, 0, 0)
+                header_row_layout.setSpacing(5)
+                icon_label = QLabel()
+                icon_label.setPixmap(icon.pixmap(16, 16))
+                header_row_layout.addWidget(icon_label)
+                text_label = QLabel(title)
+                text_label.setStyleSheet(header_style)
+                header_row_layout.addWidget(text_label)
+                header_row_layout.addStretch(1)
+                col_layout.addWidget(header_row)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+            scroll_content = QWidget()
+            scroll_layout = QVBoxLayout(scroll_content)
+            scroll_layout.setContentsMargins(0, 0, 0, 4)
+            scroll_layout.setSpacing(8)
+
+            column_containers = []
+            if not config_paths:
+                empty_label = QLabel(empty_text)
+                empty_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 8px 0;")
+                empty_label.setWordWrap(True)
+                scroll_layout.addWidget(empty_label)
+            else:
+                for path in config_paths:
+                    # flow_managed=True (Expanding button, no fixed width) rather than the
+                    # fixed-120px path — that fixed width plus the arrow buttons is wider than
+                    # a narrow mega-menu column, which was producing an unwanted horizontal
+                    # scrollbar alongside the vertical one. Expanding + setWidgetResizable(True)
+                    # keeps buttons locked to the scroll area's actual viewport width instead.
+                    btn_container = self._create_config_button(
+                        path, is_pinned=is_pinned, draggable=False, flow_managed=True,
+                        on_select=menu.close
+                    )
+                    scroll_layout.addWidget(btn_container)
+                    display_name = self.get_display_name_for_config_path(path)
+                    search_refs.append((btn_container, display_name.lower()))
+                    column_containers.append(btn_container)
+
+            scroll_layout.addStretch(1)
+            scroll.setWidget(scroll_content)
+            col_layout.addWidget(scroll, 1)
+            columns_row.addWidget(col_widget, 1)
+            column_scroll_areas.append((scroll, column_containers))
+
+        pinned_paths = [p for p in self.settings.get("pinned_projects", [])
+                        if os.path.exists(p) and '/.archive/' not in p]
+        add_column("📌 Pinned", pinned_paths, "No pinned projects yet.", is_pinned=True)
+
+        recent_paths = [p for p in self.settings.get("recent_projects", [])
+                        if os.path.exists(p) and '/.archive/' not in p][:10]
+        add_column("🕐 Recent", recent_paths, "No recent projects yet.", is_pinned=False)
+
+        # Computed once, up front, since both "By Color" and "All Projects" derive from the
+        # same full project list — By Color is just a different ordering of it.
+        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        all_paths = []
+        if os.path.isdir(configs_dir):
+            all_paths = sorted(
+                (os.path.join(configs_dir, f) for f in os.listdir(configs_dir) if f.endswith('.json')),
+                key=lambda p: os.path.basename(p).lower()
+            )
+
+        # By Color — same ordering as the main Projects section's own 🎨 sort
+        # (_populate_color_sorted_projects()): custom color_order priority, uncolored last.
+        # Reuses _build_color_cache()/_sorted_colors() rather than duplicating that logic.
+        # Placed before "All Projects" (A–Z) per user request.
+        self._build_color_cache()
+        project_colors = getattr(self, '_color_cache', {})
+        unique_colors = list(set(project_colors.values()))
+        ordered_colors = self._sorted_colors(unique_colors)
+        color_sorted_paths = []
+        for color in ordered_colors:
+            color_sorted_paths += [p for p in all_paths if project_colors.get(p) == color]
+        color_sorted_paths += [p for p in all_paths if not project_colors.get(p)]
+        add_column("🎨 By Color", color_sorted_paths, "No projects found.", is_pinned=False)
+
+        # Icon (not emoji) here — see add_column()'s icon branch for why: 📁/📂 render as a
+        # yellow/manila folder in most color-emoji fonts.
+        add_column("All Projects (A–Z)", all_paths, "No projects found.", is_pinned=False,
+                   icon=self._blue_folder_icon())
+
+        folder_paths = [p for p in self.settings.get("folder_projects", []) if os.path.exists(p)]
+        add_column("🗂 Folder Projects", folder_paths, "No folder projects yet.", is_pinned=False)
+
+        def on_search_text_changed(text):
+            needle = text.strip().lower()
+            for container, name_lower in search_refs:
+                container.setVisible(not needle or needle in name_lower)
+            for scroll, containers in column_scroll_areas:
+                scroll.setVisible(not containers or any(c.isVisible() for c in containers))
+
+        search_input.textChanged.connect(on_search_text_changed)
+
+        return root
+
     def create_projects_section(self, parent_layout):
         """Create unified projects section with toggle between recent, alphabetical, pinned modes"""
         # Initialize mode state (persisted across sessions)
@@ -6365,10 +6591,11 @@ function filterAliases(q) {{
         header_row.addWidget(self.main_projects_btn)
 
         self.folder_projects_btn = QPushButton()
-        _folder_icon = QIcon.fromTheme("folder")
-        if _folder_icon.isNull():
-            _folder_icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-        self.folder_projects_btn.setIcon(_folder_icon)
+        # The app's own blue folder icon, not QIcon.fromTheme("folder")/SP_DirIcon — both
+        # render as a yellow/manila folder on many system icon themes, which this project
+        # deliberately avoids everywhere else (see _folder_icon()'s own docstring). Never use
+        # a yellow folder glyph for folders/files anywhere in this project.
+        self.folder_projects_btn.setIcon(self._blue_folder_icon())
         self.folder_projects_btn.setToolTip("Folder projects")
         self.folder_projects_btn.clicked.connect(lambda: self.switch_projects_mode('folder'))
         header_row.addWidget(self.folder_projects_btn)
@@ -7375,14 +7602,36 @@ function filterAliases(q) {{
                         self.switch_to_config(full_path)
                         return
 
-    def _create_config_button(self, config_path, is_pinned, draggable=False, flow_managed=True):
+    def _create_config_button(self, config_path, is_pinned, draggable=False, flow_managed=True, on_select=None):
         """Create a config button with new window button.
         flow_managed=True: FlowWidget controls cell width dynamically (all grid views).
-        flow_managed=False: fixed 120px width for Zone 1 pinned drag-reorder row."""
+        flow_managed=False: fixed 120px width for Zone 1 pinned drag-reorder row (also used,
+        unrelated to Zone 1, by the project mega-menu's narrow columns — see
+        _build_project_mega_menu_content()).
+        on_select: optional no-arg callback invoked after any of this button's three actions
+        (switch/new window/new desktop) — used by the mega menu to close its popup on
+        selection, since clicking a plain child widget inside a QWidgetAction does not close
+        the QMenu on its own (confirmed empirically; only real QAction triggers do)."""
         # Get display name from config (reads project_name if set)
         raw_name = self.get_display_name_for_config_path(config_path)
         display_name = raw_name.replace("_config", "").replace("_", " ").replace("-", " ").title()
         is_current = (config_path == self.current_config_file)
+
+        def _fire_on_select():
+            if on_select:
+                on_select()
+
+        def _switch_and_select(path):
+            self.switch_to_config(path)
+            _fire_on_select()
+
+        def _new_window_and_select(path):
+            self.open_config_in_new_window(path)
+            _fire_on_select()
+
+        def _new_desktop_and_select(path):
+            self.open_config_in_new_desktop(path)
+            _fire_on_select()
 
         btn_container = QWidget()
         btn_container_layout = QHBoxLayout(btn_container)
@@ -7455,7 +7704,7 @@ function filterAliases(q) {{
                 }}
             """)
 
-        btn.clicked.connect(lambda checked=False, path=config_path: self.switch_to_config(path))
+        btn.clicked.connect(lambda checked=False, path=config_path: _switch_and_select(path))
         if draggable:
             tooltip = f"{display_name}\n📌 {config_path}\n(Drag to reorder)"
         else:
@@ -7487,7 +7736,7 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """)
-        new_window_btn.clicked.connect(lambda checked=False, path=config_path: self.open_config_in_new_window(path))
+        new_window_btn.clicked.connect(lambda checked=False, path=config_path: _new_window_and_select(path))
         new_window_btn.setToolTip("Open in new window")
         btn_container_layout.addWidget(new_window_btn)
 
@@ -7510,7 +7759,7 @@ function filterAliases(q) {{
                     color: {self.t('fg_on_dark')};
                 }}
             """)
-            new_desktop_btn.clicked.connect(lambda checked=False, path=config_path: self.open_config_in_new_desktop(path))
+            new_desktop_btn.clicked.connect(lambda checked=False, path=config_path: _new_desktop_and_select(path))
             new_desktop_btn.setToolTip("Open in new virtual desktop")
             btn_container_layout.addWidget(new_desktop_btn)
 
@@ -8033,8 +8282,27 @@ function filterAliases(q) {{
                     group_layout = QVBoxLayout()
                     group_layout.setSpacing(3)
 
-                    # Create drop zone for drag-and-drop reordering (always active)
-                    category_drop_zone = CategoryDropZone(self, col_idx, category_name)
+                    # Create drop zone for drag-and-drop reordering (always active). For the
+                    # Docs bucket, category_name is the display LABEL ("Docs") which can now
+                    # differ from the real backing category ("Documentation", or legacy
+                    # "Docs" — see _ensure_documentation_category()); DraggableItemButton is
+                    # built with the item's TRUE category (see true_category below), so the
+                    # drop zone must resolve to that same true name too, or same-category
+                    # reorders would always be misdetected as cross-category moves, and a
+                    # genuine cross-category move into this zone would try to move into a
+                    # category literally named "Docs" that may not exist — silently losing
+                    # the item (handle_item_move_to_category() reads the file fresh from disk
+                    # and finds no destination to insert into). Best-effort resolve only, no
+                    # creation here — creating on every render would be a side effect a plain
+                    # view of the Docs tab shouldn't have.
+                    if category_name == "Docs":
+                        _docs_real_name = next(
+                            (n for n in ("Documentation", "Docs") if any(n in cd for cd in self.COLUMN_1)),
+                            "Documentation"
+                        )
+                        category_drop_zone = CategoryDropZone(self, col_idx, _docs_real_name)
+                    else:
+                        category_drop_zone = CategoryDropZone(self, col_idx, category_name)
                     drop_zone_layout = QVBoxLayout(category_drop_zone)
                     drop_zone_layout.setContentsMargins(0, 0, 0, 0)
                     drop_zone_layout.setSpacing(3)
@@ -8380,10 +8648,10 @@ function filterAliases(q) {{
                                 # externally there, so the icon keeps its original job of
                                 # previewing the folder internally.
                                 folder_btn = QPushButton()
-                                _fi = QIcon.fromTheme("folder")
-                                if _fi.isNull():
-                                    _fi = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-                                folder_btn.setIcon(_fi)
+                                # Blue hand-drawn folder icon, not QIcon.fromTheme("folder")/
+                                # SP_DirIcon — both render yellow/manila on many systems; never
+                                # use a yellow folder glyph for folders/files in this project.
+                                folder_btn.setIcon(self._blue_folder_icon())
                                 folder_btn.setIconSize(QSize(16, 16))
                                 folder_btn.setMaximumWidth(28)
                                 folder_btn.setMinimumHeight(30)
@@ -8407,10 +8675,9 @@ function filterAliases(q) {{
                                     btn_layout.addWidget(btn, 1)
 
                                     folder_btn = QPushButton()
-                                    _fi = QIcon.fromTheme("folder")
-                                    if _fi.isNull():
-                                        _fi = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-                                    folder_btn.setIcon(_fi)
+                                    # Blue hand-drawn folder icon — see the other folder_btn
+                                    # above; never use a yellow folder glyph in this project.
+                                    folder_btn.setIcon(self._blue_folder_icon())
                                     folder_btn.setIconSize(QSize(16, 16))
                                     folder_btn.setMaximumWidth(28)
                                     folder_btn.setMinimumHeight(30)
@@ -10860,7 +11127,9 @@ function filterAliases(q) {{
         # both aliases so the two never show twice once it exists.
         move_actions = {}
         if self._is_grouped_view_active():
-            move_menu = menu.addMenu("📁  Move to category")
+            # Blue folder icon, not the 📁 emoji — renders yellow/manila in most color-emoji
+            # fonts; never use a yellow folder glyph for folders/files in this project.
+            move_menu = menu.addMenu(self._blue_folder_icon(), "Move to category")
             if category_name not in ("Documentation", "Docs"):
                 move_actions[move_menu.addAction("📄  Documentation (docs)")] = "__DOCS__"
             real_category_names = [list(cd.keys())[0] for cd in self.COLUMN_1 if cd]
@@ -11319,6 +11588,12 @@ function filterAliases(q) {{
             self._rebuild_pdf_tab_strip()
         self.save_notes()
 
+    def _close_all_pdf_tabs(self):
+        """Close every open PDF tab. _close_pdf_tab() never refuses to close (no confirmation
+        dialog — PDFs are read-only), so this always terminates with zero tabs."""
+        while self.pdf_tabs:
+            self._close_pdf_tab(0)
+
     def _build_pdf_tab_strip(self, parent_layout):
         """Build the row of PDF tab buttons (one per open PdfTabState, with a close button
         each) — sits between the toolbar and the PDF scroll area. Rebuilt fresh on every
@@ -11386,6 +11661,31 @@ function filterAliases(q) {{
 
         return group
 
+    def _build_close_all_tabs_button(self, on_click):
+        """"Close All" button for the right-hand end of a multi-instance tab strip (PDF/
+        Image/Web/Notes/Editor) — filled with the tab row's own darkest green (bg_green_1,
+        the resting-tab color) rather than the plain bg_button the individual tabs use when
+        inactive, so it reads as visually distinct without introducing an unrelated accent
+        color. Callers only add this when more than one tab is open — with exactly one,
+        "close all" is the same as that tab's own ×."""
+        btn = QPushButton("X Close All")
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_green_1')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('border')};
+                padding: 3px 8px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_green_2')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """)
+        btn.setToolTip("Close all open tabs")
+        btn.clicked.connect(on_click)
+        return btn
+
     def _rebuild_pdf_tab_strip(self):
         """Clear and repopulate self.pdf_tab_strip_layout from self.pdf_tabs — called after
         every open/close/activate so the strip stays in sync without a full rebuild. A
@@ -11409,6 +11709,10 @@ function filterAliases(q) {{
             )
             self.pdf_tab_strip_layout.addWidget(group)
         self.pdf_tab_strip_layout.addStretch()
+        if len(self.pdf_tabs) > 1:
+            self.pdf_tab_strip_layout.addWidget(
+                self._build_close_all_tabs_button(lambda checked=False: self._close_all_pdf_tabs())
+            )
 
     def render_pdf_page(self):
         """Render the current PDF page"""
@@ -12069,6 +12373,14 @@ function filterAliases(q) {{
             self._rebuild_web_tab_strip()
         self.save_notes()
 
+    def _close_all_web_tabs(self):
+        """Close every open Web tab. _close_web_tab() never refuses to close, and any pending
+        Muya autosave flush it needs happens internally (via _activate_web_tab()'s own flush
+        when closing the active tab mid-list, or the last-tab flush above) — so this always
+        terminates with zero tabs."""
+        while self.web_tabs:
+            self._close_web_tab(0)
+
     def _build_web_tab_strip(self, parent_layout):
         """Build the row of Web tab buttons — mirrors _build_pdf_tab_strip()."""
         self.web_tab_strip_widget = QWidget()
@@ -12100,6 +12412,10 @@ function filterAliases(q) {{
             )
             self.web_tab_strip_layout.addWidget(group)
         self.web_tab_strip_layout.addStretch()
+        if len(self.web_tabs) > 1:
+            self.web_tab_strip_layout.addWidget(
+                self._build_close_all_tabs_button(lambda checked=False: self._close_all_web_tabs())
+            )
 
     def webview_home(self):
         """Navigate to home URL from config — navigates the current tab in place."""
@@ -13161,6 +13477,18 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
+    def _hamburger_icon(self):
+        """Plain single-color hamburger (☰) icon for the title-bar project mega-menu button —
+        same light/dark PNG pair convention as _open_icon()/_pin_icon(), since it sits on the
+        plain title-bar background, not a colored tab row."""
+        cache_attr = f'_hamburger_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "hamburger-dark.png" if self.current_theme == "dark" else "hamburger-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
     def _render_folder_tree(self, entries, target=None):
         """Render scanned entries into a tree/details view — self.folder_browser by default,
         or the given target widget (e.g. the launcher-column mini panel)."""
@@ -14035,6 +14363,18 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self._rebuild_notes_tab_strip()
         self.save_notes()
 
+    def _close_all_notes_tabs(self):
+        """Close every open Notes tab down to just the project's own note. Can't use a plain
+        `while self.notes_tabs:` loop — _close_notes_tab() deliberately re-appends a fresh
+        project-note tab whenever the list would otherwise go to zero, so that would never
+        terminate. Instead close down to the last one, then close that one too — which
+        triggers the same "recreate the project note" fallback, landing on the intended end
+        state (exactly one tab: the project's own note) rather than zero."""
+        while len(self.notes_tabs) > 1:
+            self._close_notes_tab(0)
+        if self.notes_tabs:
+            self._close_notes_tab(0)
+
     def _build_notes_tab_strip(self, parent_layout):
         """Build the row of Notes tab buttons — mirrors _build_pdf_tab_strip(). Focus
         layout only (called from create_notes_toolbar(), itself Focus-layout-gated)."""
@@ -14070,6 +14410,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             )
             self.notes_tab_strip_layout.addWidget(group)
         self.notes_tab_strip_layout.addStretch()
+        if len(self.notes_tabs) > 1:
+            self.notes_tab_strip_layout.addWidget(
+                self._build_close_all_tabs_button(lambda checked=False: self._close_all_notes_tabs())
+            )
 
     def _open_markdown_in_muya_editor(self, path=None):
         """Switch the main webview into the Muya WYSIWYG markdown editor for the given file."""
@@ -14524,6 +14868,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self._rebuild_code_tab_strip()
         self.save_notes()
 
+    def _close_all_code_tabs(self):
+        """Close every open Editor tab. Unlike the other four tab types, _close_code_tab()
+        can genuinely refuse to close (a dirty tab's discard confirmation) and returns
+        without popping it if the user clicks No — so a plain `while self.code_tabs:` loop
+        would spin forever reprocessing the same declined tab. Stop as soon as an attempt
+        doesn't actually shrink the list, leaving that tab (and any after it) open rather
+        than looping or silently skipping."""
+        while self.code_tabs:
+            before = len(self.code_tabs)
+            self._close_code_tab(0)
+            if len(self.code_tabs) == before:
+                break
+
     def _build_code_tab_strip(self, parent_layout):
         """Build the row of Editor tab buttons — mirrors _build_pdf_tab_strip()."""
         self.code_tab_strip_widget = QWidget()
@@ -14558,6 +14915,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             )
             self.code_tab_strip_layout.addWidget(group)
         self.code_tab_strip_layout.addStretch()
+        if len(self.code_tabs) > 1:
+            self.code_tab_strip_layout.addWidget(
+                self._build_close_all_tabs_button(lambda checked=False: self._close_all_code_tabs())
+            )
 
     def _open_code_file_in_editor(self, path=None):
         """Stable public entry point for opening a file in the internal code editor — used
@@ -15481,6 +15842,13 @@ Project created: {date_str}
             self._rebuild_image_tab_strip()
         self.save_notes()
 
+    def _close_all_image_tabs(self):
+        """Close every open Image tab. _close_image_tab() never refuses to close (no
+        confirmation dialog — images are read-only), so this always terminates with zero
+        tabs."""
+        while self.image_tabs:
+            self._close_image_tab(0)
+
     def _build_image_tab_strip(self, parent_layout):
         """Build the row of Image tab buttons — mirrors _build_pdf_tab_strip()."""
         self.image_tab_strip_widget = QWidget()
@@ -15512,6 +15880,10 @@ Project created: {date_str}
             )
             self.image_tab_strip_layout.addWidget(group)
         self.image_tab_strip_layout.addStretch()
+        if len(self.image_tabs) > 1:
+            self.image_tab_strip_layout.addWidget(
+                self._build_close_all_tabs_button(lambda checked=False: self._close_all_image_tabs())
+            )
 
     def render_image(self):
         """Render the image at current zoom level"""
