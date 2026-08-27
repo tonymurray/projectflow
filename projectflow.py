@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction
+    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
@@ -844,6 +844,8 @@ class ProjectFlowApp(QMainWindow):
         self.config = {}
         self.config_file_arg = config_file_arg  # Store CLI argument
         self.edit_mode = False  # Track whether we're in edit mode
+        self._pre_fullscreen_state = Qt.WindowState.WindowMaximized  # matches actual startup state (showMaximized())
+        self._zen_mode = False  # collapses launcher/notepad columns to focus the active viewer (see toggle_zen_mode)
         # Create the webview here, before init_ui() ever runs, so it's bound to a
         # profile configured while the app name is still the stable "ProjectFlow" —
         # not the per-project "ProjectFlow-{name}" set in init_ui().
@@ -875,6 +877,7 @@ class ProjectFlowApp(QMainWindow):
         self.webview = QWebEngineView()
         self.webview.setPage(QWebEnginePage(self.web_profile, self.webview))
         self.webview.urlChanged.connect(self.on_webview_url_changed)
+        self._enable_web_fullscreen_support(self.webview)
 
         # Muya markdown-editor session for the main viewer (see _open_markdown_in_muya_editor,
         # MuyaSession, and the shared _muya_*/_open_path_in_muya_session bridge methods).
@@ -895,6 +898,7 @@ class ProjectFlowApp(QMainWindow):
         # layout switching.
         self.notes_webview = QWebEngineView()
         self.notes_webview.setPage(QWebEnginePage(self.web_profile, self.notes_webview))
+        self._enable_web_fullscreen_support(self.notes_webview)
         self._notes_muya_session = MuyaSession(self.notes_webview)
         self.notes_webview.loadFinished.connect(
             lambda ok: self._on_muya_webview_load_finished(ok, self._notes_muya_session)
@@ -923,6 +927,7 @@ class ProjectFlowApp(QMainWindow):
         # detach-then-readd" pattern as notes_webview above — it just loads a plain http:// URL
         # rather than hosting a Muya session, so no MuyaSession wrapper is needed.
         self.console_ttyd_webview = QWebEngineView()
+        self._enable_web_fullscreen_support(self.console_ttyd_webview)
         self.console_ttyd_proc = None
         self._console_ttyd_cwd = None
         self._console_ttyd_port = None
@@ -943,6 +948,7 @@ class ProjectFlowApp(QMainWindow):
         # detach-then-readd" pattern as notes_webview/console_ttyd_webview above. No
         # autosave_timer to wire up here — see CodeEditorSession's docstring for why.
         self.code_webview = QWebEngineView()
+        self._enable_web_fullscreen_support(self.code_webview)
         self._code_session = CodeEditorSession(self.code_webview)
         self.code_webview.loadFinished.connect(
             lambda ok: self._on_code_editor_webview_load_finished(ok, self._code_session)
@@ -996,6 +1002,12 @@ class ProjectFlowApp(QMainWindow):
         # every folder-browsing surface (main viewer + launcher panel) since they always show
         # the same self.folder_current_path in sync.
         self.folder_filter_text = ""
+
+        # True when self.folder_current_path was reached via the path-mapping fallback (see
+        # _resolve_existing_path()) rather than existing directly — drives the pale-blue path
+        # label styling in populate_folder_browser() so it's visually obvious you're looking
+        # at a mapped/substitute folder, not the one actually saved in the project.
+        self.folder_via_mapping = False
 
         # MIGRATION (temporary): rename archive files to {name}-archive.md format
         self._migrate_archive_filenames()
@@ -1063,6 +1075,100 @@ class ProjectFlowApp(QMainWindow):
             return
         self._stop_ttyd_console()
         super().closeEvent(event)
+
+    def keyPressEvent(self, event):
+        """Escape exits fullscreen — only reached when no focused child widget already
+        consumed the key (ClickableSearchTitle's own "Escape cancels search" and any open
+        QDialog's "Escape closes dialog" both still take precedence, exactly as before this
+        was added; this is purely a fallback for when nothing else wants Escape)."""
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.toggle_fullscreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def toggle_fullscreen(self):
+        """F11 toggle. Uses the windowState() bitmask (rather than showNormal()/
+        showMaximized() guessing) so the exact prior state — maximized or not — is restored
+        on exit. Also the landing point for web content's own HTML5 fullscreen requests
+        (see _on_web_fullscreen_requested) so both paths share one consistent notion of
+        "the app is fullscreen"."""
+        if self.isFullScreen():
+            self.setWindowState(self._pre_fullscreen_state)
+            self.set_status("")
+        else:
+            self._pre_fullscreen_state = self.windowState()
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowFullScreen)
+            self.set_status("Fullscreen — press F11 or Esc to exit", "info")
+
+    def _apply_zen_mode(self):
+        """Collapse the launcher/notepad columns so column2_widget fills the splitter.
+        Idempotent — safe to call after every rebuild, since launcher_widget/
+        notepad_column_widget/columns_splitter are recreated fresh by every
+        build_main_content() call and don't retain this collapsed state on their own (see
+        init_ui()'s reapplication call, mirroring how _enter_focus_layout() is similarly
+        re-invoked after every rebuild for the same reason).
+
+        setMinimumWidth(0) alone (the mechanism _enter_focus_layout() uses for the empty-in-
+        Focus-layout notepad_column_widget) is NOT enough here: Qt's splitter sizing falls
+        back to a widget's *minimumSizeHint()* (computed from its own layout's real content)
+        whenever minimumSize() is (0, 0) — confirmed empirically, a plain setMinimumWidth(0)
+        on launcher_widget (which always has real buttons) left it stuck around 300+px instead
+        of 0. setMaximumWidth(0) has no such content-based fallback (there's no
+        "maximumSizeHint" — the explicit maximum always wins), so it's what actually forces
+        the collapse for widgets with real content."""
+        if not hasattr(self, 'columns_splitter') or not hasattr(self, 'launcher_widget'):
+            return
+        self.launcher_widget.setMinimumWidth(0)
+        self.launcher_widget.setMaximumWidth(0)
+        if self.layout_mode != "focus":
+            self.notepad_column_widget.setMinimumWidth(0)
+            self.notepad_column_widget.setMaximumWidth(0)
+        sizes = [0] * self.columns_splitter.count()
+        sizes[self.columns_splitter.indexOf(self.column2_widget)] = (
+            sum(self.columns_splitter.sizes()) or 1000
+        )
+        self.columns_splitter.setSizes(sizes)
+
+    def toggle_zen_mode(self):
+        """Ctrl+F11 toggle. Orthogonal to toggle_fullscreen()/window chrome — this only
+        collapses the launcher/notepad columns so the active viewer fills the splitter.
+        Deliberately not wired into keyPressEvent()'s Escape handling: zen mode still leaves
+        the OS title bar/taskbar/borders visible, so there's no "stuck" scenario the way true
+        fullscreen has, and overloading Escape with a second meaning could surprise someone
+        pressing it for an unrelated reason while zen mode happens to be on."""
+        if self._zen_mode:
+            self._zen_mode = False
+            self.launcher_widget.setMinimumWidth(150)
+            self.launcher_widget.setMaximumWidth(QWIDGETSIZE_MAX)
+            if self.layout_mode != "focus":
+                self.notepad_column_widget.setMinimumWidth(150)
+                self.notepad_column_widget.setMaximumWidth(QWIDGETSIZE_MAX)
+            self.columns_splitter.setSizes(getattr(self, '_pre_zen_sizes', None) or [1, 1, 1])
+            self.set_status("")
+        else:
+            self._pre_zen_sizes = self.columns_splitter.sizes()
+            self._zen_mode = True
+            self._apply_zen_mode()
+            self.set_status("Zen mode — press Ctrl+F11 to restore panels", "info")
+
+    def _enable_web_fullscreen_support(self, view):
+        """Wire a QWebEngineView up to drive the app's own fullscreen state when embedded
+        content (e.g. a video) requests HTML5 fullscreen. Escape-to-exit needs no extra
+        plumbing here: Chromium already implements Escape-to-exit-fullscreen per the HTML5
+        Fullscreen API spec internally, and will simply re-fire fullScreenRequested with
+        toggleOn=False on its own, which this same handler folds back out of fullscreen."""
+        view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True
+        )
+        view.page().fullScreenRequested.connect(self._on_web_fullscreen_requested)
+
+    def _on_web_fullscreen_requested(self, request):
+        request.accept()
+        if request.toggleOn() and not self.isFullScreen():
+            self.toggle_fullscreen()
+        elif not request.toggleOn() and self.isFullScreen():
+            self.toggle_fullscreen()
 
     def load_settings(self):
         """Load user settings from JSON file"""
@@ -1486,8 +1592,8 @@ class ProjectFlowApp(QMainWindow):
         mappings_label = QLabel("Path Mappings:")
         mappings_label.setStyleSheet(label_style)
         mappings_label.setToolTip(
-            "Remap path prefixes when switching machines (e.g. SSHFS mounts).\n"
-            "Enable per-project via the ⇄ button in the title bar."
+            "Remap path prefixes when switching machines (e.g. a folder mounted at a\n"
+            "different location here than where it was originally saved from)."
         )
         mappings_outer = QVBoxLayout()
         mappings_outer.setSpacing(4)
@@ -1541,6 +1647,18 @@ class ProjectFlowApp(QMainWindow):
         mappings_btn_layout.addWidget(remove_mapping_btn)
         mappings_btn_layout.addStretch()
         mappings_outer.addLayout(mappings_btn_layout)
+
+        mappings_desc = QLabel(
+            "Applied automatically as a fallback, only when a saved folder or launcher path "
+            "isn't found on this machine — e.g. a project folder saved as ~/Public/key that's "
+            "only reachable here as ~/gtr7/Public/key. The original path is never changed; "
+            "when a mapping is used, the folder browser's path shows in pale blue to make it "
+            "clear you're viewing a mapped location, not the one actually saved in the project."
+        )
+        mappings_desc.setWordWrap(True)
+        mappings_desc.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        mappings_outer.addWidget(mappings_desc)
+
         layout.addRow(mappings_label, mappings_outer)
 
         return widget
@@ -1874,10 +1992,26 @@ class ProjectFlowApp(QMainWindow):
         in this project's default folder, and surface it plus well-known AI-authored root
         files as an automatic, non-editable "AI" category — always shown above Docs when
         present. Returns [] if no ai/ subfolder exists, so the bucket stays absent for most
-        projects. Items in _get_ai_hidden_paths() (the 👁 hide toggle) are excluded."""
+        projects. Items in _get_ai_hidden_paths() (the 👁 hide toggle) are excluded.
+
+        Falls back to the global path mapping (see _resolve_existing_path()) when
+        config_folder_path itself isn't reachable directly — safe to do here (unlike Scan for
+        Documents, which deliberately does NOT get this treatment) because AI items are purely
+        dynamic and never persisted: they're recomputed fresh from disk on every render, so
+        there's no "which path do we save" question. Sets self._ai_via_mapping so the render
+        loop can apply the same pale-blue "mapped" styling used elsewhere (see
+        get_item_button_style()/_path_is_via_mapping()).
+        """
         root = getattr(self, 'config_folder_path', None)
-        if not root or not os.path.isdir(root):
+        self._ai_via_mapping = False
+        if not root:
             return []
+        if not os.path.isdir(root):
+            resolved, used_mapping = self._resolve_existing_path(root)
+            if not used_mapping:
+                return []
+            root = os.path.expanduser(resolved)
+            self._ai_via_mapping = True
         ai_dir = os.path.join(root, "ai")
         if not os.path.isdir(ai_dir):
             return []
@@ -2329,6 +2463,25 @@ class ProjectFlowApp(QMainWindow):
         color_row.addStretch()
         form_layout.addRow(field_label("Project Color:"), color_row)
 
+        # Scan for Documents — a normal field row (label left, action widget right) rather
+        # than the separate "Project Actions" section this used to live in further down;
+        # moved up next to Project Color since it's one of the first things people reach
+        # for when setting up a project. Also repeated inside the Docs launcher section
+        # itself in edit mode — see build_main_content()'s "Add Category" handling.
+        scan_docs_layout = QVBoxLayout()
+        scan_docs_layout.setSpacing(4)
+        scan_docs_btn_row = QHBoxLayout()
+        self._settings_scan_docs_btn = QPushButton("🔍 Scan for docs")
+        self._settings_scan_docs_btn.setToolTip("Scan project folder for documentation files")
+        self._settings_scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
+        scan_docs_btn_row.addWidget(self._settings_scan_docs_btn)
+        scan_docs_btn_row.addStretch()
+        scan_docs_layout.addLayout(scan_docs_btn_row)
+        self._settings_scan_docs_desc = QLabel("Scans the default folder for .md, .html files, optionally add to documents/launchers.")
+        self._settings_scan_docs_desc.setWordWrap(True)
+        scan_docs_layout.addWidget(self._settings_scan_docs_desc)
+        form_layout.addRow(field_label("Scan for Documents:"), scan_docs_layout)
+
         # Layout mode (Standard 3-column vs Focus 2-column) — moved here from the
         # title-bar ⊞/▣ toggle button so it lives alongside the project's other
         # per-project defaults rather than as a persistent top-right button.
@@ -2433,26 +2586,6 @@ class ProjectFlowApp(QMainWindow):
         main_layout.addLayout(form_layout)
         main_layout.addSpacing(20)
 
-        # Project Actions section — moved here from the title-bar "🔍 Scan Docs" button.
-        # _show_doc_scan_dialog() itself is unchanged, still its own self-contained modal
-        # QDialog; only the entry point moved.
-        self._settings_actions_label = QLabel("Project Actions:")
-        main_layout.addWidget(self._settings_actions_label)
-
-        actions_btn_layout = QHBoxLayout()
-        self._settings_scan_docs_btn = QPushButton("🔍 Scan for docs")
-        self._settings_scan_docs_btn.setToolTip("Scan project folder for documentation files")
-        self._settings_scan_docs_btn.clicked.connect(self._show_doc_scan_dialog)
-        actions_btn_layout.addWidget(self._settings_scan_docs_btn)
-        actions_btn_layout.addStretch()
-        main_layout.addLayout(actions_btn_layout)
-
-        self._settings_scan_docs_desc = QLabel("Scans the default folder for .md, .html files, optionally add to documents/launchers.")
-        self._settings_scan_docs_desc.setWordWrap(True)
-        main_layout.addWidget(self._settings_scan_docs_desc)
-
-        main_layout.addSpacing(20)
-
         # Desktop Menu Entry section
         self._settings_menu_label = QLabel("Desktop Menu Entry:")
         main_layout.addWidget(self._settings_menu_label)
@@ -2468,29 +2601,6 @@ class ProjectFlowApp(QMainWindow):
         menu_btn_layout.addWidget(self._settings_create_menu_btn)
         menu_btn_layout.addStretch()
         main_layout.addLayout(menu_btn_layout)
-
-        main_layout.addSpacing(20)
-
-        # Path mapping — moved to the very bottom, below Desktop Menu Entry, since it's a
-        # quite obscure setting (was previously a title-bar "⇄" toggle, easy to confuse
-        # with the Focus-layout toggle when always visible). Wrapped in its own container
-        # widget (rather than a QFormLayout row like the fields above) purely so
-        # _populate_settings_form() can hide/show the whole section — checkbox + help text
-        # — as one unit via plain setVisible(), since it's no longer inside form_layout.
-        # Deferred to Save like every other field here (read in _apply_settings()) rather
-        # than the old title-bar button's immediate self-toggle-and-refresh — toggling it
-        # used to trigger a full refresh_projects() on every click, which reloaded/rebuilt
-        # the whole app right under the user while they were still in the Settings viewer.
-        self._settings_path_mapping_section = QWidget()
-        path_mapping_layout = QVBoxLayout(self._settings_path_mapping_section)
-        path_mapping_layout.setContentsMargins(0, 0, 0, 0)
-        path_mapping_layout.setSpacing(4)
-        self._settings_path_mapping_checkbox = QCheckBox("Path mapping")
-        path_mapping_layout.addWidget(self._settings_path_mapping_checkbox)
-        self._settings_path_mapping_desc = QLabel("Remap to, for example, a mounted share from a network computer. See mapping paths in the main Settings.")
-        self._settings_path_mapping_desc.setWordWrap(True)
-        path_mapping_layout.addWidget(self._settings_path_mapping_desc)
-        main_layout.addWidget(self._settings_path_mapping_section)
 
         main_layout.addStretch()  # Push form to top
 
@@ -2548,15 +2658,12 @@ class ProjectFlowApp(QMainWindow):
             btn.setStyleSheet(btn_style)
 
         self._proj_use_three_columns.setStyleSheet(label_style)
-        self._settings_path_mapping_checkbox.setStyleSheet(label_style)
         self._style_project_color_button()
         section_label_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;"
         desc_style = f"color: {self.t('fg_secondary')}; font-size: 12px;"
         self._settings_menu_label.setStyleSheet(section_label_style)
         self._settings_menu_desc.setStyleSheet(desc_style)
-        self._settings_actions_label.setStyleSheet(section_label_style)
         self._settings_scan_docs_desc.setStyleSheet(desc_style)
-        self._settings_path_mapping_desc.setStyleSheet(desc_style)
 
     def _style_project_color_button(self):
         """Style self._proj_color_btn to preview the currently-chosen color (or a plain
@@ -2627,9 +2734,6 @@ class ProjectFlowApp(QMainWindow):
         self._settings_form_layout.setRowVisible(self._settings_kimai_label, kimai_configured)
         current_kid = getattr(self, 'config_kimai_project_id', None)
         self._proj_kimai_project_id.setText(str(current_kid) if current_kid else "")
-
-        self._settings_path_mapping_checkbox.setChecked(getattr(self, 'config_path_mapping', False))
-        self._settings_path_mapping_section.setVisible(bool(self.settings.get('path_mappings')))
 
     def create_settings_toolbar(self, parent_layout):
         """Toolbar for the Settings viewer (column2_mode == "settings") — rebuilt fresh
@@ -3697,9 +3801,6 @@ class ProjectFlowApp(QMainWindow):
             kimai_id_text = self._proj_kimai_project_id.text().strip()
             self.config_kimai_project_id = int(kimai_id_text) if kimai_id_text.isdigit() else None
 
-            if hasattr(self, '_settings_path_mapping_checkbox'):
-                self.config_path_mapping = self._settings_path_mapping_checkbox.isChecked()
-
             # Save config to JSON (columns already updated by tree editing)
             self._save_project_config()
 
@@ -3925,11 +4026,11 @@ class ProjectFlowApp(QMainWindow):
             elif "project_color" in config_data:
                 del config_data["project_color"]
 
-            # Update path mapping flag
-            if getattr(self, 'config_path_mapping', False):
-                config_data["path_mapping"] = True
-            elif "path_mapping" in config_data:
-                del config_data["path_mapping"]
+            # The per-project "Path mapping" checkbox was removed (see _resolve_existing_path())
+            # — mapping is now a global, always-on fallback used only when a path is missing,
+            # so this flag is obsolete. Drop it opportunistically on the next save of a project
+            # that still has it from before.
+            config_data.pop("path_mapping", None)
 
             # Update linked Kimai project ID and name
             kimai_pid = getattr(self, 'config_kimai_project_id', None)
@@ -3969,8 +4070,34 @@ class ProjectFlowApp(QMainWindow):
             print(f"Error saving icon preferences: {e}")
             QMessageBox.warning(self, "Error", f"Failed to save icon preferences: {e}")
 
-    def get_item_button_style(self, clicked=False):
-        """Get stylesheet for item buttons (normal or clicked state)"""
+    def get_item_button_style(self, clicked=False, mapped=False):
+        """Get stylesheet for item buttons (normal, clicked, or mapped-path state).
+
+        'mapped' takes precedence over 'clicked': a pale-blue background/border indicating
+        the item's own path wasn't found directly and is only showing via the global
+        path-mapping fallback (see _resolve_existing_path()/_path_is_via_mapping()) — the
+        same pale blue and reasoning as the folder browser's path-label badge (see UI
+        Features → Folder browser / Settings Dialog → path mappings description)."""
+        if mapped:
+            if self.current_theme == "dark":
+                bg, border, fg = "#1c3a52", "#2a5a82", "#8ecbff"
+            else:
+                bg, border, fg = "#dbeeff", "#a8d4f5", "#1a5a8a"
+            return f"""
+                QPushButton {{
+                    text-align: left;
+                    padding-left: 10px;
+                    background-color: {bg};
+                    color: {fg};
+                    border: 1px solid {border};
+                    border-radius: 3px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                    border: 1px solid {self.t('bg_category_hover')};
+                }}
+            """
         if clicked:
             return f"""
                 QPushButton {{
@@ -4484,8 +4611,6 @@ StartupNotify=true
                 self.config_browser_new_tab = config_data.get('browser_new_tab', None)
                 # Load per-project color for the projects section
                 self.config_project_color = config_data.get('project_color', None)
-                # Load per-project path mapping toggle
-                self.config_path_mapping = config_data.get('path_mapping', False)
                 # Load linked Kimai project ID and name
                 self.config_kimai_project_id = config_data.get('kimai_project_id', None)
                 self.config_kimai_project_name = config_data.get('kimai_project_name', None)
@@ -4545,7 +4670,6 @@ StartupNotify=true
                 self.config_notes_file = None
                 self.config_project_name = None
                 self.config_project_color = None
-                self.config_path_mapping = False
                 # create_default_project() (just called above) writes "layout_mode": "focus"
                 # into the new file on disk — match that here too, rather than hardcoding
                 # 'standard' and silently overriding what was just written, which left a
@@ -6215,6 +6339,13 @@ function filterAliases(q) {{
         if self.layout_mode == "focus":
             self._enter_focus_layout()
 
+        # Reapply zen mode's collapsed columns after every rebuild — launcher_widget/
+        # notepad_column_widget/columns_splitter are recreated fresh by build_main_content()
+        # each time and don't retain this on their own (see _apply_zen_mode()'s docstring).
+        # Must run after _enter_focus_layout() above, since that also touches splitter sizes.
+        if self._zen_mode:
+            self._apply_zen_mode()
+
     def create_title_bar(self, parent_layout):
         """Create a title bar with project name on left and status on right"""
         title_bar = QHBoxLayout()
@@ -6271,6 +6402,10 @@ function filterAliases(q) {{
             edit_shortcut.activated.connect(self.toggle_edit_mode)
             save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
             save_shortcut.activated.connect(self._on_global_ctrl_s)
+            fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
+            fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
+            zen_shortcut = QShortcut(QKeySequence("Ctrl+F11"), self)
+            zen_shortcut.activated.connect(self.toggle_zen_mode)
             self._search_shortcuts_created = True
 
         title_bar.addStretch()
@@ -7235,9 +7370,12 @@ function filterAliases(q) {{
             self._set_project_color(config_path, chosen.name())
 
     def _resolve_path(self, path):
-        """Apply global path mappings to a path if mapping is enabled for this project."""
-        if not getattr(self, 'config_path_mapping', False):
-            return path
+        """Substitute a matching global path-mapping 'from' prefix with its 'to' replacement
+        (settings['path_mappings'], configured in Settings → Advanced). Pure string transform —
+        doesn't check whether the result exists on disk, and doesn't check whether path even
+        looks like a local path (a non-matching prefix is simply a no-op, safe to call on any
+        string). See _resolve_existing_path() for the fallback-when-missing behavior actually
+        used when opening/browsing paths."""
         mappings = self.settings.get('path_mappings', [])
         if not mappings:
             return path
@@ -7248,6 +7386,42 @@ function filterAliases(q) {{
             if from_ and to_ and expanded.startswith(from_):
                 return to_ + expanded[len(from_):]
         return path
+
+    def _resolve_existing_path(self, path):
+        """Try `path` as-is; if it's a local file/folder path that doesn't exist, try the
+        global path mapping as a fallback and use that instead IF it exists — e.g. a project
+        folder saved as `~/Public/key` that's only reachable as `~/gtr7/Public/key` on this
+        machine. Returns (path_to_use, used_mapping).
+
+        Deliberately read-only and call-site-scoped: the caller must never write
+        path_to_use back into a config file, only ever use it for the current navigation/
+        launch. This replaces the old per-project "Path mapping" checkbox/
+        config_path_mapping, which unconditionally preferred the mapped path over the
+        original whenever enabled — that meant a resolved (mapped) path could end up
+        persisted back into a project's config by whatever flow happened to read the
+        resolved value, silently corrupting the portable path for every other machine.
+        Falling back ONLY when the direct path is missing, and only for the one action that
+        needed it, avoids that failure mode entirely.
+        """
+        if not self._is_local_path(path):
+            return path, False
+        if os.path.exists(os.path.expanduser(path)):
+            return path, False
+        mapped = self._resolve_path(path)
+        if mapped != path and os.path.exists(os.path.expanduser(mapped)):
+            return mapped, True
+        return path, False
+
+    def _path_is_via_mapping(self, path):
+        """True if `path` is a local file/folder path that doesn't exist directly but does
+        resolve via the global path mappings (see _resolve_existing_path()) — drives the
+        pale-blue "mapped path" launcher-button styling (see get_item_button_style()) for
+        Documentation/Resources items, matching the folder browser's own pale-blue path-label
+        indicator for the same underlying fallback."""
+        if not path:
+            return False
+        _, used_mapping = self._resolve_existing_path(path)
+        return used_mapping
 
     def _write_project_color(self, config_path, color_hex_or_none):
         """Patch project_color into a config JSON file directly."""
@@ -8361,16 +8535,25 @@ function filterAliases(q) {{
                             pooled_row_layout.setContentsMargins(0, 0, 0, 0)
                             pooled_row_layout.setSpacing(2)
 
+                            # AI items are sourced from config_folder_path — if that root was
+                            # only reachable via the path-mapping fallback (see
+                            # _get_ai_category_items()), flag every item it produced as
+                            # "mapped" too, same pale-blue treatment as Documentation/Resources
+                            # items with their own missing-but-mapped path.
+                            is_ai_via_mapping = category_name == "AI" and getattr(self, '_ai_via_mapping', False)
                             btn = QPushButton(f"{app_icon}{display_name}")
                             btn.setMinimumHeight(30)
-                            btn.setStyleSheet(self.get_item_button_style())
+                            btn.setStyleSheet(self.get_item_button_style(mapped=is_ai_via_mapping))
                             if svg_icon_path:
                                 btn.setIcon(QIcon(svg_icon_path))
                                 btn.setIconSize(QSize(16, 16))
                             btn.clicked.connect(
                                 lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
                             )
-                            btn.setToolTip(f"[{app}] {path}")
+                            tooltip = f"[{app}] {path}"
+                            if is_ai_via_mapping:
+                                tooltip += "\n⇄ Project folder not found directly — showing via path mapping (Settings → Advanced)"
+                            btn.setToolTip(tooltip)
                             # No context menu here — neither AI items nor the pinned-notes entry
                             # have a real category backing them (true_category is None, see above).
                             pooled_row_layout.addWidget(btn, 1)
@@ -8410,7 +8593,8 @@ function filterAliases(q) {{
                             # VIEW MODE: Show normal button
                             btn = DraggableItemButton(f"{app_icon}{display_name}", col_idx, true_category, true_idx)
                             btn.setMinimumHeight(30)
-                            btn.setStyleSheet(self.get_item_button_style())
+                            is_mapped_item = self._path_is_via_mapping(path)
+                            btn.setStyleSheet(self.get_item_button_style(mapped=is_mapped_item))
                             if svg_icon_path:
                                 btn.setIcon(QIcon(svg_icon_path))
                                 btn.setIconSize(QSize(16, 16))
@@ -8420,7 +8604,10 @@ function filterAliases(q) {{
 
                             # Set tooltip showing the command and path — always draggable here,
                             # since pooled (non-draggable) items are handled separately above.
-                            btn.setToolTip(f"[{app}] {path}\n(Drag to reorder)")
+                            tooltip = f"[{app}] {path}\n(Drag to reorder)"
+                            if is_mapped_item:
+                                tooltip += "\n⇄ Not found directly — showing via path mapping (Settings → Advanced)"
+                            btn.setToolTip(tooltip)
                             if true_category is not None:
                                 self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
 
@@ -8890,8 +9077,16 @@ function filterAliases(q) {{
                     manage_hidden_btn.clicked.connect(self._show_hidden_items_dialog)
                     column_layout.addWidget(manage_hidden_btn)
 
-            # Add "Add Category" button in edit mode
-            if self.edit_mode:
+            # Add "Add Category" button in edit mode — hidden for the Focus-layout Docs tab
+            # specifically: Docs is backed by one fixed "Documentation" category (see
+            # _ensure_documentation_category()), so "add a new category" here doesn't map to
+            # anything meaningful the way it does for Resources. A "Scan for docs" button
+            # (same action as the Project Settings viewer's own, see _build_settings_form())
+            # takes its place instead, since that's the action actually useful on this tab.
+            is_docs_tab_editing = (
+                focus_launcher_tab_active and self.active_launcher_tab == "docs" and self.edit_mode
+            )
+            if self.edit_mode and not is_docs_tab_editing:
                 add_category_btn = QPushButton("➕ Add Category")
                 add_category_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
                 add_category_btn.setStyleSheet(f"""
@@ -8913,6 +9108,28 @@ function filterAliases(q) {{
                     lambda checked=False, c_idx=col_idx: self.add_new_category(c_idx)
                 )
                 column_layout.addWidget(add_category_btn)
+
+            if is_docs_tab_editing:
+                docs_scan_btn = QPushButton("🔍 Scan for docs")
+                docs_scan_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                docs_scan_btn.setToolTip("Scan project folder for documentation files")
+                docs_scan_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {self.t('bg_category')};
+                        color: {self.t('fg_on_dark')};
+                        border: 1px solid {self.t('bg_category_hover')};
+                        border-radius: 3px;
+                        padding: 5px 10px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {self.t('bg_category_hover')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """)
+                docs_scan_btn.clicked.connect(self._show_doc_scan_dialog)
+                column_layout.addWidget(docs_scan_btn)
 
 
             # Add stretch at bottom of column
@@ -9289,6 +9506,7 @@ function filterAliases(q) {{
                 # QWebEngineView (not QTextBrowser) so the combined page's CSS-only tab
                 # switching (:checked ~ sibling selectors) actually works.
                 self.help_browser = QWebEngineView()
+                self._enable_web_fullscreen_support(self.help_browser)
                 self.help_browser.setStyleSheet(f"""
                     QWebEngineView {{
                         border: 2px solid {self.t('border')};
@@ -13386,6 +13604,8 @@ function filterAliases(q) {{
             raw_entries = os.listdir(path)
         except PermissionError:
             return None, "Permission denied"
+        except FileNotFoundError:
+            return None, "This folder doesn't exist on this device (moved, deleted, or not mounted?)"
         except Exception as e:
             return None, f"Error: {str(e)}"
 
@@ -13512,6 +13732,10 @@ function filterAliases(q) {{
         or the given target widget (e.g. the launcher-column mini panel)."""
         grid = target if target is not None else self.folder_icon_view
         grid.clear()
+        # Undo whatever _render_folder_error_into_icon_view() may have left behind (see
+        # there) — this is the one place real content gets rendered back into the grid.
+        grid.setViewMode(QListWidget.ViewMode.IconMode)
+        grid.setWrapping(True)
         icon_provider = QFileIconProvider()
         folder_icon = self._folder_theme_icon()
 
@@ -13528,6 +13752,23 @@ function filterAliases(q) {{
             item.setData(Qt.ItemDataRole.UserRole + 1, e['kind'])
             grid.addItem(item)
 
+    def _render_folder_error_into_icon_view(self, grid, message):
+        """Show a scan error (e.g. "folder doesn't exist") in an icon-grid folder view.
+
+        A plain QListWidgetItem added while the grid is still in IconMode gets forced into
+        one fixed-size grid cell (setGridSize()) regardless of text length — the error text
+        wraps inside that one small cell and sits alone in the corner of an otherwise empty
+        grid, unreadable. Switching to ListMode for the error item makes it lay out as a
+        normal full-width, word-wrapped row instead. _render_folder_icons() switches the
+        grid back to IconMode the next time real entries are rendered, so this is undone
+        automatically on the next successful navigation."""
+        grid.clear()
+        grid.setViewMode(QListWidget.ViewMode.ListMode)
+        grid.setWrapping(False)
+        item = QListWidgetItem(message)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        grid.addItem(item)
+
     def populate_folder_browser(self, path):
         """Populate the folder browser (both tree and icon views) with contents of the given path.
 
@@ -13537,6 +13778,21 @@ function filterAliases(q) {{
         this on the very first-ever build if it starts pre-expanded (persisted per project).
         """
         path = os.path.expanduser(path)
+
+        # If the direct path doesn't exist, try it once through the global path mappings as
+        # a fallback (see _resolve_existing_path()) — e.g. a project's default folder saved
+        # as ~/Public/key that's only reachable as ~/gtr7/Public/key on this machine.
+        # Read-only: folder_current_path/the path label reflect the resolved path for this
+        # navigation only — nothing is written back to any config, so the original portable
+        # folder_path is untouched.
+        self.folder_via_mapping = False
+        if not os.path.exists(path):
+            resolved, used_mapping = self._resolve_existing_path(path)
+            if used_mapping:
+                path = os.path.expanduser(resolved)
+                self.folder_via_mapping = True
+                self.set_status(f"Folder not found — opened via path mapping instead: {path}", "info")
+
         self.folder_current_path = path
 
         # Update path label (shorten home dir to ~)
@@ -13544,15 +13800,44 @@ function filterAliases(q) {{
         home = os.path.expanduser("~")
         if path.startswith(home):
             display_path = "~" + path[len(home):]
+        if self.folder_via_mapping:
+            display_path = "⇄ " + display_path
         main_path_label = getattr(self, 'folder_path_label', None)
         if main_path_label is not None:
             main_path_label.setText(display_path)
+            self._style_folder_path_label(main_path_label)
         launcher_path_label = getattr(self, 'launcher_folder_path_label', None)
         if launcher_path_label is not None:
             launcher_path_label.setText(display_path)
+            self._style_folder_path_label(launcher_path_label)
 
         self._folder_raw_entries, self._folder_scan_error = self._scan_folder_entries(path)
         self._render_folder_views_from_cache()
+
+    def _style_folder_path_label(self, label):
+        """Style a folder-browser path label — plain secondary text normally, or a pale-blue
+        badge (background + tooltip) when self.folder_via_mapping is set, so it's visually
+        obvious the folder shown isn't the one actually saved in the project (see
+        _resolve_existing_path()/Settings → Advanced's path mappings table). Hand-picked pale
+        blue per theme rather than a themes.py color, same reasoning as the Notes paper theme
+        and code-editor syntax colors — a one-off accent, not part of the general palette."""
+        if self.folder_via_mapping:
+            if self.current_theme == "dark":
+                bg, fg = "#1c3a52", "#8ecbff"
+            else:
+                bg, fg = "#dbeeff", "#1a5a8a"
+            label.setStyleSheet(
+                f"font-size: 11px; color: {fg}; background-color: {bg}; "
+                f"padding: 2px 6px; border-radius: 3px;"
+            )
+            label.setToolTip(
+                "This folder wasn't found directly — showing the result of a path mapping "
+                "(Settings → Advanced → Path Mappings) instead. The project's own saved path "
+                "is unchanged."
+            )
+        else:
+            label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
+            label.setToolTip("Current directory")
 
     def _render_folder_views_from_cache(self):
         """Render self._folder_raw_entries (filtered by self.folder_filter_text, a Dolphin-style
@@ -13570,14 +13855,12 @@ function filterAliases(q) {{
                 main_tree.clear()
                 main_tree.addTopLevelItem(QTreeWidgetItem([error]))
             if main_icons is not None:
-                main_icons.clear()
-                main_icons.addItem(QListWidgetItem(error))
+                self._render_folder_error_into_icon_view(main_icons, error)
             if launcher_tree is not None:
                 launcher_tree.clear()
                 launcher_tree.addTopLevelItem(QTreeWidgetItem([error]))
             if launcher_icons is not None:
-                launcher_icons.clear()
-                launcher_icons.addItem(QListWidgetItem(error))
+                self._render_folder_error_into_icon_view(launcher_icons, error)
             return
 
         filter_text = (self.folder_filter_text or "").strip().lower()
@@ -15947,9 +16230,15 @@ Project created: {date_str}
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, lambda: self.main_scroll.verticalScrollBar().setValue(restore_scroll_pos))
 
-            # Show status message
-            self.status_label.setText("✓ Configuration reloaded successfully!")
-            self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+            # Show status message — but only the generic one if nothing more specific was
+            # already shown during this rebuild (e.g. a path-mapping fallback hint from
+            # populate_folder_browser(), see _resolve_existing_path()). init_ui() rebuilds
+            # status_label fresh every time (see create_title_bar()), so an empty label here
+            # means nothing set it during the rebuild — otherwise this would silently stomp
+            # that hint on every project switch, since switch_to_config() always calls this.
+            if not self.status_label.text():
+                self.status_label.setText("✓ Configuration reloaded successfully!")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
         except Exception as e:
             # Show error dialog if reload fails
             QMessageBox.critical(
@@ -15963,8 +16252,12 @@ Project created: {date_str}
     def open_in_app(self, path, app="default", force_external=False):
         """Open the specified path in the given application"""
         try:
-            # Apply path mappings if enabled for this project (before ~ expansion)
-            path = self._resolve_path(path)
+            # Fall back to a global path mapping only if the direct path is missing (before
+            # ~ expansion) — read-only, never persisted back to the config. See
+            # _resolve_existing_path().
+            path, _used_mapping = self._resolve_existing_path(path)
+            if _used_mapping:
+                self.set_status(f"Path not found — opened via mapping instead: {path}", "info")
             # Expand ~ to home directory
             expanded_path = os.path.expanduser(path)
 

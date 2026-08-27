@@ -2,7 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
-## 2026-08-26
+## 2026-08-27
+
+### Added
+- **Fullscreen mode**: `F11` toggles true window fullscreen, restoring the exact prior state (maximized or not) on exit via `setWindowState()`'s bitmask rather than guessing with `showNormal()`/`showMaximized()`. `Escape` also exits fullscreen — implemented as a `keyPressEvent()` fallback that only fires when no focused child widget (search box, an open dialog) already consumed the key, so existing Escape behavior elsewhere is unaffected. All five `QWebEngineView`s now have HTML5 fullscreen support enabled and wired to the same toggle, so embedded content (e.g. a video) requesting native fullscreen drives the app's real window state, with Escape-to-exit handled for free since Chromium re-fires the same request on its own.
+- **Zen mode**: `Ctrl+F11` collapses the launcher column (and, in Standard layout, the notepad column too) so the active viewer fills nearly the whole window — a second, independent toggle from window fullscreen, so the two can be combined freely. Collapsing a column with real content (unlike Focus layout's already-empty notepad column) needed both `setMinimumWidth(0)` *and* `setMaximumWidth(0)`, since Qt's splitter otherwise falls back to a widget's own `minimumSizeHint()`; re-applied automatically after every UI rebuild since the affected widgets are recreated fresh each time.
 
 ### Added
 - **Project mega-menu (☰)**: a new hamburger icon button at the top-left of the title bar opens a fast, additional way to switch projects — a large pop-over (sized to ~90% of the screen and centered, so it reads as a real overlay rather than a small dropdown) with a live search box and five side-by-side columns (Pinned / Recent / By Color / All Projects / Folder Projects), each independently scrollable. Purely additive: the existing always-visible Projects section is untouched. Built on `QMenu` + `QWidgetAction` (the standard Qt pattern for embedding arbitrary widgets in a dropdown), reusing the same per-project button (color bar, current-project highlight, right-click pin/color/archive menu, open-in-new-window/desktop) used everywhere else in the app. Archive is deliberately not one of the columns.
