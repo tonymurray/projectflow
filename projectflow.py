@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX
+    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
@@ -2391,6 +2391,391 @@ class ProjectFlowApp(QMainWindow):
 
         dlg.exec()
 
+    def _show_kickstart_dialog(self, folder_path=None, website_url=""):
+        """Kickstart / Project Finder: review-and-apply suggestions for a project's base
+        folder — detected project-type commands, dev shortcuts, documentation, a project
+        alias, and an optional website. Reachable both as a retrofit action (Project
+        Settings viewer's "🚀 Kickstart" button, no folder_path needed — falls back the
+        same way _show_doc_scan_dialog() does) and automatically right after "Make
+        Project" (folder_make_project()/folder_make_project_at(), pre-populated with the
+        new project's folder_path) or after "New Project" when a base folder is linked
+        (new_project()).
+
+        Detection itself lives in _detect_project_indicators()/
+        _build_dev_shortcut_suggestions() — this method is purely the review UI plus the
+        Apply handler that writes selections into self.COLUMN_1 and saves.
+        """
+        if not folder_path:
+            folder_path = getattr(self, 'config_folder_path', None)
+            if folder_path:
+                folder_path = os.path.expanduser(folder_path)
+            if not folder_path or not os.path.isdir(folder_path):
+                if getattr(self, 'current_config_file', None):
+                    candidate = os.path.dirname(os.path.abspath(self.current_config_file))
+                    if os.path.isdir(candidate):
+                        folder_path = candidate
+        if not folder_path or not os.path.isdir(folder_path):
+            chosen = QFileDialog.getExistingDirectory(self, "Select Project Folder", os.path.expanduser("~"))
+            if not chosen:
+                return
+            folder_path = chosen
+        folder_path = os.path.abspath(os.path.expanduser(folder_path))
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🚀 Kickstart")
+        dlg.resize(640, 660)
+        dlg.setStyleSheet(f"background-color: {self.t('bg_primary')}; color: {self.t('fg_primary')};")
+
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(16, 16, 16, 12)
+        outer.setSpacing(10)
+
+        lbl_style = f"color: {self.t('fg_primary')};"
+        section_style = f"color: {self.t('fg_primary')}; font-weight: bold; margin-top: 6px;"
+        info_style = f"color: {self.t('fg_secondary')}; font-size: 11px;"
+        check_style = f"color: {self.t('fg_primary')};"
+        input_style = f"""
+            QLineEdit {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 5px;
+            }}
+        """
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 5px 10px;
+            }}
+            QPushButton:hover {{ background-color: {self.t('bg_button_hover')}; }}
+        """
+
+        # Folder row
+        folder_row = QHBoxLayout()
+        folder_row.setSpacing(6)
+        folder_lbl = QLabel("Folder:")
+        folder_lbl.setStyleSheet(lbl_style)
+        path_edit = QLineEdit(folder_path)
+        path_edit.setReadOnly(True)
+        path_edit.setStyleSheet(input_style)
+        change_btn = QPushButton("Change")
+        change_btn.setStyleSheet(btn_style)
+        folder_row.addWidget(folder_lbl)
+        folder_row.addWidget(path_edit, 1)
+        folder_row.addWidget(change_btn)
+        outer.addLayout(folder_row)
+
+        # Scrollable body — heterogeneous sections (checkboxes, radio, text fields),
+        # unlike _show_doc_scan_dialog's single flat QListWidget of same-shaped items.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea {{ border: 1px solid {self.t('border')}; border-radius: 4px; }}")
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setSpacing(8)
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
+
+        existing_paths = set()
+        for cat_dict in self.COLUMN_1:
+            for items in cat_dict.values():
+                existing_paths |= {item[1] for item in items if len(item) > 1}
+
+        checkbox_entries = []  # (checkbox, category_name, item)
+
+        def add_checkbox_section(title, suggestions):
+            if not suggestions:
+                return
+            header = QLabel(title)
+            header.setStyleSheet(section_style)
+            body_layout.addWidget(header)
+            for s in suggestions:
+                already = s["item"][1] in existing_paths
+                cb = QCheckBox(s["label"])
+                cb.setStyleSheet(check_style)
+                cb.setChecked(s["checked"] and not already)
+                if already:
+                    cb.setEnabled(False)
+                    cb.setToolTip("Already in this project")
+                body_layout.addWidget(cb)
+                checkbox_entries.append((cb, title, s["item"]))
+
+        # --- Website ---
+        website_header = QLabel("Website")
+        website_header.setStyleSheet(section_style)
+        body_layout.addWidget(website_header)
+        website_edit = QLineEdit(website_url)
+        website_edit.setPlaceholderText("https://example.com")
+        website_edit.setStyleSheet(input_style)
+        body_layout.addWidget(website_edit)
+        website_launcher_cb = QCheckBox('Add "Open Website" launcher')
+        website_launcher_cb.setStyleSheet(check_style)
+        website_pin_cb = QCheckBox("Set as pinned Web URL (opens by default)")
+        website_pin_cb.setStyleSheet(check_style)
+        body_layout.addWidget(website_launcher_cb)
+        body_layout.addWidget(website_pin_cb)
+
+        def _update_website_checks(text=""):
+            has_url = bool(website_edit.text().strip())
+            website_launcher_cb.setEnabled(has_url)
+            website_pin_cb.setEnabled(has_url)
+            if not has_url:
+                website_launcher_cb.setChecked(False)
+                website_pin_cb.setChecked(False)
+            elif not website_launcher_cb.isChecked() and not website_pin_cb.isChecked():
+                website_launcher_cb.setChecked(True)
+
+        website_edit.textChanged.connect(_update_website_checks)
+        _update_website_checks()
+
+        # --- Dev Shortcuts ---
+        dev_header = QLabel("Dev Shortcuts")
+        dev_header.setStyleSheet(section_style)
+        body_layout.addWidget(dev_header)
+        dev_radio_row = QHBoxLayout()
+        dev_combined_radio = QRadioButton("Combined (directorydev)")
+        dev_separate_radio = QRadioButton("Three separate launchers")
+        dev_combined_radio.setChecked(True)
+        for r in (dev_combined_radio, dev_separate_radio):
+            r.setStyleSheet(check_style)
+        dev_radio_row.addWidget(dev_combined_radio)
+        dev_radio_row.addWidget(dev_separate_radio)
+        dev_radio_row.addStretch()
+        body_layout.addLayout(dev_radio_row)
+        dev_checks_container = QWidget()
+        dev_checks_layout = QVBoxLayout(dev_checks_container)
+        dev_checks_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addWidget(dev_checks_container)
+
+        dev_checkbox_entries = []
+
+        def rebuild_dev_checks():
+            while dev_checkbox_entries:
+                cb, _, _ = dev_checkbox_entries.pop()
+                cb.setParent(None)
+            suggestions = self._build_dev_shortcut_suggestions(folder_path, combined=dev_combined_radio.isChecked())
+            for s in suggestions:
+                already = s["item"][1] in existing_paths
+                cb = QCheckBox(s["label"])
+                cb.setStyleSheet(check_style)
+                cb.setChecked(s["checked"] and not already)
+                if already:
+                    cb.setEnabled(False)
+                    cb.setToolTip("Already in this project")
+                dev_checks_layout.addWidget(cb)
+                dev_checkbox_entries.append((cb, "Development", s["item"]))
+
+        dev_combined_radio.toggled.connect(rebuild_dev_checks)
+        rebuild_dev_checks()
+
+        # --- Detected project-type suggestions ---
+        indicator_groups = self._detect_project_indicators(folder_path)
+        detected_names = ", ".join(g["category"] for g in indicator_groups if g["category"] != "Quick Actions")
+        if detected_names:
+            detected_lbl = QLabel(f"Detected: {detected_names}")
+            detected_lbl.setStyleSheet(info_style)
+            body_layout.addWidget(detected_lbl)
+        for group in indicator_groups:
+            add_checkbox_section(group["category"], group["suggestions"])
+
+        # --- Documentation ---
+        found_docs, is_npm = self._scan_for_docs(folder_path)
+        doc_suggestions = [
+            {"id": f"doc_{i}", "label": f"{display}  —  {os.path.relpath(p, folder_path)}",
+             "item": [display, p, app], "checked": True}
+            for i, (display, p, app) in enumerate(found_docs)
+        ]
+        add_checkbox_section("Documentation", doc_suggestions)
+        if is_npm and found_docs:
+            npm_doc_note = QLabel("npm project detected — HTML files outside docs/ folders are excluded.")
+            npm_doc_note.setStyleSheet(info_style)
+            npm_doc_note.setWordWrap(True)
+            body_layout.addWidget(npm_doc_note)
+
+        # --- AI (informational only — already fully dynamic, see _get_ai_category_items()) ---
+        ai_detected = os.path.isdir(os.path.join(folder_path, "ai")) or any(
+            os.path.exists(os.path.join(folder_path, f))
+            for f in ("CLAUDE.md", "AGENTS.md", "CHANGELOG.md", "Specification.md", "SPEC.md")
+        )
+        if ai_detected:
+            ai_lbl = QLabel("🤖 AI folder/docs detected — these already show automatically in the AI section, nothing to add here.")
+            ai_lbl.setWordWrap(True)
+            ai_lbl.setStyleSheet(info_style)
+            body_layout.addWidget(ai_lbl)
+
+        # --- Project Alias ---
+        # Unlike checkbox_entries/dev_checkbox_entries, this one item isn't built from a
+        # generic (checkbox, category, item) list — check separately whether an alias
+        # already targets this exact folder, so re-running Kickstart on the same project
+        # doesn't silently duplicate the Development-category alias launcher item (the
+        # shell-alias-file write itself is idempotent via _write_alias_to_file(force=True),
+        # but the launcher item append in _apply_kickstart_selections() is not).
+        alias_already_exists = any(
+            len(item) >= 3 and item[2] == "alias" and item[1].rstrip().endswith(folder_path)
+            for cd in self.COLUMN_1 for items in cd.values() for item in items
+        )
+        alias_header = QLabel("Project Alias")
+        alias_header.setStyleSheet(section_style)
+        body_layout.addWidget(alias_header)
+        alias_cb = QCheckBox("Create shell alias + launcher to jump to this folder")
+        alias_cb.setStyleSheet(check_style)
+        alias_cb.setChecked(not alias_already_exists)
+        if alias_already_exists:
+            alias_cb.setToolTip("An alias already points at this folder")
+        body_layout.addWidget(alias_cb)
+        alias_row = QHBoxLayout()
+        alias_name_lbl = QLabel("Name:")
+        alias_name_lbl.setStyleSheet(lbl_style)
+        default_alias_name = getattr(self, 'config_project_name', None) or os.path.basename(folder_path)
+        default_alias_name = re.sub(r'[^a-zA-Z0-9_]+', '_', default_alias_name.strip().lower()).strip('_') or "project"
+        alias_name_edit = QLineEdit(default_alias_name)
+        alias_name_edit.setStyleSheet(input_style)
+        alias_row.addWidget(alias_name_lbl)
+        alias_row.addWidget(alias_name_edit)
+        body_layout.addLayout(alias_row)
+        alias_preview = QLabel()
+        alias_preview.setStyleSheet(info_style)
+        body_layout.addWidget(alias_preview)
+
+        def _update_alias_preview(text=""):
+            name = alias_name_edit.text().strip() or "?"
+            alias_preview.setText(f"→ {name}  =  cd {folder_path}")
+
+        alias_name_edit.textChanged.connect(_update_alias_preview)
+        _update_alias_preview()
+
+        body_layout.addStretch()
+
+        # Bottom buttons
+        btm_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(btn_style)
+        apply_btn = QPushButton("Apply")
+        apply_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: {self.t('bg_category_hover')}; }}
+        """)
+        btm_row.addStretch()
+        btm_row.addWidget(cancel_btn)
+        btm_row.addWidget(apply_btn)
+        outer.addLayout(btm_row)
+
+        def change_folder():
+            chosen = QFileDialog.getExistingDirectory(dlg, "Select Project Folder", folder_path)
+            if chosen:
+                dlg.reject()
+                self._show_kickstart_dialog(folder_path=chosen, website_url=website_edit.text().strip())
+
+        def do_apply():
+            self._apply_kickstart_selections(
+                folder_path=folder_path,
+                checkbox_entries=checkbox_entries + dev_checkbox_entries,
+                alias_checked=alias_cb.isChecked(),
+                alias_name=alias_name_edit.text().strip(),
+                website=website_edit.text().strip(),
+                website_launcher_checked=website_launcher_cb.isChecked(),
+                website_pin_checked=website_pin_cb.isChecked(),
+                dialog=dlg,
+            )
+
+        change_btn.clicked.connect(change_folder)
+        cancel_btn.clicked.connect(dlg.reject)
+        apply_btn.clicked.connect(do_apply)
+
+        dlg.exec()
+
+    def _apply_kickstart_selections(self, folder_path, checkbox_entries, alias_checked, alias_name,
+                                     website, website_launcher_checked, website_pin_checked, dialog):
+        """Apply handler for _show_kickstart_dialog(): writes every checked suggestion
+        into self.COLUMN_1 (Documentation items go through _ensure_documentation_category()
+        to match Scan-for-Docs' own behavior; everything else creates/reuses a plain
+        category dict the same way create_folder_project_config() used to), optionally
+        writes a shell alias (_write_alias_to_file(), mirrors the manual add-alias flow —
+        see open_in_app()'s app == "alias" branch for how the resulting item is parsed),
+        optionally sets the pinned Web URL, then saves via _save_project_config() — the
+        one call that persists both the column/category changes and
+        config_webview_url/config_column2_default together (see _show_doc_scan_dialog()'s
+        own do_add(), which uses the same call for the same reason)."""
+        # Pin the reviewed folder as this project's default (mirrors _show_doc_scan_dialog's
+        # own do_add(), which does the same) — Kickstart is fundamentally about linking a
+        # base folder, so this is an expected side effect, not a surprise one.
+        self.config_folder_path = folder_path
+        if hasattr(self, '_proj_folder_path'):
+            self._proj_folder_path.setText(folder_path)
+
+        selected_by_category = {}
+        for cb, category, item in checkbox_entries:
+            if cb.isChecked():
+                selected_by_category.setdefault(category, []).append(item)
+
+        doc_items = selected_by_category.pop("Documentation", None)
+        added = 0
+
+        for category, items in selected_by_category.items():
+            existing_cat = next((cd[category] for cd in self.COLUMN_1 if category in cd), None)
+            if existing_cat is None:
+                existing_cat = []
+                self.COLUMN_1.append({category: existing_cat})
+            existing_cat.extend(items)
+            added += len(items)
+
+        if doc_items:
+            doc_category_name = self._ensure_documentation_category()
+            doc_cat_items = next(cd[doc_category_name] for cd in self.COLUMN_1 if doc_category_name in cd)
+            doc_cat_items.extend(doc_items)
+            added += len(doc_items)
+
+        alias_created = False
+        if alias_checked and alias_name:
+            if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', alias_name):
+                self._write_alias_to_file(alias_name, folder_path, force=True)
+                dev_cat = next((cd["Development"] for cd in self.COLUMN_1 if "Development" in cd), None)
+                if dev_cat is None:
+                    dev_cat = []
+                    self.COLUMN_1.append({"Development": dev_cat})
+                dev_cat.append([alias_name, f"{alias_name} {folder_path}", "alias"])
+                added += 1
+                alias_created = True
+            else:
+                QMessageBox.warning(
+                    dialog, "Invalid Alias",
+                    f"'{alias_name}' isn't a valid alias name (letters, numbers, underscore; "
+                    "can't start with a number) — alias was not created."
+                )
+
+        if website:
+            if website_launcher_checked:
+                links_cat = next((cd["Links"] for cd in self.COLUMN_1 if "Links" in cd), None)
+                if links_cat is None:
+                    links_cat = []
+                    self.COLUMN_1.append({"Links": links_cat})
+                links_cat.append(["Open Website", website, "firefox"])
+                added += 1
+            if website_pin_checked:
+                self.config_webview_url = website
+                if not self.config_column2_default:
+                    self.config_column2_default = "webview"
+
+        self._save_project_config()
+        self.refresh_projects()
+        dialog.accept()
+
+        summary = f"Added {added} item{'s' if added != 1 else ''} to the project."
+        if alias_created:
+            summary += "\n\nRe-source projects/projectflow_aliases in your shell to activate the new alias there."
+        QMessageBox.information(self, "Kickstart Applied", summary)
+
     def _build_settings_form(self):
         """Build the persistent Project Settings form (self.settings_form), embedded as a
         viewer (column2_mode == "settings") rather than a modal dialog. Built ONCE here and
@@ -2481,6 +2866,24 @@ class ProjectFlowApp(QMainWindow):
         self._settings_scan_docs_desc.setWordWrap(True)
         scan_docs_layout.addWidget(self._settings_scan_docs_desc)
         form_layout.addRow(field_label("Scan for Documents:"), scan_docs_layout)
+
+        # Kickstart — retrofit entry point for the same suggestion review dialog shown
+        # automatically right after "Make Project" (see folder_make_project()). Placed
+        # directly below Scan for Documents since it's a superset of that action (docs +
+        # dev shortcuts + package-manager commands + alias + website, all in one review).
+        kickstart_layout = QVBoxLayout()
+        kickstart_layout.setSpacing(4)
+        kickstart_btn_row = QHBoxLayout()
+        self._settings_kickstart_btn = QPushButton("🚀 Kickstart")
+        self._settings_kickstart_btn.setToolTip("Review suggested docs, shortcuts, commands, and an alias for this project's folder")
+        self._settings_kickstart_btn.clicked.connect(lambda: self._show_kickstart_dialog())
+        kickstart_btn_row.addWidget(self._settings_kickstart_btn)
+        kickstart_btn_row.addStretch()
+        kickstart_layout.addLayout(kickstart_btn_row)
+        self._settings_kickstart_desc = QLabel("Suggests documentation, dev shortcuts, package-manager commands, an alias, and a website launcher — review and pick what to add.")
+        self._settings_kickstart_desc.setWordWrap(True)
+        kickstart_layout.addWidget(self._settings_kickstart_desc)
+        form_layout.addRow(field_label("Kickstart:"), kickstart_layout)
 
         # Layout mode (Standard 3-column vs Focus 2-column) — moved here from the
         # title-bar ⊞/▣ toggle button so it lives alongside the project's other
@@ -2653,7 +3056,7 @@ class ProjectFlowApp(QMainWindow):
         for btn in (
             self._proj_color_clear_btn, self._proj_pdf_browse_btn, self._proj_image_browse_btn,
             self._proj_console_browse_btn, self._proj_folder_browse_btn, self._proj_kimai_browse_btn,
-            self._settings_create_menu_btn, self._settings_scan_docs_btn,
+            self._settings_create_menu_btn, self._settings_scan_docs_btn, self._settings_kickstart_btn,
         ):
             btn.setStyleSheet(btn_style)
 
@@ -2664,6 +3067,7 @@ class ProjectFlowApp(QMainWindow):
         self._settings_menu_label.setStyleSheet(section_label_style)
         self._settings_menu_desc.setStyleSheet(desc_style)
         self._settings_scan_docs_desc.setStyleSheet(desc_style)
+        self._settings_kickstart_desc.setStyleSheet(desc_style)
 
     def _style_project_color_button(self):
         """Style self._proj_color_btn to preview the currently-chosen color (or a plain
@@ -10296,6 +10700,25 @@ function filterAliases(q) {{
             if reply == QMessageBox.StandardButton.Yes:
                 self.switch_to_config(new_config_path)
 
+                # Not every project here is folder-based (e.g. "file quarterly VAT
+                # return") — so unlike folder-based "Make Project" (which always has a
+                # folder and opens Kickstart automatically), ask first rather than
+                # assuming. Default No: most name-only projects created this way have
+                # no folder to link.
+                link_reply = QMessageBox.question(
+                    self,
+                    "Link a Folder?",
+                    "Link a base folder to this project?\n\n"
+                    "This lets Kickstart suggest documentation, dev shortcuts, and "
+                    "package-manager commands detected in that folder.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if link_reply == QMessageBox.StandardButton.Yes:
+                    chosen_folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", os.path.expanduser("~"))
+                    if chosen_folder:
+                        self._show_kickstart_dialog(folder_path=chosen_folder)
+
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -15721,6 +16144,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.switch_to_config(projectflow_path)
+            self._show_kickstart_dialog(folder_path=folder_path)
 
     def folder_make_project_at(self, folder_path):
         """Create a .projectflow config at the specified folder path"""
@@ -15753,13 +16177,21 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.switch_to_config(projectflow_path)
+            self._show_kickstart_dialog(folder_path=folder_path)
 
     def create_folder_project_config(self, folder_path):
-        """Create a project config based on detected project type"""
-        folder_name = os.path.basename(folder_path)
+        """Create a *bare* project config for a folder — no launcher categories.
 
-        # Base config
-        config = {
+        Used by "Make Project" (folder_make_project()/folder_make_project_at()), which
+        immediately follows up by opening the Kickstart dialog
+        (_show_kickstart_dialog()) pre-populated with this same folder's detected
+        suggestions for review, rather than baking categories in silently. Detection
+        itself lives in _detect_project_indicators() — the single shared source of
+        "what does this folder look like", also used when Kickstart is re-run later
+        from the Project Settings viewer against an already-existing project.
+        """
+        folder_name = os.path.basename(folder_path)
+        return {
             "project_name": folder_name,
             "column_headers": [f"{folder_name} Project"],
             "columns": [[]],
@@ -15769,90 +16201,138 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             "layout_mode": "focus"
         }
 
-        # Detect project type and add appropriate launchers
-        categories = []
+    def _build_dev_shortcut_suggestions(self, folder_path, combined=True):
+        """Return the Development-category suggestion list for Kickstart: either one
+        combined 'directorydev' launcher (which already renders its own separate icon
+        buttons for file manager/terminal/editor — see CLAUDE.md's Launch Handlers →
+        directorydev) or three plain separate launcher items. Always absolute paths —
+        see _detect_project_indicators()'s docstring for why."""
+        if combined:
+            return [{
+                "id": "dev_combined", "label": "Dev Environment (file manager + terminal + editor)",
+                "item": ["Dev Environment", folder_path, "directorydev"], "checked": True
+            }]
+        return [
+            {"id": "dev_editor", "label": "Open in Editor",
+             "item": ["Open in Editor", folder_path, "editor"], "checked": True},
+            {"id": "dev_terminal", "label": "Terminal Here",
+             "item": ["Terminal Here", folder_path, "terminal"], "checked": True},
+            {"id": "dev_filemanager", "label": "File Manager",
+             "item": ["File Manager", folder_path, "file_manager"], "checked": True},
+        ]
 
-        # Always add Development category
-        dev_category = {
-            "Development": [
-                ["Open in Editor", ".", "editor"],
-                ["Terminal Here", ".", "terminal"],
-                ["File Manager", ".", "file_manager"]
-            ]
-        }
-        categories.append(dev_category)
+    def _detect_project_indicators(self, folder_path):
+        """Scan folder_path for recognizable project types and return suggestion
+        groups: [{"category": str, "suggestions": [{"id", "label", "item", "checked"}]}].
 
-        # Detect npm project (package.json)
-        if os.path.exists(os.path.join(folder_path, "package.json")):
-            npm_items = [["npm install", ". install", "npm"]]
-            # Check package.json for scripts
+        Single shared source of truth for "what does this folder look like" detection —
+        used by the Kickstart dialog (_show_kickstart_dialog()) both right after "Make
+        Project" and when re-run later against an already-existing project. Every
+        suggested item uses an absolute path (folder_path itself) rather than the
+        ".projectflow"-only "." convention this detection used to emit via
+        create_folder_project_config(): Kickstart also runs against plain
+        projects/*.json configs, which never get relative-path resolution
+        (resolve_relative_paths_in_config() only fires for .projectflow files), so
+        absolute paths are the only form correct for every caller.
+        """
+        folder_path = os.path.abspath(os.path.expanduser(folder_path))
+        groups = []
+
+        def add_group(category, suggestions):
+            if suggestions:
+                groups.append({"category": category, "suggestions": suggestions})
+
+        def sug(id_, label, item):
+            return {"id": id_, "label": label, "item": item, "checked": True}
+
+        # --- npm / yarn / pnpm ---
+        pkg_json = os.path.join(folder_path, "package.json")
+        if os.path.exists(pkg_json):
+            scripts = {}
             try:
-                with open(os.path.join(folder_path, "package.json"), 'r') as f:
-                    pkg = json.load(f)
-                scripts = pkg.get("scripts", {})
-                if "start" in scripts:
-                    npm_items.append(["npm start", ". start", "npm"])
-                if "dev" in scripts:
-                    npm_items.append(["npm dev", ". dev", "npm"])
-                if "build" in scripts:
-                    npm_items.append(["npm build", ". build", "npm"])
-                if "test" in scripts:
-                    npm_items.append(["npm test", ". test", "npm"])
-            except:
+                with open(pkg_json, 'r') as f:
+                    scripts = json.load(f).get("scripts", {})
+            except Exception:
                 pass
-            categories.append({"npm": npm_items})
 
-        # Detect Python project
-        has_python = False
+            if os.path.exists(os.path.join(folder_path, "yarn.lock")):
+                runner = "yarn"
+            elif os.path.exists(os.path.join(folder_path, "pnpm-lock.yaml")):
+                runner = "pnpm"
+            else:
+                runner = "npm"
+
+            if runner == "npm":
+                suggestions = [sug("npm_install", "npm install", ["npm install", f"{folder_path} install", "npm"])]
+                for key, label in (("start", "npm start"), ("dev", "npm dev"), ("build", "npm build"), ("test", "npm test")):
+                    if key in scripts:
+                        suggestions.append(sug(f"npm_{key}", label, [label, f"{folder_path} {key}", "npm"]))
+            else:
+                install_cmd = f"{runner} install"
+                suggestions = [sug(f"{runner}_install", install_cmd, [install_cmd, f"{folder_path} {install_cmd}", "terminal_cmd"])]
+                for key in ("start", "dev", "build", "test"):
+                    if key in scripts:
+                        cmd = f"{runner} {key}" if runner == "yarn" else f"{runner} run {key}"
+                        suggestions.append(sug(f"{runner}_{key}", cmd, [cmd, f"{folder_path} {cmd}", "terminal_cmd"]))
+            add_group(runner, suggestions)
+
+        # --- Python ---
         if os.path.exists(os.path.join(folder_path, "requirements.txt")):
-            has_python = True
-            categories.append({"Python": [
-                ["pip install -r requirements.txt", "pip install -r requirements.txt", "terminal_cmd"]
-            ]})
-        elif os.path.exists(os.path.join(folder_path, "setup.py")):
-            has_python = True
-            categories.append({"Python": [
-                ["pip install -e .", "pip install -e .", "terminal_cmd"]
-            ]})
-        elif os.path.exists(os.path.join(folder_path, "pyproject.toml")):
-            has_python = True
-            categories.append({"Python": [
-                ["pip install -e .", "pip install -e .", "terminal_cmd"]
-            ]})
+            cmd = "pip install -r requirements.txt"
+            add_group("Python", [sug("pip_install", cmd, [cmd, f"{folder_path} {cmd}", "terminal_cmd"])])
+        elif os.path.exists(os.path.join(folder_path, "setup.py")) or os.path.exists(os.path.join(folder_path, "pyproject.toml")):
+            cmd = "pip install -e ."
+            add_group("Python", [sug("pip_install_e", cmd, [cmd, f"{folder_path} {cmd}", "terminal_cmd"])])
 
-        # Detect Makefile
+        # --- Rust ---
+        if os.path.exists(os.path.join(folder_path, "Cargo.toml")):
+            add_group("Rust", [
+                sug("cargo_build", "cargo build", ["cargo build", f"{folder_path} cargo build", "terminal_cmd"]),
+                sug("cargo_run", "cargo run", ["cargo run", f"{folder_path} cargo run", "terminal_cmd"]),
+                sug("cargo_test", "cargo test", ["cargo test", f"{folder_path} cargo test", "terminal_cmd"]),
+            ])
+
+        # --- Go ---
+        if os.path.exists(os.path.join(folder_path, "go.mod")):
+            add_group("Go", [
+                sug("go_build", "go build", ["go build", f"{folder_path} go build", "terminal_cmd"]),
+                sug("go_run", "go run .", ["go run .", f"{folder_path} go run .", "terminal_cmd"]),
+                sug("go_test", "go test ./...", ["go test ./...", f"{folder_path} go test ./...", "terminal_cmd"]),
+            ])
+
+        # --- PHP / Composer ---
+        if os.path.exists(os.path.join(folder_path, "composer.json")):
+            cmd = "composer install"
+            add_group("Composer", [sug("composer_install", cmd, [cmd, f"{folder_path} {cmd}", "terminal_cmd"])])
+
+        # --- Makefile ---
         if os.path.exists(os.path.join(folder_path, "Makefile")):
-            categories.append({"Build": [
-                ["make", "make", "terminal_cmd"]
-            ]})
+            add_group("Build", [sug("make", "make", ["make", f"{folder_path} make", "terminal_cmd"])])
 
-        # Detect Docker
+        # --- Docker ---
         if os.path.exists(os.path.join(folder_path, "docker-compose.yml")) or \
            os.path.exists(os.path.join(folder_path, "docker-compose.yaml")):
-            categories.append({"Docker": [
-                ["docker-compose up", "docker-compose up", "terminal_cmd"],
-                ["docker-compose down", "docker-compose down", "terminal_cmd"]
-            ]})
+            add_group("Docker", [
+                sug("docker_up", "docker-compose up", ["docker-compose up", f"{folder_path} docker-compose up", "terminal_cmd"]),
+                sug("docker_down", "docker-compose down", ["docker-compose down", f"{folder_path} docker-compose down", "terminal_cmd"]),
+            ])
 
-        # Detect git repo
+        # --- Git ---
         if os.path.exists(os.path.join(folder_path, ".git")):
-            categories.append({"Git": [
-                ["git status", "git status", "terminal_cmd"],
-                ["git log", "git log --oneline -20", "terminal_cmd"]
-            ]})
+            add_group("Git", [
+                sug("git_status", "git status", ["git status", f"{folder_path} git status", "terminal_cmd"]),
+                sug("git_log", "git log", ["git log", f"{folder_path} git log --oneline -20", "terminal_cmd"]),
+            ])
 
-        # Add README if it exists
-        quick_actions = []
+        # --- README ---
         for readme in ["README.md", "README.txt", "README"]:
-            if os.path.exists(os.path.join(folder_path, readme)):
-                quick_actions.append([f"Open {readme}", f"./{readme}", "editor"])
+            readme_path = os.path.join(folder_path, readme)
+            if os.path.exists(readme_path):
+                app = "default" if readme == "README.md" else "editor"
+                add_group("Quick Actions", [sug("readme", f"Open {readme}", [f"Open {readme}", readme_path, app])])
                 break
 
-        if quick_actions:
-            categories.append({"Quick Actions": quick_actions})
-
-        config["columns"][0] = categories
-        return config
+        return groups
 
     def create_project_notes_file(self, folder_path):
         """Create a starter projectflow.md notes file"""
