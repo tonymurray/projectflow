@@ -2,6 +2,18 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-28
+
+### Added
+- **Mobile app: Android share-to-app support**. ProjectFlow Mobile now registers for Android's `ACTION_SEND` intent (a second `<intent-filter>` in `AndroidManifest.xml`), so it appears in the system share sheet for links and text from other apps. A new custom Capacitor plugin, `ShareReceiverPlugin.java` (mirroring the existing `WebDavPlugin` pattern), exposes the shared content to JS both at cold start and while the app is already running (`MainActivity.onNewIntent`), consuming the intent after reading so a plain re-open doesn't re-surface the same share. A new `ShareTarget.svelte` dialog (modeled on `ProjectPicker.svelte`) shows a preview of the shared content and a project picker — sharing a bare URL adds it as a launcher item under a new "Added Resources" category (matching the desktop app's own Dolphin-service-menu naming), created if it doesn't exist; anything else is prepended to the chosen project's note with a timestamped separator. This is also the mobile app's first write path for project `.json` files (`webdav.js: saveProjectConfig()`) — previously write-only for notes.
+- `deploy_mobile.sh` now shows a 👁 toggle on the Setup screen's App Password field to reveal it as plain text — useful on devices with no camera (no QR scan) where the app password has to be typed on a virtual keyboard.
+
+### Fixed
+- **Desktop and mobile app icons revised** (`assets/icon.svg` / `mobile/app/resources/icon.svg`) — new artwork (document list + edit-pencil motif), regenerated `assets/icon.png` and the KDE `hicolor` icon-theme files.
+- **Mobile icon pipeline was silently using a stale pre-rendered PNG**: a leftover `mobile/app/resources/icon.png` (weeks old) was being picked up by `@capacitor/assets` in preference to `icon.svg`, so every icon edit this session was rebuilding correctly but never actually reaching the installed app. Deleted; `icon.svg` is now the sole source.
+- **`versionCode` was hardcoded and never bumped** between debug builds, which let Android's launcher/system icon cache keep serving a stale icon bitmap even after a real resource change and a full uninstall/reinstall — reproduced identically on two unrelated devices/launchers. `deploy_mobile.sh` now auto-increments `versionCode` in `build.gradle` on every deploy.
+- **Adaptive icon background color** changed from a near-black navy (`#12151f`) to the icon artwork's own pale-blue fill (`#dde7f1`) — the navy was showing through as an ugly dark ring around the icon on launchers whose adaptive-icon mask shape didn't exactly match the icon's own rounded-rect content.
+
 ## 2026-08-27
 
 ### Added

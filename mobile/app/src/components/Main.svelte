@@ -1,10 +1,12 @@
 <script>
-  import { orderedProjects, pinnedProjects, activeProject, activeTab, loading, error, fetchProjects, selectProject, theme } from '../lib/store.js';
+  import { orderedProjects, pinnedProjects, activeProject, activeTab, loading, error, fetchProjects, selectProject, theme, pendingShare, initShareReceiver } from '../lib/store.js';
   import Launchers from './Launchers.svelte';
   import Notes from './Notes.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
+  import ShareTarget from './ShareTarget.svelte';
 
   fetchProjects();
+  initShareReceiver();
 
   let showPicker = false;
 
@@ -38,6 +40,10 @@
 
   {#if showPicker}
     <ProjectPicker on:close={() => showPicker = false} />
+  {/if}
+
+  {#if $pendingShare}
+    <ShareTarget share={$pendingShare} on:close={() => pendingShare.set(null)} />
   {/if}
 
   <!-- Main content -->

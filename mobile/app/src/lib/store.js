@@ -1,5 +1,6 @@
-import { writable, derived } from 'svelte/store';
-import { setConfig, listProjects, loadProject, loadNote, saveNote, notesFilename, resolveToNextcloudRelPath } from './webdav.js';
+import { writable, derived, get } from 'svelte/store';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import { setConfig, listProjects, loadProject, saveProjectConfig, loadNote, saveNote, notesFilename, resolveToNextcloudRelPath } from './webdav.js';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -147,6 +148,69 @@ export async function persistNote(content) {
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 export const activeTab = writable('launchers'); // 'launchers' | 'notes'
+
+// ── Share-to-app (Android ACTION_SEND) ──────────────────────────────────────────
+
+const ADDED_RESOURCES_CATEGORY = 'Added Resources';
+
+export const pendingShare = writable(null); // { text, subject } | null
+
+export function initShareReceiver() {
+  if (!Capacitor.isNativePlatform()) return;
+  const ShareReceiver = registerPlugin('ShareReceiver');
+
+  ShareReceiver.getSharedData().then(data => {
+    if (data && data.text) pendingShare.set(data);
+  });
+
+  ShareReceiver.addListener('shareReceived', data => {
+    if (data && data.text) pendingShare.set(data);
+  });
+}
+
+export async function addLinkToProject(project, url, title) {
+  const cfg = await loadProject(project.filename);
+  if (!cfg.columns) cfg.columns = [[]];
+  if (!cfg.columns[0]) cfg.columns[0] = [];
+
+  let entry = cfg.columns[0].find(cat => Object.keys(cat)[0] === ADDED_RESOURCES_CATEGORY);
+  if (!entry) {
+    entry = { [ADDED_RESOURCES_CATEGORY]: [] };
+    cfg.columns[0].push(entry);
+  }
+  entry[ADDED_RESOURCES_CATEGORY].push([title || url, url, 'browser']);
+
+  await saveProjectConfig(project.filename, cfg);
+
+  if (get(activeProject)?.filename === project.filename) {
+    activeConfig.set(cfg);
+  }
+}
+
+function shareTimestampHeader() {
+  const d = new Date();
+  const day = d.getDate();
+  const suffix = (day % 10 === 1 && day !== 11) ? 'st'
+    : (day % 10 === 2 && day !== 12) ? 'nd'
+    : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+  const month = d.toLocaleDateString(undefined, { month: 'long' });
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${time} -- ${day}${suffix} ${month} ${d.getFullYear()} (via Share)`;
+}
+
+export async function addTextToProjectNote(project, text) {
+  const nf = notesFilename(project.filename);
+  const existing = await loadNote(nf);
+  const separator = '-'.repeat(30);
+  const block = `${separator}\n${shareTimestampHeader()}\n${separator}\n\n${text}\n\n`;
+  const newContent = existing ? `${block}\n${existing}` : block;
+
+  await saveNote(nf, newContent);
+
+  if (get(activeProject)?.filename === project.filename) {
+    activeNote.set(newContent);
+  }
+}
 
 // ── Desktop-only handler filter ───────────────────────────────────────────────
 

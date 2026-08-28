@@ -65,22 +65,33 @@ fi
 DEVICE_MODEL=$("$ADB" shell getprop ro.product.model 2>/dev/null | tr -d '\r' || echo "Unknown")
 ok "Device ready: $DEVICE_MODEL"
 
-# ── 4. Build web assets ───────────────────────────────────────────────────────
+# ── 4. Bump versionCode ────────────────────────────────────────────────────────
+# Android's launcher/system icon cache keys off versionCode changing — a repeated
+# `adb install -r` with an unchanged versionCode can leave old icon bitmaps cached
+# even after a real resource change, on multiple unrelated devices/launchers at once.
+step "Bumping versionCode"
+GRADLE_FILE="$APP_DIR/android/app/build.gradle"
+CURRENT_VC=$(grep -oP 'versionCode \K[0-9]+' "$GRADLE_FILE")
+NEW_VC=$((CURRENT_VC + 1))
+sed -i "s/versionCode $CURRENT_VC/versionCode $NEW_VC/" "$GRADLE_FILE"
+ok "versionCode $CURRENT_VC -> $NEW_VC"
+
+# ── 5. Build web assets ───────────────────────────────────────────────────────
 step "Building web assets (npm)"
 cd "$APP_DIR"
 npm run build
 
-# ── 5. Regenerate Android icons from SVG source ───────────────────────────────
+# ── 6. Regenerate Android icons from SVG source ───────────────────────────────
 step "Generating Android icons (from resources/icon.svg)"
 npx @capacitor/assets generate --android \
-  --iconBackgroundColor '#12151f' \
-  --iconBackgroundColorDark '#12151f'
+  --iconBackgroundColor '#dde7f1' \
+  --iconBackgroundColorDark '#dde7f1'
 
-# ── 6. Sync to Android project ────────────────────────────────────────────────
+# ── 7. Sync to Android project ────────────────────────────────────────────────
 step "Syncing to Android project (cap sync)"
 npx cap sync android
 
-# ── 7. Build APK ─────────────────────────────────────────────────────────────
+# ── 8. Build APK ─────────────────────────────────────────────────────────────
 step "Building APK (Gradle)"
 cd "$APP_DIR/android"
 JAVA_HOME="$JAVA_HOME" \
@@ -88,7 +99,7 @@ ANDROID_HOME="$HOME/Android/Sdk" \
 ANDROID_SDK_ROOT="$HOME/Android/Sdk" \
 ./gradlew assembleDebug
 
-# ── 8. Install ────────────────────────────────────────────────────────────────
+# ── 9. Install ────────────────────────────────────────────────────────────────
 step "Installing APK on $DEVICE_MODEL"
 "$ADB" install -r "$APK"
 

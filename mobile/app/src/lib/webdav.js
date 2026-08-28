@@ -87,6 +87,13 @@ export async function loadProject(filename) {
   return await res.json();
 }
 
+export async function saveProjectConfig(filename, config) {
+  const url = `${projectsBase()}/${encodeURIComponent(filename)}`;
+  const res = await request('PUT', url, JSON.stringify(config, null, 2));
+  if (!res.ok) throw new Error(`PUT ${res.status}`);
+  return true;
+}
+
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
 export function notesFilename(projectFilename) {

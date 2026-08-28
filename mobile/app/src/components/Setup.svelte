@@ -13,6 +13,7 @@
   let status       = '';
   let testing      = false;
   let scanning     = false;
+  let showPassword = false;
 
   function onScanned(e) {
     server   = e.detail.server;
@@ -60,7 +61,15 @@
       <input type="text" bind:value={username} autocomplete="off" />
     </label>
     <label>App Password
-      <input type="password" bind:value={password} autocomplete="off" />
+      <div class="pw-row">
+        <input type={showPassword ? 'text' : 'password'} bind:value={password} autocomplete="off" />
+        <button
+          type="button"
+          class="pw-toggle"
+          on:click={() => showPassword = !showPassword}
+          title={showPassword ? 'Hide password' : 'Show password'}
+        >{showPassword ? '🙈' : '👁'}</button>
+      </div>
       <span class="hint">Nextcloud → Settings → Security → App passwords</span>
       <button class="qr-btn" on:click={() => scanning = true}>Scan QR Code</button>
     </label>
@@ -113,6 +122,12 @@
     color: var(--t-primary); padding: 10px 12px; font-size: 0.95rem;
   }
   input:focus { outline: none; border-color: var(--accent); }
+  .pw-row { display: flex; gap: 6px; align-items: stretch; }
+  .pw-row input { flex: 1; min-width: 0; }
+  .pw-toggle {
+    flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--bd);
+    border-radius: 6px; padding: 0 12px; font-size: 1.1rem; margin-top: 0;
+  }
   .hint { font-size: 0.75rem; color: var(--t-dim); }
   .opt  { font-size: 0.72rem; color: var(--t-ghost); font-weight: normal; }
   button {
