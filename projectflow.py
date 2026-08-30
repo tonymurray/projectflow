@@ -838,6 +838,76 @@ class CodeTabState:
         self.dirty = False
 
 
+class TerminalTabState:
+    """One open Terminal tab: a working directory, its own ttyd subprocess/port, and its
+    own dedicated QWebEngineView. This is the one tab type that does NOT follow WebTabState's
+    "one shared expensive resource, re-navigate on switch" model — a terminal tab's whole
+    point is a real, independent, concurrently-running shell (a dev server, a tail -f, an
+    SSH session), and killing that on every tab switch (as re-navigating a shared webview
+    would require, since ttyd's process dies with its webview's navigation) would defeat the
+    feature. Instead this mirrors PdfTabState/ImageTabState's "keep every open tab's resource
+    alive for its lifetime" model — except the resource here (a real OS process + port) is
+    genuinely expensive, hence the hard TERMINAL_TAB_CAP. webview/proc/port/ready are
+    runtime-only and never persisted (see save_notes()) — only cwd is meaningful across an
+    app restart, since a running shell's live state can't be resumed regardless."""
+
+    def __init__(self, cwd):
+        self.cwd = cwd          # normalized (expanduser'd) working directory
+        self.webview = None     # QWebEngineView, created when the tab is first spawned
+        self.proc = None        # subprocess.Popen (ttyd), None until spawned
+        self.port = None
+        self.ready = False      # mirrors the old singleton's _console_ttyd_ready, per-tab now
+
+
+class LinkOpeningWebPage(QWebEnginePage):
+    """QWebEnginePage subclass whose sole job is implementing createWindow() — the hook
+    Chromium calls whenever the user picks "Open link in new tab" / "Open link in new
+    window" from the page's own right-click context menu (also middle-click and Ctrl-click
+    on a link, and JS `window.open()`). QWebEnginePage.createWindow() returns None by
+    default, which is exactly why those context-menu items looked broken: Chromium asked
+    for a new page to load the link into, got nothing back, and silently dropped the
+    navigation — nothing to do with the app's own tab strip at all.
+
+    This app's Web viewer has exactly one real QWebEngineView, not one per tab (see
+    WebTabState) — "new tab"/"new window" from a link should still open into that same
+    shared viewer as a genuine new WebTabState, not spawn a second on-screen Chromium
+    view. So createWindow() hands back a throwaway, unparented QWebEnginePage on the same
+    profile purely to let Chromium tell us the destination URL (the first real, non-blank
+    urlChanged it fires after we return), then forwards that URL to `open_url_callback`
+    (bound to `_open_web_tab('url', ...)`) and discards the throwaway page. A 5s safety
+    timer force-cleans the throwaway page if no real navigation ever arrives, so a popup
+    that never actually navigates (rare, but JS can do it) can't leak it forever."""
+
+    def __init__(self, profile, parent, open_url_callback):
+        super().__init__(profile, parent)
+        self._open_url_callback = open_url_callback
+
+    def createWindow(self, window_type):
+        temp_page = QWebEnginePage(self.profile(), None)
+        state = {"done": False}
+
+        def _finish(url=None):
+            if state["done"]:
+                return
+            state["done"] = True
+            try:
+                temp_page.urlChanged.disconnect(_on_url_changed)
+            except Exception:
+                pass
+            if url:
+                self._open_url_callback(url)
+            temp_page.deleteLater()
+
+        def _on_url_changed(url):
+            target = url.toString()
+            if target and target != "about:blank":
+                _finish(target)
+
+        temp_page.urlChanged.connect(_on_url_changed)
+        QTimer.singleShot(5000, lambda: _finish(None))
+        return temp_page
+
+
 class ProjectFlowApp(QMainWindow):
     def __init__(self, config_file_arg=None):
         super().__init__()
@@ -875,7 +945,11 @@ class ProjectFlowApp(QMainWindow):
         )
 
         self.webview = QWebEngineView()
-        self.webview.setPage(QWebEnginePage(self.web_profile, self.webview))
+        # LinkOpeningWebPage (not a plain QWebEnginePage) so right-click "Open link in new
+        # tab"/"new window" actually does something — see that class's docstring. Routes
+        # into this app's own Web-tab system (_open_web_tab()) rather than a second
+        # on-screen browser view.
+        self.webview.setPage(LinkOpeningWebPage(self.web_profile, self.webview, self._open_link_in_new_web_tab))
         self.webview.urlChanged.connect(self.on_webview_url_changed)
         self._enable_web_fullscreen_support(self.webview)
 
@@ -922,30 +996,21 @@ class ProjectFlowApp(QMainWindow):
         self.notes_tabs = []
         self.notes_active_index = -1
 
-        # Third persistent webview, dedicated to the optional ttyd-backed real-terminal Console
-        # (see resolve_console_backend/_ensure_ttyd_console). Same "never recreated on refresh,
-        # detach-then-readd" pattern as notes_webview above — it just loads a plain http:// URL
-        # rather than hosting a Muya session, so no MuyaSession wrapper is needed.
-        self.console_ttyd_webview = QWebEngineView()
-        self._enable_web_fullscreen_support(self.console_ttyd_webview)
-        self.console_ttyd_proc = None
-        self._console_ttyd_cwd = None
-        self._console_ttyd_port = None
-        # Tracks whether the webview's CURRENT page has actually finished loading (and thus
-        # window.term exists) — console_ttyd_proc being alive only means the OS process is
-        # up; the page itself loads asynchronously after setUrl(). Observed race: even the
-        # very first ttyd session auto-started during initial build_main_content() isn't
-        # necessarily done loading by the time something else tries to paste a command into
-        # it moments later. See _run_in_ttyd_when_ready().
-        self._console_ttyd_ready = False
-        self.console_ttyd_webview.loadFinished.connect(
-            lambda ok: setattr(self, '_console_ttyd_ready', ok)
-        )
+        # Multi-instance Terminal tabs (see TerminalTabState) — one ttyd subprocess + one
+        # dedicated QWebEngineView PER tab (unlike Web/Notes, which share a single persistent
+        # webview), because a terminal tab's whole point is a real, independent, concurrently-
+        # running shell. self.terminal_tabs/terminal_active_index are the source of truth;
+        # TERMINAL_TAB_CAP (class attribute, defined near the terminal tab methods) bounds how
+        # many can be open at once — at the cap, opening another is refused outright (no
+        # silent eviction) since a background tab may have a real process running in it.
+        self.terminal_tabs = []
+        self.terminal_active_index = -1
+        self._console_active_webview = None  # which tab's webview is currently in console_container_layout
 
         # Fourth persistent webview, dedicated to the internal CodeMirror 6 code-editor
         # (see CodeEditorSession, _open_code_file_in_editor, and the _code_editor_*/
         # _load_code_editor_shell bridge methods). Same "never recreated on refresh,
-        # detach-then-readd" pattern as notes_webview/console_ttyd_webview above. No
+        # detach-then-readd" pattern as notes_webview/terminal tab webviews above. No
         # autosave_timer to wire up here — see CodeEditorSession's docstring for why.
         self.code_webview = QWebEngineView()
         self._enable_web_fullscreen_support(self.code_webview)
@@ -1055,25 +1120,45 @@ class ProjectFlowApp(QMainWindow):
         # pins stay left-aligned rather than stretching to fill, which means its own width
         # rarely changes even as the window does. Force a reflow off the window's resize
         # instead, so it can't get stuck at a stale/narrow cell width.
-        config_bar_widget = getattr(self, 'config_bar_widget', None)
-        reflow_fn = getattr(config_bar_widget, '_reflow_fn', None) if config_bar_widget else None
-        if reflow_fn:
-            reflow_fn(config_bar_widget.width())
+        #
+        # This is a genuine cross-object reach (QMainWindow reaching into a widget owned by
+        # a completely separate rebuild cycle), unlike every other resizeEvent/showEvent in
+        # this file which only ever touches its own children — so it's the one place a real
+        # window resize (confirmed via a crash report: rapid F11/Ctrl+F11 toggling, landing
+        # exactly on the native resize fired when Wayland applies the exit-fullscreen
+        # configure) can race a refresh_projects()/build_main_content() rebuild: this line
+        # can run at a moment where self.config_bar_widget still points at the previous
+        # rebuild's ConfigBarWidget (or its _reflow_fn closure still holds that rebuild's now-
+        # destroyed button containers) because the attribute hasn't been reassigned to the new
+        # instance yet. Reading/calling into an already-deleted PyQt-wrapped C++ object raises
+        # RuntimeError, and PyQt6 calls abort() on any exception that escapes an overridden
+        # virtual method uncaught (see the identical guard/rationale on _set_viewer_placeholder's
+        # apply_fit()) — which is exactly the "fatal error" crash this guards against.
+        try:
+            config_bar_widget = getattr(self, 'config_bar_widget', None)
+            reflow_fn = getattr(config_bar_widget, '_reflow_fn', None) if config_bar_widget else None
+            if reflow_fn:
+                reflow_fn(config_bar_widget.width())
+        except RuntimeError:
+            pass
 
     def closeEvent(self, event):
         """Handle window close — confirm discarding unsaved code-editor changes first (the
-        one thing in this app with no autosave, see CodeEditorSession), then terminate the
-        ttyd console subprocess if one is running.
+        one thing in this app with no autosave, see CodeEditorSession), then terminate every
+        open terminal tab's ttyd subprocess.
 
         Unlike every other subprocess this app spawns (external terminal/editor/file-manager
         launches, always started with start_new_session=True so they outlive the app), a ttyd
-        console is an internal implementation detail: it must die with the app, not survive it,
-        or every session leaves an orphaned process + open port behind.
+        console is an internal implementation detail: it must die with the app, not survive
+        it, or every session leaves an orphaned process + open port behind — now one per open
+        terminal tab (see TerminalTabState) rather than just one, so this loop is the single
+        highest-risk line to get right when the app has several tabs open.
         """
         if not self._confirm_discard_code_changes():
             event.ignore()
             return
-        self._stop_ttyd_console()
+        for _terminal_tab in self.terminal_tabs:
+            self._stop_terminal_tab(_terminal_tab)
         super().closeEvent(event)
 
     def keyPressEvent(self, event):
@@ -2318,7 +2403,12 @@ class ProjectFlowApp(QMainWindow):
                 list_item = QListWidgetItem(f"{display}  —  {rel}")
                 list_item.setData(Qt.ItemDataRole.UserRole, (display, abs_path, app))
                 list_item.setFlags(list_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                list_item.setCheckState(Qt.CheckState.Unchecked if already else Qt.CheckState.Checked)
+                # Opt-in, not opt-out: files already tracked in the project start checked
+                # (informational — nothing new happens if left checked, "Add" dedupes by
+                # path anyway), while newly-found files start UNCHECKED so adding them is a
+                # deliberate choice rather than something that happens unless you notice and
+                # uncheck it.
+                list_item.setCheckState(Qt.CheckState.Checked if already else Qt.CheckState.Unchecked)
                 if already:
                     list_item.setToolTip("Already in Documentation category")
                     list_item.setForeground(QColor(self.t('fg_secondary')))
@@ -2497,7 +2587,9 @@ class ProjectFlowApp(QMainWindow):
                 already = s["item"][1] in existing_paths
                 cb = QCheckBox(s["label"])
                 cb.setStyleSheet(check_style)
-                cb.setChecked(s["checked"] and not already)
+                # Opt-in, not opt-out — every suggestion starts unchecked regardless of
+                # detection confidence; the user picks what they actually want.
+                cb.setChecked(False)
                 if already:
                     cb.setEnabled(False)
                     cb.setToolTip("Already in this project")
@@ -2520,14 +2612,15 @@ class ProjectFlowApp(QMainWindow):
         body_layout.addWidget(website_pin_cb)
 
         def _update_website_checks(text=""):
+            # Opt-in, not opt-out: typing a URL only enables these checkboxes — it no
+            # longer auto-checks "Add launcher" for you. Clearing the URL still force-
+            # unchecks both, since neither makes sense with nothing to point at.
             has_url = bool(website_edit.text().strip())
             website_launcher_cb.setEnabled(has_url)
             website_pin_cb.setEnabled(has_url)
             if not has_url:
                 website_launcher_cb.setChecked(False)
                 website_pin_cb.setChecked(False)
-            elif not website_launcher_cb.isChecked() and not website_pin_cb.isChecked():
-                website_launcher_cb.setChecked(True)
 
         website_edit.textChanged.connect(_update_website_checks)
         _update_website_checks()
@@ -2562,7 +2655,8 @@ class ProjectFlowApp(QMainWindow):
                 already = s["item"][1] in existing_paths
                 cb = QCheckBox(s["label"])
                 cb.setStyleSheet(check_style)
-                cb.setChecked(s["checked"] and not already)
+                # Opt-in, not opt-out — see add_checkbox_section()'s matching comment above.
+                cb.setChecked(False)
                 if already:
                     cb.setEnabled(False)
                     cb.setToolTip("Already in this project")
@@ -2586,7 +2680,7 @@ class ProjectFlowApp(QMainWindow):
         found_docs, is_npm = self._scan_for_docs(folder_path)
         doc_suggestions = [
             {"id": f"doc_{i}", "label": f"{display}  —  {os.path.relpath(p, folder_path)}",
-             "item": [display, p, app], "checked": True}
+             "item": [display, p, app]}
             for i, (display, p, app) in enumerate(found_docs)
         ]
         add_checkbox_section("Documentation", doc_suggestions)
@@ -2623,7 +2717,11 @@ class ProjectFlowApp(QMainWindow):
         body_layout.addWidget(alias_header)
         alias_cb = QCheckBox("Create shell alias + launcher to jump to this folder")
         alias_cb.setStyleSheet(check_style)
-        alias_cb.setChecked(not alias_already_exists)
+        # Opt-in, not opt-out — starts unchecked either way now (previously defaulted to
+        # checked when no alias existed yet). Still just a tooltip, not disabled, when one
+        # already exists: the field stays enabled in case a second, differently-named
+        # alias to the same folder is genuinely wanted.
+        alias_cb.setChecked(False)
         if alias_already_exists:
             alias_cb.setToolTip("An alias already points at this folder")
         body_layout.addWidget(alias_cb)
@@ -5052,6 +5150,34 @@ StartupNotify=true
                         if not (0 <= self.code_active_index < len(self.code_tabs)):
                             self.code_active_index = 0
 
+                    # Terminal tabs (see TerminalTabState) — restored here, gated on an
+                    # actual project switch, mirroring Editor tabs above. Unlike Editor
+                    # tabs, each terminal tab owns a real ttyd subprocess + port, so
+                    # switching projects must actually STOP every tab belonging to the
+                    # OUTGOING project first (_teardown_terminal_tabs() — the plain
+                    # process-cleanup half of _close_all_terminal_tabs(), WITHOUT its
+                    # save_notes() call, which here would wrongly write this NEW project's
+                    # still-partially-loaded in-memory state back over its own config file)
+                    # — simply reassigning self.terminal_tabs to a fresh list would drop the
+                    # only references to those processes without ever terminating them,
+                    # leaking one ttyd process + port per open tab on every project switch.
+                    # Tabs are restored as inert placeholders (proc=None, webview=None) —
+                    # only cwd is ever persisted, since a running shell can't be resumed
+                    # across an app restart regardless — and spawned lazily:
+                    # build_main_content() below spawns just the active one; the rest wait
+                    # until first clicked (see _activate_terminal_tab).
+                    self._teardown_terminal_tabs()
+                    for _tab_data in config_data.get('terminal_tabs', []):
+                        _terminal_cwd = _tab_data.get('cwd')
+                        if _terminal_cwd:
+                            self.terminal_tabs.append(TerminalTabState(_terminal_cwd))
+                    if self.terminal_tabs:
+                        self.terminal_active_index = config_data.get('terminal_active_tab', 0)
+                        if not (0 <= self.terminal_active_index < len(self.terminal_tabs)):
+                            self.terminal_active_index = 0
+                    else:
+                        self.terminal_active_index = -1
+
                 # For .projectflow configs, resolve relative paths in launchers
                 if os.path.basename(self.current_config_file) == '.projectflow':
                     self.resolve_relative_paths_in_config()
@@ -5085,6 +5211,7 @@ StartupNotify=true
                     self.active_launcher_tab = 'files'
                     self.code_tabs = []
                     self.code_active_index = -1
+                    self._teardown_terminal_tabs()
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -5875,6 +6002,11 @@ function filterAliases(q) {{
         self.pdf_current_page = 0
         self.pdf_page_count = 0
         self.pdf_zoom = 1.5
+        # Which fit mode the toolbar's fit-toggle button applies — cycled by
+        # pdf_toggle_fit_mode(), applied by pdf_apply_fit(). Per-session only (like
+        # viewer_height), not persisted per-project or per-machine.
+        self.pdf_fit_mode = "width"
+        self.pdf_fit_btn = None
         self.pdf_path = None
         self.pdf_label = None
         self.pdf_scroll = None
@@ -6501,6 +6633,26 @@ function filterAliases(q) {{
                 config_data.pop("code_tabs", None)
                 config_data.pop("code_active_tab", None)
 
+            # Update Terminal tabs — cwd only, NEVER proc/port/webview/ready (all
+            # runtime-only, see TerminalTabState's docstring: a running shell can't be
+            # resumed across an app restart regardless, so restoring "the same tabs" means
+            # fresh shells at the same directories, not resumed sessions). Skipped entirely
+            # (keys removed) when it's just the trivial single tab at the project's own
+            # default directory — the common case — mirroring Notes tabs' own triviality
+            # check above, so a plain project's JSON doesn't gain clutter for a feature it
+            # never actually customized.
+            _default_terminal_cwd = os.path.expanduser(getattr(self, 'console_path', None) or "~")
+            _terminal_is_trivial = (
+                len(self.terminal_tabs) <= 1
+                and (not self.terminal_tabs or self.terminal_tabs[0].cwd == _default_terminal_cwd)
+            )
+            if not _terminal_is_trivial:
+                config_data["terminal_tabs"] = [{"cwd": t.cwd} for t in self.terminal_tabs]
+                config_data["terminal_active_tab"] = self.terminal_active_index
+            else:
+                config_data.pop("terminal_tabs", None)
+                config_data.pop("terminal_active_tab", None)
+
             # Save back to config file
             with open(self.current_config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
@@ -6609,25 +6761,19 @@ function filterAliases(q) {{
             "column_headers": ["Shortcuts and Actions"],
             "columns": [
                 [
-                    {
-                        "Places": [
-                            ["Home", "~/", "file_manager"],
-                            ["Documents", "~/Documents", "file_manager"],
-                            ["Downloads", "~/Downloads", "file_manager"]
-                        ]
-                    },
-                    {
-                        "Files": [
-                            ["Notes", "~/Documents/notes.txt", "editor"],
-                            ["Todo", "~/Documents/todo.txt", "editor"]
-                        ]
-                    },
+                                    
                     {
                         "Websites": [
                             ["GitHub", "https://github.com/", "browser"],
                             ["DuckDuckGo", "https://duckduckgo.com/", "browser"]
                         ]
+                    },
+                    {
+                        "Places": [
+                            ["Home", "~/", "file_manager"]
+                        ]
                     }
+  
                 ]
             ],
             "column2_default": "help",
@@ -6638,21 +6784,22 @@ function filterAliases(q) {{
             json.dump(default_project, f, indent=2)
 
     def get_default_column_1(self):
+        """In-memory fallback matching create_default_project()'s own template — kept in
+        sync with it manually, since this returns Python objects for a fresh project's
+        self.COLUMN_1 (used before that project's JSON is ever read back off disk) while
+        create_default_project() writes the on-disk JSON template. Lists (not tuples) to
+        match what loading real JSON produces, since COLUMN_1 items get mutated in place
+        (drag-reorder, edit) elsewhere."""
         return [
             {
-                "Web Projects": [
-                    ("Main Website", "~/projects/website", "kate"),
-                    ("Blog", "~/projects/blog", "kate"),
+                "Websites": [
+                    ["GitHub", "https://github.com/", "browser"],
+                    ["DuckDuckGo", "https://duckduckgo.com/", "browser"]
                 ]
             },
             {
-                "Work": [
-                    ("Client A", "~/work/client-a", "kate"),
-                ]
-            },
-            {
-                "Personal": [
-                    ("Scripts", "~/scripts", "kate"),
+                "Places": [
+                    ["Home", "~/", "file_manager"]
                 ]
             },
         ]
@@ -6700,8 +6847,14 @@ function filterAliases(q) {{
             self.webview.setParent(self)
         if self.notes_webview is not None:
             self.notes_webview.setParent(self)
-        if self.console_ttyd_webview is not None:
-            self.console_ttyd_webview.setParent(self)
+        # Each open terminal tab owns its own QWebEngineView (see TerminalTabState) — unlike
+        # notes_webview/code_webview (one persistent webview shared by all tabs of that
+        # type), so every tab's webview needs this same detach-before-teardown treatment,
+        # not just one. A tab restored from disk but never yet activated has webview=None
+        # (nothing spawned yet — see _spawn_terminal_tab) and is simply skipped here.
+        for _terminal_tab in self.terminal_tabs:
+            if _terminal_tab.webview is not None:
+                _terminal_tab.webview.setParent(self)
         if self.code_webview is not None:
             self.code_webview.setParent(self)
         # settings_form is a plain QWidget (not a QWebEngineView, so it doesn't have the
@@ -7438,22 +7591,35 @@ function filterAliases(q) {{
 
         def _zone1_reflow(_ignored, _containers=zone1_containers, _layout=_proj_layout,
                           _cols=_cols, _spacing=_spacing):
-            parent = _layout.parentWidget()
-            width = parent.width() if parent and parent.width() > 10 else 0
-            if not _containers or width <= 0:
-                return
-            target_cell_w = (width - (_cols - 1) * _spacing) // _cols
-            n = len(_containers)
-            cell_w = (target_cell_w if target_cell_w >= 80
-                      else max(80, (width - (n - 1) * _spacing) // n))
-            fm = QFontMetrics(QApplication.font())
-            for c in _containers:
-                c.setFixedWidth(cell_w)
-                c.setFixedHeight(FlowWidget._ITEM_H)  # match Zone 2's row height exactly
-                if hasattr(c, '_main_btn') and hasattr(c, '_full_text') and hasattr(c, '_side_w'):
-                    label_w = max(10, cell_w - c._side_w - 18)
-                    c._main_btn.setText(fm.elidedText(
-                        c._full_text, Qt.TextElideMode.ElideRight, label_w))
+            # This closure is called from three places that can all outlive the rebuild
+            # that created it: ConfigBarWidget's own resizeEvent/showEvent, a deferred
+            # QTimer.singleShot below, and (indirectly, via self.config_bar_widget._reflow_fn)
+            # ProjectFlowApp.resizeEvent() — the last of which is a genuine cross-object
+            # reach that can land mid-rebuild. If a newer build_main_content() has already
+            # superseded this one by the time any of those fire, _containers/_layout here
+            # can point at widgets Qt has already destroyed — touching them raises
+            # RuntimeError ("wrapped C/C++ object has been deleted"), which PyQt6 treats as
+            # fatal (calls abort()) if it escapes uncaught from an event/timer callback. See
+            # ProjectFlowApp.resizeEvent()'s matching guard for the crash this fixes.
+            try:
+                parent = _layout.parentWidget()
+                width = parent.width() if parent and parent.width() > 10 else 0
+                if not _containers or width <= 0:
+                    return
+                target_cell_w = (width - (_cols - 1) * _spacing) // _cols
+                n = len(_containers)
+                cell_w = (target_cell_w if target_cell_w >= 80
+                          else max(80, (width - (n - 1) * _spacing) // n))
+                fm = QFontMetrics(QApplication.font())
+                for c in _containers:
+                    c.setFixedWidth(cell_w)
+                    c.setFixedHeight(FlowWidget._ITEM_H)  # match Zone 2's row height exactly
+                    if hasattr(c, '_main_btn') and hasattr(c, '_full_text') and hasattr(c, '_side_w'):
+                        label_w = max(10, cell_w - c._side_w - 18)
+                        c._main_btn.setText(fm.elidedText(
+                            c._full_text, Qt.TextElideMode.ElideRight, label_w))
+            except RuntimeError:
+                pass
 
         self.config_bar_widget._reflow_fn = _zone1_reflow
 
@@ -7463,7 +7629,13 @@ function filterAliases(q) {{
         # — its own size rarely changes again after the very first (possibly too-early, before
         # the parent chain has its final width) layout pass, so it may never re-fire. This
         # guarantees at least one reflow call after layout has fully settled.
-        QTimer.singleShot(0, lambda: _zone1_reflow(self.config_bar_widget.width()))
+        def _deferred_zone1_reflow():
+            try:
+                _zone1_reflow(self.config_bar_widget.width())
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(0, _deferred_zone1_reflow)
 
         config_bar_layout.addStretch()  # keep pins left-aligned, don't stretch to fill
         self.config_bar_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -9783,7 +9955,10 @@ function filterAliases(q) {{
                 else:
                     pdf_footer_label = "Open PDF"
                 pdf_container_layout.addWidget(
-                    self._make_viewer_footer(pdf_footer_label, "Open PDF in external viewer", self.open_pdf_in_external_viewer)
+                    self._make_viewer_footer(
+                        pdf_footer_label, "Open PDF in external viewer", self.open_pdf_in_external_viewer,
+                        left_widget=self._build_pdf_footer_page_nav()
+                    )
                 )
 
                 # Webview container
@@ -9950,23 +10125,61 @@ function filterAliases(q) {{
                 help_container_layout.addWidget(help_footer)
 
                 # Console container (qtconsole, or a real terminal via ttyd — see
-                # resolve_console_backend/_ensure_ttyd_console)
+                # resolve_console_backend/_open_terminal_tab). console_container_layout is
+                # stashed on self (below) so _activate_terminal_tab()/_close_terminal_tab()
+                # can add/remove the active tab's webview in place, without a full rebuild.
                 self.console_container = QWidget()
                 console_container_layout = QVBoxLayout(self.console_container)
                 console_container_layout.setContentsMargins(0, 0, 0, 0)
+                self.console_container_layout = console_container_layout
                 self.console_available = False
+                # Stale-widget-reference guard (same pattern as the Quick File Browser
+                # Panel's own widget-reference reset — see CLAUDE.md): these are only
+                # (re)built a few lines below when the ttyd backend is active. The OLD
+                # tree's widgets were already destroyed by init_ui()'s setCentralWidget()
+                # call before this method ever runs — without resetting these to None here,
+                # a qtconsole-backend rebuild (which skips rebuilding them) would leave them
+                # pointing at already-deleted C++ objects, and _close_all_terminal_tabs()'s
+                # _rebuild_terminal_tab_strip() call (from the backend-switch branch just
+                # below) would crash touching them.
+                self.terminal_tab_strip_widget = None
+                self.terminal_tab_strip_layout = None
+                self.console_empty_label = None
 
                 # Create console toolbar
                 self.create_console_toolbar(console_container_layout)
 
                 if self.resolve_console_backend() == "ttyd":
-                    if hasattr(self, 'console_path') and self.console_path:
-                        self.console_path_label.setText(os.path.expanduser(self.console_path))
-                    console_container_layout.addWidget(self.console_ttyd_webview, 1)  # stretch to fill space
-                    self._ensure_ttyd_console(getattr(self, 'console_path', None) or "~")
+                    self._build_terminal_tab_strip(console_container_layout)
+
+                    # Placeholder shown only when zero terminal tabs are open (e.g. every
+                    # tab was closed) — the "+ New Terminal" toolbar button remains the way
+                    # back in. Built once per rebuild like every other viewer's placeholder;
+                    # _activate_terminal_tab()/_close_terminal_tab() toggle its visibility.
+                    self.console_empty_label = QLabel("No terminal open.\n\nUse '+ New Terminal' above to start one.")
+                    self.console_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.console_empty_label.setStyleSheet(f"color: {self.t('fg_secondary')}; padding: 20px;")
+                    console_container_layout.addWidget(self.console_empty_label, 1)
+
+                    # A rebuild's fresh console_container_layout is a brand-new object even
+                    # though the webview widgets themselves persist (see init_ui()'s detach
+                    # loop) — reset the tracked "currently added to a layout" widget so
+                    # _activate_terminal_tab() below re-adds it to *this* layout rather than
+                    # wrongly assuming it's already placed (it was only ever placed in the
+                    # now-discarded previous layout).
+                    self._console_active_webview = None
+
+                    if not self.terminal_tabs:
+                        self.terminal_tabs.append(
+                            TerminalTabState(getattr(self, 'console_path', None) or os.path.expanduser("~"))
+                        )
+                        self.terminal_active_index = 0
+                    if not (0 <= self.terminal_active_index < len(self.terminal_tabs)):
+                        self.terminal_active_index = 0
+                    self._activate_terminal_tab(self.terminal_active_index)
                     self.console_available = True
                 else:
-                    self._stop_ttyd_console()  # backend switched away from ttyd — don't leak it
+                    self._close_all_terminal_tabs()  # backend switched away from ttyd — don't leak any of them
                     try:
                         from qtconsole.rich_jupyter_widget import RichJupyterWidget
                         from qtconsole.inprocess import QtInProcessKernelManager
@@ -12127,17 +12340,63 @@ function filterAliases(q) {{
         zoom_in_btn.clicked.connect(self.pdf_zoom_in)
         toolbar_layout.addWidget(zoom_in_btn)
 
-        # Fit width button
-        fit_btn = QPushButton("|—|")
-        fit_btn.setStyleSheet(btn_style)
-        fit_btn.setToolTip("Fit to width")
-        fit_btn.clicked.connect(self.pdf_fit_width)
-        toolbar_layout.addWidget(fit_btn)
+        # Fit-mode toggle button — cycles Fit Width -> Fit Height -> Fit Page (whole
+        # page, i.e. autofit both dimensions) -> back to Fit Width. See
+        # pdf_toggle_fit_mode()/pdf_apply_fit().
+        self.pdf_fit_btn = QPushButton()
+        self.pdf_fit_btn.setStyleSheet(btn_style)
+        self.pdf_fit_btn.clicked.connect(self.pdf_toggle_fit_mode)
+        toolbar_layout.addWidget(self.pdf_fit_btn)
+        self._update_pdf_fit_btn()
 
         # Add stretch to push buttons to the left
         toolbar_layout.addStretch()
 
         parent_layout.addWidget(toolbar_widget)
+
+    def _build_pdf_footer_page_nav(self):
+        """Small prev/page/next controls duplicating the toolbar's paging buttons,
+        placed in the footer row (left-aligned, opposite the "Open in {viewer}" button)
+        so paging is reachable without scrolling back up to the toolbar on a tall PDF.
+        self.pdf_page_label_bottom is kept in sync with self.pdf_page_label wherever the
+        latter is updated (render_pdf_page(), the tab-close-to-empty reset)."""
+        nav = QWidget()
+        layout = QHBoxLayout(nav)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 2px 8px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        prev_btn = QPushButton("<")
+        prev_btn.setStyleSheet(btn_style)
+        prev_btn.setToolTip("Previous page")
+        prev_btn.clicked.connect(self.pdf_prev_page)
+        layout.addWidget(prev_btn)
+
+        self.pdf_page_label_bottom = QLabel("0 / 0")
+        self.pdf_page_label_bottom.setStyleSheet("margin: 0 8px; font-size: 11px;")
+        layout.addWidget(self.pdf_page_label_bottom)
+
+        next_btn = QPushButton(">")
+        next_btn.setStyleSheet(btn_style)
+        next_btn.setToolTip("Next page")
+        next_btn.clicked.connect(self.pdf_next_page)
+        layout.addWidget(next_btn)
+
+        return nav
 
     def _pdf_load_tab_doc(self, tab):
         """Open the PyMuPDF document for `tab` (local file or URL), storing the result on
@@ -12192,7 +12451,7 @@ function filterAliases(q) {{
         self.pdf_page_count = tab.page_count
         if tab.doc is not None:
             self.render_pdf_page()
-            QTimer.singleShot(0, self.pdf_fit_width)
+            QTimer.singleShot(0, self.pdf_apply_fit)
         elif self.pdf_label is not None:
             self._set_viewer_placeholder(self.pdf_label, "pdf", f"Could not load:\n{tab.path}")
         self._rebuild_pdf_tab_strip()
@@ -12218,8 +12477,7 @@ function filterAliases(q) {{
             self.pdf_page_count = 0
             if self.pdf_label is not None:
                 self._set_viewer_placeholder(self.pdf_label, "pdf", "No PDF loaded\n\nUse the Open button to open a PDF file")
-            if hasattr(self, 'pdf_page_label'):
-                self.pdf_page_label.setText("0 / 0")
+            self._set_pdf_page_label_text("0 / 0")
             self._rebuild_pdf_tab_strip()
         elif closing_active:
             self._activate_pdf_tab(min(index, len(self.pdf_tabs) - 1))
@@ -12392,10 +12650,17 @@ function filterAliases(q) {{
             self.pdf_label.setPixmap(QPixmap.fromImage(img))
 
             # Update page indicator
-            if hasattr(self, 'pdf_page_label'):
-                self.pdf_page_label.setText(f"{self.pdf_current_page + 1} / {self.pdf_page_count}")
+            self._set_pdf_page_label_text(f"{self.pdf_current_page + 1} / {self.pdf_page_count}")
         except Exception as e:
             print(f"Error rendering PDF page: {e}")
+
+    def _set_pdf_page_label_text(self, text):
+        """Update both page-indicator labels (toolbar + footer nav) together — see
+        _build_pdf_footer_page_nav()."""
+        if hasattr(self, 'pdf_page_label'):
+            self.pdf_page_label.setText(text)
+        if hasattr(self, 'pdf_page_label_bottom'):
+            self.pdf_page_label_bottom.setText(text)
 
     def open_pdf_file(self):
         """Open a file dialog to select a PDF"""
@@ -12482,23 +12747,69 @@ function filterAliases(q) {{
         if hasattr(self, 'pdf_zoom_label'):
             self.pdf_zoom_label.setText(f"{int(self.pdf_zoom * 100)}%")
 
-    def pdf_fit_width(self):
-        """Fit PDF to scroll area width"""
+    def _pdf_zoom_for_fit(self, mode):
+        """Compute (without applying) the zoom level that satisfies `mode`
+        ('width'/'height'/'page') for the current page/scroll-area size. Returns None
+        if there's no PDF/scroll area to measure yet. 'page' fits the whole page inside
+        the viewport (the smaller of the width-fit and height-fit zooms), i.e. autofit."""
         if not self.pdf_doc or not self.pdf_scroll:
-            return
-
+            return None
         try:
             page = self.pdf_doc[self.pdf_current_page]
-            # Get scroll area width (minus some padding for scrollbar)
-            scroll_width = self.pdf_scroll.viewport().width() - 20
-            # Calculate zoom to fit width
-            page_width = page.rect.width
-            self.pdf_zoom = scroll_width / page_width
-            self.render_pdf_page()
-            if hasattr(self, 'pdf_zoom_label'):
-                self.pdf_zoom_label.setText(f"{int(self.pdf_zoom * 100)}%")
+            viewport = self.pdf_scroll.viewport()
+            # Minus some padding for the scrollbar
+            zoom_w = (viewport.width() - 20) / page.rect.width
+            zoom_h = (viewport.height() - 20) / page.rect.height
+            if mode == "height":
+                return zoom_h
+            elif mode == "page":
+                return min(zoom_w, zoom_h)
+            return zoom_w
         except Exception as e:
-            print(f"Error fitting PDF to width: {e}")
+            print(f"Error computing PDF fit zoom ({mode}): {e}")
+            return None
+
+    def pdf_apply_fit(self):
+        """Apply whichever fit mode is currently selected (self.pdf_fit_mode) — the
+        shared entry point every fit-triggering call site uses (the toolbar toggle
+        button, tab activation, and switching into the PDF viewer tab) so they all
+        honor whichever mode the user last picked instead of hardcoding fit-to-width."""
+        zoom = self._pdf_zoom_for_fit(self.pdf_fit_mode)
+        if zoom is None:
+            return
+        self.pdf_zoom = zoom
+        self.render_pdf_page()
+        if hasattr(self, 'pdf_zoom_label'):
+            self.pdf_zoom_label.setText(f"{int(self.pdf_zoom * 100)}%")
+
+    def pdf_toggle_fit_mode(self):
+        """Cycle the toolbar's fit button: Width -> Height -> Page -> Width ..."""
+        order = ["width", "height", "page"]
+        idx = order.index(self.pdf_fit_mode) if self.pdf_fit_mode in order else 0
+        self.pdf_fit_mode = order[(idx + 1) % len(order)]
+        self._update_pdf_fit_btn()
+        self.pdf_apply_fit()
+
+    def _update_pdf_fit_btn(self):
+        """Sync the toolbar's fit-mode button label/tooltip to self.pdf_fit_mode."""
+        if not self.pdf_fit_btn:
+            return
+        labels = {"width": "|—|", "height": "|︙|", "page": "⛶"}
+        next_mode = {"width": "Height", "height": "Page", "page": "Width"}
+        self.pdf_fit_btn.setText(labels.get(self.pdf_fit_mode, "|—|"))
+        self.pdf_fit_btn.setToolTip(
+            f"Fit to {self.pdf_fit_mode} (click to switch to Fit {next_mode.get(self.pdf_fit_mode, 'Width')})"
+        )
+
+    def pdf_fit_width(self):
+        """Fit PDF to scroll area width"""
+        zoom = self._pdf_zoom_for_fit("width")
+        if zoom is None:
+            return
+        self.pdf_zoom = zoom
+        self.render_pdf_page()
+        if hasattr(self, 'pdf_zoom_label'):
+            self.pdf_zoom_label.setText(f"{int(self.pdf_zoom * 100)}%")
 
     def _set_viewer_placeholder(self, label, asset_basename, fallback_text):
         """Show a placeholder graphic (assets/placeholders/) on an empty PDF/image viewer label.
@@ -12555,12 +12866,18 @@ function filterAliases(q) {{
         apply_fit()  # immediate best-effort so something shows before layout settles
         QTimer.singleShot(500, apply_fit)
 
-    def _make_viewer_footer(self, label, tooltip, callback):
-        """Create a thin footer strip with a single right-aligned action button."""
+    def _make_viewer_footer(self, label, tooltip, callback, left_widget=None):
+        """Create a thin footer strip with a single right-aligned action button, and an
+        optional extra widget pinned to the left (e.g. the PDF viewer's paging controls,
+        so paging is reachable without scrolling back up to the toolbar on a tall page)
+        so the two don't have to fight over layout. Every other caller leaves this at
+        its default of no left content."""
         footer = QWidget()
         footer.setStyleSheet(f"background-color: {self.t('bg_secondary')}; border-top: 1px solid {self.t('border')};")
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(6, 4, 6, 4)
+        if left_widget is not None:
+            layout.addWidget(left_widget)
         layout.addStretch()
         btn = QPushButton(label)
         btn.setStyleSheet(f"""
@@ -12689,16 +13006,18 @@ function filterAliases(q) {{
             self._update_code_editor_buttons()
         elif mode == "pdf":
             # Re-fit/re-render on every switch INTO this tab, not just when the PDF was
-            # first loaded. pdf_fit_width() sizes to self.pdf_scroll.viewport().width(),
-            # which was very likely wrong at load time if the pdf_container happened to be
-            # hidden then (e.g. a project rebuild that lands on some other tab — the
-            # Settings viewer in particular, since "Edit Project"/its Save button now
-            # trigger a rebuild while column2_mode is frequently "settings") — a hidden
-            # widget's viewport reports a stale/default width, so the PDF gets rendered at
-            # the wrong zoom and nothing re-renders it later on its own. Cheap to redo
-            # (recompute zoom, redraw current page), so just always do it on entry.
+            # first loaded. pdf_apply_fit() sizes to self.pdf_scroll.viewport().width()/
+            # height(), which was very likely wrong at load time if the pdf_container
+            # happened to be hidden then (e.g. a project rebuild that lands on some other
+            # tab — the Settings viewer in particular, since "Edit Project"/its Save
+            # button now trigger a rebuild while column2_mode is frequently "settings") —
+            # a hidden widget's viewport reports a stale/default size, so the PDF gets
+            # rendered at the wrong zoom and nothing re-renders it later on its own.
+            # Cheap to redo (recompute zoom, redraw current page), so just always do it
+            # on entry. Goes through pdf_apply_fit() (not pdf_fit_width() directly) so
+            # whichever fit mode was last selected is honored, not just fit-width.
             if self.pdf_doc:
-                self.pdf_fit_width()
+                self.pdf_apply_fit()
         elif mode == "image":
             # Same latent issue as "pdf" above, same fix — see that branch's comment.
             if getattr(self, 'image_pixmap', None):
@@ -12957,6 +13276,13 @@ function filterAliases(q) {{
             self.webview_url = tab.value
             self._update_md_edit_buttons()
         self._rebuild_web_tab_strip()
+
+    def _open_link_in_new_web_tab(self, url):
+        """Callback passed to LinkOpeningWebPage — a link opened via right-click "Open
+        link in new tab"/"new window" (or middle-click, or JS window.open()) lands here
+        with its destination URL and becomes a genuine new Web tab, switching focus to
+        it immediately (matching what "open in new tab" does in a real browser)."""
+        self._open_web_tab("url", url)
 
     def _open_web_tab(self, kind, value):
         """Open a new Web tab and make it active — always-new-tab policy, mirroring
@@ -13411,21 +13737,32 @@ function filterAliases(q) {{
             }}
         """
 
-        # Open folder button
+        # Open folder button — retargets the ACTIVE terminal tab's directory (see
+        # console_open_directory/_retarget_active_terminal_tab)
         open_btn = QPushButton(" Open")
         open_btn.setIcon(self._open_icon())
         open_btn.setIconSize(QSize(16, 16))
         open_btn.setStyleSheet(btn_style)
-        open_btn.setToolTip("Navigate to a directory")
+        open_btn.setToolTip("Change the current terminal's directory")
         open_btn.clicked.connect(self.console_open_directory)
         toolbar_layout.addWidget(open_btn)
+
+        # "+ New Terminal" — always opens a genuinely separate tab (see
+        # _new_terminal_tab_dialog), unlike the Open button above which retargets the
+        # active one. Only meaningful for ttyd — qtconsole has no tab concept.
+        if self.resolve_console_backend() == "ttyd":
+            new_tab_btn = QPushButton("+ New Terminal")
+            new_tab_btn.setStyleSheet(btn_style)
+            new_tab_btn.setToolTip(f"Open a new terminal tab (max {self.TERMINAL_TAB_CAP} at once)")
+            new_tab_btn.clicked.connect(self._new_terminal_tab_dialog)
+            toolbar_layout.addWidget(new_tab_btn)
 
         # Separator
         sep1 = QLabel("|")
         sep1.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
         toolbar_layout.addWidget(sep1)
 
-        # Path label with limitation hint
+        # Path label with limitation hint — shows the ACTIVE terminal tab's directory
         self.console_path_label = QLabel("~")
         self.console_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
         if self.resolve_console_backend() == "ttyd":
@@ -13470,59 +13807,86 @@ function filterAliases(q) {{
         parent_layout.addWidget(toolbar_widget)
 
     def console_open_directory(self):
-        """Open a directory picker and navigate the console to it"""
+        """Open a directory picker and navigate the console to it. For ttyd, this retargets
+        the ACTIVE terminal tab (reusing an existing tab already at that directory if one
+        exists, else killing and respawning the active tab's own shell there) — the same
+        "picking a new directory replaces the current shell" behavior this had before tabs
+        existed, not a regression. The toolbar's separate "+ New Terminal" button
+        (_new_terminal_tab_dialog) is the one that always opens a genuinely new tab."""
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "Select Directory for Console",
             os.path.expanduser("~")
         )
         if folder_path:
-            self.console_path = folder_path
-            self.console_path_label.setText(folder_path)
             if self.resolve_console_backend() == "ttyd":
-                self._ensure_ttyd_console(folder_path)
-            elif self.console_available and hasattr(self, 'console_widget'):
-                self.console_widget.execute(f'import os; os.chdir("{folder_path}")', hidden=True)
-                self.console_widget.execute('!pwd')
+                self._retarget_active_terminal_tab(folder_path)
+            else:
+                self.console_path = folder_path
+                self.console_path_label.setText(folder_path)
+                if self.console_available and hasattr(self, 'console_widget'):
+                    self.console_widget.execute(f'import os; os.chdir("{folder_path}")', hidden=True)
+                    self.console_widget.execute('!pwd')
 
-    def _ensure_ttyd_console(self, cwd):
-        """Spawn (or reuse) a ttyd process bound to 127.0.0.1 serving a real shell rooted at
-        cwd, and load it into self.console_ttyd_webview.
+    def _new_terminal_tab_dialog(self):
+        """"+ New Terminal" toolbar button: prompts for a directory and always opens it as a
+        genuinely new tab (subject to the cwd-reuse rule and TERMINAL_TAB_CAP in
+        _open_terminal_tab) — unlike console_open_directory()/the Open button, which
+        retarget the currently-active tab instead."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "New Terminal — Select Directory",
+            getattr(self, 'console_path', None) or os.path.expanduser("~")
+        )
+        if folder_path:
+            self._open_terminal_tab(folder_path)
 
-        Deliberately NOT recreated on every build_main_content() refresh — unlike the qtconsole
-        block above, which recreates its in-process kernel on every rebuild (harmless there,
-        since it holds no OS-level resource). ttyd is a real subprocess bound to a real port;
-        naively recreating it every refresh would leak a process + an open port every time the
-        UI rebuilds (every edit, every Group-by-Type toggle, etc.). Guarded by cwd + liveness
-        instead, the same way _notes_loaded_for gates redundant Muya reloads.
+    # Hard cap on simultaneously-live terminal tabs (see TerminalTabState) — each one is a
+    # real ttyd subprocess + OS port + QWebEngineView, a materially more expensive resource
+    # than a PDF/Image tab or the single shared Web/Notes webview. At the cap, opening
+    # another tab is REFUSED outright (see _open_terminal_tab) rather than silently
+    # evicting the oldest tab the way WEB_TAB_CAP does — a background terminal tab can have
+    # a real process running in it (a dev server, a build, tail -f), and silently killing
+    # that without warning is exactly the kind of side effect CLAUDE.md's Code Cleanup
+    # Guidelines warn against.
+    TERMINAL_TAB_CAP = 5
 
-        `-O`/`--check-origin` matters even though this only ever binds to 127.0.0.1: WebSocket
-        connections aren't subject to the same-origin policy the way fetch/XHR are, so without
-        it any JavaScript running in any browser tab on the machine could open a WebSocket to
-        this port directly and get a shell — a malicious-webpage attack class localhost binding
-        alone doesn't prevent. `-O` makes ttyd reject connections whose Origin header doesn't
-        match, closing that off.
+    def _find_terminal_tab_for_cwd(self, cwd):
+        """Return the index of an existing, still-alive terminal tab already rooted at
+        `cwd` (must already be expanduser()'d), or -1. This is the reuse-by-directory check
+        every "open a terminal at this directory" call site goes through, so repeat clicks
+        on the same launcher item/log file don't pile up duplicate shells in the same
+        folder — the same guarantee the old single-console _ensure_ttyd_console() gave via
+        its cwd+liveness check, now scanning N tabs instead of one scalar."""
+        for i, tab in enumerate(self.terminal_tabs):
+            if tab.cwd == cwd and tab.proc is not None and tab.proc.poll() is None:
+                return i
+        return -1
 
-        Returns True if a fresh navigation was triggered (webview.setUrl() called — the page
-        won't be interactive until its loadFinished fires), False if an existing session was
-        reused (already loaded, safe to interact with immediately) or startup failed. Callers
-        that need to run a command right after ensuring the console (e.g.
-        _open_log_file_in_console) use this to know whether they must wait for loadFinished
-        first — pasting into the *old* page moments before setUrl() tears it down is a real,
-        observed race otherwise.
+    def _spawn_terminal_tab(self, tab):
+        """Create `tab`'s QWebEngineView (if it doesn't have one yet) and spawn its ttyd
+        subprocess, navigating the webview to it once a port is known. Mutates `tab` in
+        place; returns True on success, False if ttyd isn't on PATH or failed to report a
+        port in time. Split out from _open_terminal_tab() so a tab restored from disk
+        (proc=None, webview=None, only cwd known — see TerminalTabState/load_config()) can
+        be spawned lazily the first time it's actually activated, rather than eagerly
+        spawning every restored tab's shell the instant a project loads.
+
+        `-O`/`--check-origin` matters even though this only ever binds to 127.0.0.1:
+        WebSocket connections aren't subject to the same-origin policy the way fetch/XHR
+        are, so without it any JavaScript running in any browser tab on the machine could
+        open a WebSocket to this port directly and get a shell — a malicious-webpage attack
+        class localhost binding alone doesn't prevent. `-O` makes ttyd reject connections
+        whose Origin header doesn't match, closing that off.
         """
-        cwd = os.path.expanduser(cwd)
-        if (self.console_ttyd_proc is not None
-                and self.console_ttyd_proc.poll() is None
-                and self._console_ttyd_cwd == cwd):
-            return False  # already running for this directory — reuse it
-
-        self._stop_ttyd_console()
+        if tab.webview is None:
+            tab.webview = QWebEngineView()
+            self._enable_web_fullscreen_support(tab.webview)
+            tab.webview.loadFinished.connect(lambda ok, t=tab: setattr(t, 'ready', ok))
 
         shell = os.environ.get("SHELL", "bash")
         try:
             proc = subprocess.Popen(
-                ["ttyd", "-i", "127.0.0.1", "-p", "0", "-W", "-O", "-w", cwd, shell],
+                ["ttyd", "-i", "127.0.0.1", "-p", "0", "-W", "-O", "-w", tab.cwd, shell],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 start_new_session=False,  # must die with the app, not survive it
             )
@@ -13544,27 +13908,214 @@ function filterAliases(q) {{
             proc.terminate()
             return False
 
-        self.console_ttyd_proc = proc
-        self._console_ttyd_cwd = cwd
-        self._console_ttyd_port = port
-        self._console_ttyd_ready = False
-        self.console_ttyd_webview.setUrl(QUrl(f"http://127.0.0.1:{port}/"))
+        tab.proc = proc
+        tab.port = port
+        tab.ready = False
+        tab.webview.setUrl(QUrl(f"http://127.0.0.1:{port}/"))
         return True
 
-    def _stop_ttyd_console(self):
-        """Terminate the current ttyd subprocess, if any."""
-        proc = self.console_ttyd_proc
+    def _open_terminal_tab(self, cwd):
+        """Open (or reuse) a terminal tab rooted at `cwd` and make it active. If a live tab
+        already sits at this exact directory, activates it instead of spawning a duplicate
+        shell. Otherwise, refuses to open past TERMINAL_TAB_CAP simultaneously-live tabs
+        (no silent eviction — see TERMINAL_TAB_CAP's own comment). Returns True if a tab is
+        now active at `cwd` (whether reused or newly created), False if refused or ttyd
+        failed to start."""
+        cwd = os.path.expanduser(cwd)
+        existing = self._find_terminal_tab_for_cwd(cwd)
+        if existing != -1:
+            self._activate_terminal_tab(existing)
+            return True
+
+        if len(self.terminal_tabs) >= self.TERMINAL_TAB_CAP:
+            self.set_status(
+                f"Terminal tab limit reached ({self.TERMINAL_TAB_CAP}) — close a tab first.",
+                "warning",
+            )
+            return False
+
+        tab = TerminalTabState(cwd)
+        if not self._spawn_terminal_tab(tab):
+            self.set_status("Could not start terminal (ttyd) — is it installed?", "error")
+            return False
+        self.terminal_tabs.append(tab)
+        self._activate_terminal_tab(len(self.terminal_tabs) - 1)
+        self.save_notes()
+        return True
+
+    def _retarget_active_terminal_tab(self, cwd):
+        """Point the currently-active terminal tab at a new directory — reusing an existing
+        tab already at that directory if one exists, otherwise killing and respawning the
+        ACTIVE tab's own ttyd process there. This is what console_open_directory() (the
+        toolbar's directory picker) uses; _open_terminal_tab()/_new_terminal_tab_dialog()
+        always open a genuinely separate tab instead."""
+        cwd = os.path.expanduser(cwd)
+        existing = self._find_terminal_tab_for_cwd(cwd)
+        if existing != -1:
+            self._activate_terminal_tab(existing)
+            return
+        if not self.terminal_tabs:
+            self._open_terminal_tab(cwd)
+            return
+        tab = self.terminal_tabs[self.terminal_active_index]
+        self._stop_terminal_tab(tab)
+        tab.cwd = cwd
+        self._spawn_terminal_tab(tab)
+        if getattr(self, 'console_path_label', None) is not None:
+            self.console_path_label.setText(cwd)
+        self.console_path = cwd
+        self._rebuild_terminal_tab_strip()
+        self.save_notes()
+
+    def _stop_terminal_tab(self, tab):
+        """Terminate `tab`'s ttyd subprocess, if any (per-tab equivalent of the old
+        singleton console's _stop_ttyd_console())."""
+        proc = tab.proc
         if proc is None:
             return
-        self.console_ttyd_proc = None
-        self._console_ttyd_cwd = None
-        self._console_ttyd_port = None
+        tab.proc = None
+        tab.port = None
         if proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+    def _activate_terminal_tab(self, index):
+        """Make self.terminal_tabs[index] the active tab: spawn its ttyd process lazily if
+        it hasn't been started yet (a tab restored from disk holds only a cwd until first
+        activated — see TerminalTabState/load_config()), swap which tab's webview is shown
+        in console_container_layout, refresh the toolbar's path label, and rebuild the tab
+        strip. Unlike _activate_pdf_tab(), there's no mutable per-tab UI state to flush on
+        the way out — the shell itself holds all live state, untouched by switching."""
+        if not (0 <= index < len(self.terminal_tabs)):
+            return
+        tab = self.terminal_tabs[index]
+        if tab.proc is None or tab.proc.poll() is not None:
+            if not self._spawn_terminal_tab(tab):
+                self.set_status("Could not start terminal (ttyd) — is it installed?", "error")
+                return
+        self.terminal_active_index = index
+
+        if getattr(self, '_console_active_webview', None) is not tab.webview:
+            layout = getattr(self, 'console_container_layout', None)
+            if layout is not None:
+                if getattr(self, '_console_active_webview', None) is not None:
+                    layout.removeWidget(self._console_active_webview)
+                    self._console_active_webview.setParent(self)
+                layout.addWidget(tab.webview, 1)
+            tab.webview.show()
+            self._console_active_webview = tab.webview
+
+        if getattr(self, 'console_empty_label', None) is not None:
+            self.console_empty_label.hide()
+        if getattr(self, 'console_path_label', None) is not None:
+            self.console_path_label.setText(tab.cwd)
+        self.console_path = tab.cwd
+        self._rebuild_terminal_tab_strip()
+
+    def _close_terminal_tab(self, index):
+        """Close and discard the terminal tab at `index`: stop its ttyd subprocess, detach
+        and discard its webview, and pick a sensible new active tab (the one now at the
+        same index, the last remaining tab, or none if the list becomes empty) — mirrors
+        _close_pdf_tab()."""
+        if not (0 <= index < len(self.terminal_tabs)):
+            return
+        closing_active = (index == self.terminal_active_index)
+        tab = self.terminal_tabs.pop(index)
+        self._stop_terminal_tab(tab)
+        if tab.webview is not None:
+            if getattr(self, '_console_active_webview', None) is tab.webview:
+                layout = getattr(self, 'console_container_layout', None)
+                if layout is not None:
+                    layout.removeWidget(tab.webview)
+                self._console_active_webview = None
+            tab.webview.setParent(None)
+            tab.webview.deleteLater()
+            tab.webview = None
+        if not self.terminal_tabs:
+            self.terminal_active_index = -1
+            if getattr(self, 'console_empty_label', None) is not None:
+                self.console_empty_label.show()
+            self._rebuild_terminal_tab_strip()
+        elif closing_active:
+            self._activate_terminal_tab(min(index, len(self.terminal_tabs) - 1))
+        else:
+            if index < self.terminal_active_index:
+                self.terminal_active_index -= 1
+            self._rebuild_terminal_tab_strip()
+        self.save_notes()
+
+    def _close_all_terminal_tabs(self):
+        """Close every open terminal tab (stopping every ttyd subprocess). Nothing in this
+        path can refuse to close (unlike Editor's dirty-tab confirmation), so this always
+        terminates with zero tabs — used both by the tab strip's "Close All" button and
+        when the console backend switches away from ttyd (build_main_content()), where
+        persisting "now zero terminal tabs" via _close_terminal_tab()'s save_notes() call
+        is exactly what's wanted."""
+        while self.terminal_tabs:
+            self._close_terminal_tab(0)
+
+    def _teardown_terminal_tabs(self):
+        """Stop every terminal tab's ttyd subprocess and discard its webview, clearing
+        self.terminal_tabs — the process-cleanup half of _close_all_terminal_tabs() WITHOUT
+        its save_notes() call. Used by load_config() when switching to a different project:
+        the outgoing project's terminal tabs must be killed so their processes/ports don't
+        leak, but save_notes() would write the (still only partially loaded) NEW project's
+        in-memory state back over its own config file, since is_project_switch/
+        self.current_config_file already point at the new project by the time this runs."""
+        while self.terminal_tabs:
+            tab = self.terminal_tabs.pop()
+            self._stop_terminal_tab(tab)
+            if tab.webview is not None:
+                if getattr(self, '_console_active_webview', None) is tab.webview:
+                    self._console_active_webview = None
+                tab.webview.setParent(None)
+                tab.webview.deleteLater()
+                tab.webview = None
+        self.terminal_active_index = -1
+
+    def _build_terminal_tab_strip(self, parent_layout):
+        """Build the row of terminal tab buttons (one per open TerminalTabState, with a
+        close button each) — sits between the toolbar and the console webview. Mirrors
+        _build_pdf_tab_strip() exactly."""
+        self.terminal_tab_strip_widget = QWidget()
+        self.terminal_tab_strip_layout = QHBoxLayout(self.terminal_tab_strip_widget)
+        self.terminal_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
+        self.terminal_tab_strip_layout.setSpacing(2)
+        parent_layout.addWidget(self.terminal_tab_strip_widget)
+        self._rebuild_terminal_tab_strip()
+
+    def _rebuild_terminal_tab_strip(self):
+        """Clear and repopulate self.terminal_tab_strip_layout from self.terminal_tabs —
+        called after every open/close/activate so the strip stays in sync without a full
+        rebuild. A no-op if the strip hasn't been built yet this pass (guards startup
+        ordering, mirrors _rebuild_pdf_tab_strip())."""
+        if getattr(self, 'terminal_tab_strip_layout', None) is None:
+            return
+        while self.terminal_tab_strip_layout.count():
+            item = self.terminal_tab_strip_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        self.terminal_tab_strip_widget.setVisible(bool(self.terminal_tabs))
+        for i, tab in enumerate(self.terminal_tabs):
+            is_active = (i == self.terminal_active_index)
+            label = os.path.basename(tab.cwd.rstrip('/')) or tab.cwd
+            group = self._build_tab_group_widget(
+                label, tab.cwd,
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_terminal_tab(idx),
+                lambda checked=False, idx=i: self._close_terminal_tab(idx),
+            )
+            self.terminal_tab_strip_layout.addWidget(group)
+        self.terminal_tab_strip_layout.addStretch()
+        if len(self.terminal_tabs) > 1:
+            self.terminal_tab_strip_layout.addWidget(
+                self._build_close_all_tabs_button(lambda checked=False: self._close_all_terminal_tabs())
+            )
 
     def _get_current_project_aliases(self):
         """Return [(name, command), ...] for every alias item in the current project's own
@@ -13582,7 +14133,11 @@ function filterAliases(q) {{
         return aliases
 
     def _run_alias_in_ttyd_console(self, command):
-        """Run an alias's command inside the live ttyd terminal session (paste + submit).
+        """Run an alias's command inside the ACTIVE terminal tab (paste + submit) — "do this
+        in the terminal I'm looking at", not a new-tab action (unlike log-tailing/terminal-
+        launcher routing below, which open/reuse a tab at a specific directory first).
+        Ensures at least one tab exists, spawning one at the project's console_path (or ~)
+        if none are open yet.
 
         window.term.paste() alone does not execute anything — xterm.js always wraps pasted
         text in bracketed-paste escape sequences, and bash's readline treats a bracketed paste
@@ -13592,16 +14147,20 @@ function filterAliases(q) {{
         future ttyd/xterm.js bump that changes this internal shape degrades to "text pasted but
         not submitted" rather than a JS error.
         """
-        if self.console_ttyd_proc is None or self.console_ttyd_proc.poll() is not None:
-            self._ensure_ttyd_console(self.console_path or "~")
-        self._run_in_ttyd_when_ready(command)
+        if not self.terminal_tabs:
+            if not self._open_terminal_tab(getattr(self, 'console_path', None) or "~"):
+                return
+        tab = self.terminal_tabs[self.terminal_active_index]
+        if tab.proc is None or tab.proc.poll() is not None:
+            if not self._spawn_terminal_tab(tab):
+                return
+        self._run_in_ttyd_when_ready(tab, command)
 
-    def _run_in_ttyd_when_ready(self, command, attempts=0):
-        """Pastes+submits `command` in the live ttyd terminal once its page has actually
-        finished loading (self._console_ttyd_ready), rather than as soon as console_ttyd_proc
-        reports the OS process alive. Those are NOT the same thing: setUrl() triggers an
-        async page load, and the gap is real — even the very first ttyd session auto-started
-        during initial build_main_content() isn't necessarily done loading (window.term
+    def _run_in_ttyd_when_ready(self, tab, command, attempts=0):
+        """Pastes+submits `command` in `tab`'s live ttyd terminal once its page has actually
+        finished loading (tab.ready), rather than as soon as tab.proc reports the OS process
+        alive. Those are NOT the same thing: setUrl() triggers an async page load, and the
+        gap is real — even a just-spawned tab isn't necessarily done loading (window.term
         doesn't exist yet) by the time something else tries to paste into it moments later
         (observed empirically: the paste is silently lost, no error). Polls every 100ms for
         up to ~5s rather than hanging forever if something goes wrong.
@@ -13614,16 +14173,16 @@ function filterAliases(q) {{
         same paste 500ms later lands reliably every time tested — a real gap between "page
         loaded" and "terminal actually ready for input", not a page-load race.
         """
-        if self._console_ttyd_ready:
-            QTimer.singleShot(500, lambda: self._paste_and_submit_in_ttyd(command))
+        if tab.ready:
+            QTimer.singleShot(500, lambda: self._paste_and_submit_in_ttyd(tab, command))
             return
         if attempts >= 50:
             return
-        QTimer.singleShot(100, lambda: self._run_in_ttyd_when_ready(command, attempts + 1))
+        QTimer.singleShot(100, lambda: self._run_in_ttyd_when_ready(tab, command, attempts + 1))
 
-    def _paste_and_submit_in_ttyd(self, command):
-        """The actual paste-and-Enter JS call — split out from _run_alias_in_ttyd_console so
-        _run_in_ttyd_when_ready() can share it.
+    def _paste_and_submit_in_ttyd(self, tab, command):
+        """The actual paste-and-Enter JS call for `tab` — split out from
+        _run_alias_in_ttyd_console so _run_in_ttyd_when_ready() can share it.
 
         The trailing no-op callback is load-bearing, not decoration: page().runJavaScript()
         called WITHOUT a callback was observed to silently no-op on this exact script often
@@ -13632,7 +14191,9 @@ function filterAliases(q) {{
         fire-and-forget path apparently doesn't reliably run to completion. Passing any
         callback, even one that discards the result, made it reliable every time tested.
         """
-        self.console_ttyd_webview.page().runJavaScript(
+        if tab.webview is None:
+            return
+        tab.webview.page().runJavaScript(
             f"window.term && window.term.paste({json.dumps(command)});"
             f"try {{ window.term._core.coreService.triggerDataEvent('\\r', true); }} catch(e) {{}}",
             lambda _result: None,
@@ -13658,25 +14219,30 @@ function filterAliases(q) {{
         return os.path.join(expanded_path, 'debug.log')
 
     def _open_log_file_in_console(self, expanded_path, lines=300):
-        """Focus-layout internal routing for tail_log launcher items and .log files: tails
-        the file in the live embedded terminal (tail -n <lines> -f) instead of spawning an
-        external terminal, reusing the same paste-and-submit mechanism as the alias quick-
-        jump buttons. Only reachable when the ttyd backend is active (checked by the caller)
-        — qtconsole's kernel would hang forever on a `!tail -f`, since -f never exits."""
+        """Focus-layout internal routing for tail_log launcher items and .log files: opens
+        (or reuses — see _open_terminal_tab's cwd-reuse rule) a terminal tab rooted at the
+        log's directory and tails the file there (tail -n <lines> -f) instead of spawning an
+        external terminal. Only reachable when the ttyd backend is active (checked by the
+        caller) — qtconsole's kernel would hang forever on a `!tail -f`, since -f never
+        exits."""
         log_file = self._resolve_tail_log_target(expanded_path)
         if self.column2_mode != "console":
             self.switch_to_viewer_mode("console")
+        workdir = os.path.dirname(log_file) or os.path.expanduser("~")
+        if not self._open_terminal_tab(workdir):
+            return
+        tab = self.terminal_tabs[self.terminal_active_index]
         command = f"tail -n {lines} -f {shlex.quote(log_file)}"
-        self._run_alias_in_ttyd_console(command)
+        self._run_in_ttyd_when_ready(tab, command)
 
     def _open_terminal_launcher_in_console(self, expanded_path):
-        """Focus-layout internal routing for terminal/konsole launcher items: cd's into the
-        item's target directory (running its trailing command, if any — same "path command
-        args" convention the external terminal/konsole handler already parses) in the live
-        embedded terminal instead of spawning an external one, reusing the same paste-and-
-        submit mechanism as _open_log_file_in_console()/the alias quick-jump buttons. Only
-        reachable when the ttyd backend is active (checked by the caller) — qtconsole has no
-        live interactive shell to cd into, only discrete `!command` calls."""
+        """Focus-layout internal routing for terminal/konsole launcher items: opens (or
+        reuses — see _open_terminal_tab's cwd-reuse rule) a terminal tab rooted at the
+        item's target directory and cd's into it (running its trailing command, if any —
+        same "path command args" convention the external terminal/konsole handler already
+        parses) instead of spawning an external one. Only reachable when the ttyd backend is
+        active (checked by the caller) — qtconsole has no live interactive shell to cd into,
+        only discrete `!command` calls."""
         parts = expanded_path.split()
         workdir = parts[0]
         command = " ".join(parts[1:]) if len(parts) > 1 else ""
@@ -13684,8 +14250,11 @@ function filterAliases(q) {{
             workdir = os.path.dirname(workdir)
         if self.column2_mode != "console":
             self.switch_to_viewer_mode("console")
+        if not self._open_terminal_tab(workdir):
+            return
+        tab = self.terminal_tabs[self.terminal_active_index]
         shell_cmd = f"cd {shlex.quote(workdir)}" + (f" && {command}" if command else "")
-        self._run_alias_in_ttyd_console(shell_cmd)
+        self._run_in_ttyd_when_ready(tab, shell_cmd)
 
     def _show_alias_overflow_menu(self, aliases, anchor_btn):
         """Show the aliases past the console toolbar's cap (see create_console_toolbar) in a
@@ -16210,20 +16779,22 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if combined:
             return [{
                 "id": "dev_combined", "label": "Dev Environment (file manager + terminal + editor)",
-                "item": ["Dev Environment", folder_path, "directorydev"], "checked": True
+                "item": ["Dev Environment", folder_path, "directorydev"]
             }]
         return [
             {"id": "dev_editor", "label": "Open in Editor",
-             "item": ["Open in Editor", folder_path, "editor"], "checked": True},
+             "item": ["Open in Editor", folder_path, "editor"]},
             {"id": "dev_terminal", "label": "Terminal Here",
-             "item": ["Terminal Here", folder_path, "terminal"], "checked": True},
+             "item": ["Terminal Here", folder_path, "terminal"]},
             {"id": "dev_filemanager", "label": "File Manager",
-             "item": ["File Manager", folder_path, "file_manager"], "checked": True},
+             "item": ["File Manager", folder_path, "file_manager"]},
         ]
 
     def _detect_project_indicators(self, folder_path):
         """Scan folder_path for recognizable project types and return suggestion
-        groups: [{"category": str, "suggestions": [{"id", "label", "item", "checked"}]}].
+        groups: [{"category": str, "suggestions": [{"id", "label", "item"}]}]. Every
+        suggestion's checkbox starts unchecked in the Kickstart dialog (opt-in, not
+        opt-out) — there is no per-suggestion "checked" field to carry that anymore.
 
         Single shared source of truth for "what does this folder look like" detection —
         used by the Kickstart dialog (_show_kickstart_dialog()) both right after "Make
@@ -16243,7 +16814,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 groups.append({"category": category, "suggestions": suggestions})
 
         def sug(id_, label, item):
-            return {"id": id_, "label": label, "item": item, "checked": True}
+            return {"id": id_, "label": label, "item": item}
 
         # --- npm / yarn / pnpm ---
         pkg_json = os.path.join(folder_path, "package.json")
