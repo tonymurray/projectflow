@@ -1276,6 +1276,7 @@ class ProjectFlowApp(QMainWindow):
                     "fm_always_tabs": False,  # Open file manager with home tab + target tab
                     "color_order": [],  # user-ordered list of color hex strings for swatch priority
                     "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
+                    "show_projects_section": True,  # Show the always-visible Projects section below the columns
                 }
                 self.save_settings()
         except Exception as e:
@@ -1643,6 +1644,19 @@ class ProjectFlowApp(QMainWindow):
         self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
         self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
         layout.addRow(baloo_label, self._settings_baloo)
+
+        # Projects section visibility
+        show_section_label = QLabel("Projects Section:")
+        show_section_label.setStyleSheet(label_style)
+        self._settings_show_projects_section = QCheckBox("Show Projects section below the columns")
+        self._settings_show_projects_section.setChecked(self.settings.get("show_projects_section", True))
+        self._settings_show_projects_section.setStyleSheet(f"color: {self.t('fg_primary')};")
+        self._settings_show_projects_section.setToolTip(
+            "When disabled, hides the Projects section (mode buttons + project grid) to save\n"
+            "vertical space. Use the Projects button in the footer, or the mega-menu (☰), to\n"
+            "switch projects without it."
+        )
+        layout.addRow(show_section_label, self._settings_show_projects_section)
 
         # Projects per row
         spinbox_style = f"""
@@ -4370,6 +4384,7 @@ class ProjectFlowApp(QMainWindow):
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
             self.settings["fm_always_tabs"] = self._settings_fm_always_tabs.isChecked()
+            self.settings["show_projects_section"] = self._settings_show_projects_section.isChecked()
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
             self.settings["projects_per_row"] = self._settings_projects_per_row.value()
             self.settings["projects_spacing"] = self._settings_projects_spacing.value()
@@ -7017,6 +7032,28 @@ function filterAliases(q) {{
         if hasattr(self, 'title_search'):
             self.title_search.enter_search_mode()
 
+    def _update_toggle_projects_section_btn(self):
+        """Sync the footer Projects-section toggle button's glyph/tooltip to current state.
+        refresh_projects() rebuilds the whole footer via init_ui(), so this only needs to run
+        once at construction time — factored into its own method mainly for clarity/symmetry
+        with the rest of this toggle's small surface area. Closed state shows a right arrow
+        (▸ Projects); open state shows an up arrow (▲ Projects) rather than a down arrow, so
+        the glyph reads as "collapse upward" rather than "reveal downward"."""
+        visible = self.settings.get("show_projects_section", True)
+        self.toggle_projects_section_btn.setText("▲ Projects" if visible else "▸ Projects")
+        self.toggle_projects_section_btn.setToolTip(
+            "Hide Projects section" if visible else "Show Projects section"
+        )
+
+    def _toggle_projects_section(self):
+        """Flip show_projects_section directly (no dialog) — mirrors
+        switch_projects_mode()'s compact/full toggle pattern: flip the setting, save,
+        refresh_projects() rebuilds the whole window via init_ui(), which re-reads the
+        setting at create_projects_section()'s call site in build_main_content()."""
+        self.settings["show_projects_section"] = not self.settings.get("show_projects_section", True)
+        self.save_settings()
+        self.refresh_projects()
+
     def _show_project_mega_menu(self):
         """Popup mega-menu for fast project switching (☰ button, top-left of title bar) —
         Pinned/Recent/All Projects/Folder Projects/By Color side by side, plus live search.
@@ -7055,9 +7092,15 @@ function filterAliases(q) {{
         _show_project_mega_menu()) — five columns (Pinned/Recent/All Projects/Folder
         Projects/By Color) plus a live search box filtering across all of them at once,
         mirroring the launcher search box's widget-visibility-toggling pattern rather than
-        rebuilding on every keystroke. Archive is deliberately excluded — already the
-        deliberately de-emphasized mode in the main Projects section; a quick-switch menu
-        shouldn't surface archived projects by default. Column data is read directly from
+        rebuilding on every keystroke, plus a small de-emphasized Archive block pinned to
+        the bottom-right corner (see the end of this method) — kept visually secondary
+        rather than a 6th full-width column, matching Archive's existing de-emphasized role
+        in the main Projects section, and deliberately left out of the live search filter
+        (a fixed overflow block, not one of the five equally-weighted browsable columns).
+        This closes the gap left by an earlier version of this menu that excluded Archive
+        entirely, needed now that the whole Projects section (create_projects_section()) can
+        be hidden via settings["show_projects_section"] — this menu has to be able to fully
+        replace it, Archive included. Column data is read directly from
         settings (the same sources create_projects_section()'s _populate_*() methods use)
         rather than calling those methods, since they render into self.projects_layout and
         carry UI (drag-to-pin zones, sort-toggle headers) that doesn't belong in a transient
@@ -7198,6 +7241,55 @@ function filterAliases(q) {{
 
         folder_paths = [p for p in self.settings.get("folder_projects", []) if os.path.exists(p)]
         add_column("🗂 Folder Projects", folder_paths, "No folder projects yet.", is_pinned=False)
+
+        # Archive block — small, de-emphasized, bottom-right corner. Deliberately a separate
+        # row added below columns_row (not a 6th entry inside it) so it naturally lands at
+        # the bottom of the popup; addStretch(1) before the block right-aligns it within
+        # that row. Fixed/capped size (vs. the five columns' equal-stretch, near-full-height
+        # layout) plus a muted header keep it reading as secondary. Reuses
+        # _create_archived_button() as-is — same color bar/name/inline "↩" restore/
+        # right-click restore-or-delete-permanently as the main Projects section's own
+        # Archive mode, just presented smaller. Not wired into search_refs/
+        # on_search_text_changed below — see this method's docstring for why.
+        archive_row = QHBoxLayout()
+        archive_row.addStretch(1)
+
+        archived_paths = self._gather_archived_project_paths()
+        archive_block = QWidget()
+        archive_block.setFixedWidth(220)
+        archive_block_layout = QVBoxLayout(archive_block)
+        archive_block_layout.setContentsMargins(0, 0, 0, 0)
+        archive_block_layout.setSpacing(6)
+
+        archive_header = QLabel(f"Archived ({len(archived_paths)})")
+        archive_header.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px; font-weight: bold;")
+        archive_block_layout.addWidget(archive_header)
+
+        archive_scroll = QScrollArea()
+        archive_scroll.setWidgetResizable(True)
+        archive_scroll.setFixedHeight(120)
+        archive_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        archive_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        archive_scroll_content = QWidget()
+        archive_scroll_layout = QVBoxLayout(archive_scroll_content)
+        archive_scroll_layout.setContentsMargins(0, 0, 0, 0)
+        archive_scroll_layout.setSpacing(4)
+
+        if not archived_paths:
+            empty_label = QLabel("No archived projects.")
+            empty_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px; padding: 4px 0;")
+            archive_scroll_layout.addWidget(empty_label)
+        else:
+            for path in archived_paths:
+                archive_scroll_layout.addWidget(
+                    self._create_archived_button(path, on_select=menu.close)
+                )
+        archive_scroll_layout.addStretch(1)
+        archive_scroll.setWidget(archive_scroll_content)
+        archive_block_layout.addWidget(archive_scroll)
+
+        archive_row.addWidget(archive_block)
+        root_layout.addLayout(archive_row)
 
         def on_search_text_changed(text):
             needle = text.strip().lower()
@@ -7433,6 +7525,14 @@ function filterAliases(q) {{
 
     def populate_projects(self):
         """Populate projects based on current mode (recent or alphabetical)"""
+        # No-op when the Projects section is hidden (settings["show_projects_section"] =
+        # False) — projects_layout/color_strip_widget/color_sort_btn only exist when
+        # create_projects_section() actually built them. Still reachable in that state via
+        # the mega-menu's own project buttons, which share _project_context_menu()'s
+        # "Set/Clear Color" actions (_set_project_color()/_clear_project_color()), both of
+        # which call this method unconditionally.
+        if getattr(self, 'projects_layout', None) is None:
+            return
         # Clear existing content
         while self.projects_layout.count():
             item = self.projects_layout.takeAt(0)
@@ -7709,9 +7809,12 @@ function filterAliases(q) {{
             flow_widget.addWidget(btn_container)
         self.projects_layout.addWidget(flow_widget)
 
-    def _populate_archived_projects(self):
-        """Populate with archived projects (main + folder)"""
-        # Archived main projects: files in projects/.archive/
+    def _gather_archived_project_paths(self):
+        """Combined archived main + folder project paths — main projects moved into
+        {projects_directory}/.archive/, plus settings["archived_folder_projects"] (pruned
+        of any entries that no longer exist on disk, with the prune persisted). Shared by
+        _populate_archived_projects() (main Projects section) and the mega-menu's own
+        bottom-right archive block (_build_project_mega_menu_content())."""
         configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
         archive_dir = os.path.join(configs_dir, ".archive")
         archived_main = []
@@ -7720,14 +7823,17 @@ function filterAliases(q) {{
                 if f.endswith('.json'):
                     archived_main.append(os.path.join(archive_dir, f))
 
-        # Archived folder projects: settings list
         archived_folder = self.settings.get("archived_folder_projects", [])
-        archived_folder = [p for p in archived_folder if os.path.exists(p)]
-        if archived_folder != self.settings.get("archived_folder_projects", []):
-            self.settings["archived_folder_projects"] = archived_folder
+        pruned = [p for p in archived_folder if os.path.exists(p)]
+        if pruned != archived_folder:
+            self.settings["archived_folder_projects"] = pruned
             self.save_settings()
 
-        all_archived = archived_main + archived_folder
+        return archived_main + pruned
+
+    def _populate_archived_projects(self):
+        """Populate with archived projects (main + folder)"""
+        all_archived = self._gather_archived_project_paths()
 
         if not all_archived:
             label = QLabel("No archived projects.")
@@ -7747,8 +7853,14 @@ function filterAliases(q) {{
         buttons_layout.addStretch()
         self.projects_layout.addLayout(buttons_layout)
 
-    def _create_archived_button(self, config_path):
-        """Create a button for an archived project with Restore action"""
+    def _create_archived_button(self, config_path, on_select=None):
+        """Create a button for an archived project with Restore action.
+
+        on_select: optional no-arg callback invoked after switch/restore — mirrors
+        _create_config_button()'s own on_select param, used by the mega-menu's archive
+        block to close its popup on selection (clicking a plain child widget inside a
+        QWidgetAction does not auto-close the QMenu on its own — see that param's
+        docstring/CLAUDE.md for the empirical confirmation)."""
         raw_name = self.get_display_name_for_config_path(config_path)
         display_name = raw_name.replace("_config", "").replace("_", " ").replace("-", " ").title()
 
@@ -7781,7 +7893,13 @@ function filterAliases(q) {{
             }}
         """)
         btn.setToolTip(f"Archived: {config_path}\nClick to open (right-click to restore or delete)")
-        btn.clicked.connect(lambda checked=False, path=config_path: self.switch_to_config(path))
+
+        def _switch_and_select(path=config_path):
+            self.switch_to_config(path)
+            if on_select:
+                on_select()
+
+        btn.clicked.connect(lambda checked=False: _switch_and_select())
         btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         btn.customContextMenuRequested.connect(lambda pos, p=config_path: self._project_context_menu(btn, pos, p, archived=True))
         btn_container_layout.addWidget(btn)
@@ -7806,7 +7924,12 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """)
-        restore_btn.clicked.connect(lambda checked=False, path=config_path: self.restore_project(path))
+        def _restore_and_select(path=config_path):
+            self.restore_project(path)
+            if on_select:
+                on_select()
+
+        restore_btn.clicked.connect(lambda checked=False: _restore_and_select())
         btn_container_layout.addWidget(restore_btn)
 
         return btn_container
@@ -8641,6 +8764,20 @@ function filterAliases(q) {{
         # Always show all three panels
         all_columns = [self.COLUMN_1]
         self._launcher_search_refs = []
+
+        # Projects section widgets (projects_layout/color_strip_widget/color_sort_btn) are
+        # only (re)built below when settings["show_projects_section"] is True. Reset them to
+        # None on every build first — otherwise, once hidden, these attributes keep pointing
+        # at widgets from the *previous* build that setCentralWidget() already tore down.
+        # hasattr()/plain attribute access alone doesn't catch this (the Python attribute
+        # still exists, just wrapping a deleted C++ object) — same stale-reference gotcha
+        # documented for the Quick File Browser Panel's own reset-to-None pattern. Every
+        # consumer (populate_projects(), the mega-menu's color-assignment path via
+        # _set_project_color()/_clear_project_color()) must check via
+        # getattr(self, 'projects_layout', None) is None, not hasattr().
+        self.projects_layout = None
+        self.color_strip_widget = None
+        self.color_sort_btn = None
 
         # Reset every render — only _build_grouped_categories() (called below, conditionally)
         # should populate these. Without this reset, a render pass that DOESN'T call it (the
@@ -10678,13 +10815,19 @@ function filterAliases(q) {{
 
         parent_layout.addWidget(self.columns_splitter, 1)  # stretch=1 so it fills available vertical space
 
-        # Add spacer before Projects section
-        spacer = QWidget()
-        spacer.setFixedHeight(20)
-        parent_layout.addWidget(spacer)
+        # Projects section is optional — settings["show_projects_section"] (default True).
+        # Hiding it is meant to be viable now that the ☰ mega-menu (see
+        # _show_project_mega_menu()) replicates the same project-switching options in one
+        # popup reachable from the title bar, including archived projects (see that
+        # method's own bottom-right archive block).
+        if self.settings.get("show_projects_section", True):
+            # Add spacer before Projects section
+            spacer = QWidget()
+            spacer.setFixedHeight(20)
+            parent_layout.addWidget(spacer)
 
-        # Create unified projects section
-        self.create_projects_section(parent_layout)
+            # Create unified projects section
+            self.create_projects_section(parent_layout)
 
         # Spacing above footer
         parent_layout.addSpacing(20)
@@ -10694,14 +10837,6 @@ function filterAliases(q) {{
         footer_widget.setStyleSheet(f"background-color: {self.t('bg_footer')};")
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(15, 10, 15, 10)
-
-        # Footer text (left side) with version
-        version = self.get_version()
-        footer_text = QLabel(f"ProjectFlow  •  Open source project launcher  •  {version}")
-        footer_text.setStyleSheet(f"color: {self.t('fg_footer')}; font-size: 11px;")
-        footer_layout.addWidget(footer_text)
-
-        footer_layout.addStretch()
 
         # Footer button style
         footer_btn_style = f"""
@@ -10717,6 +10852,28 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """
+
+        # Projects-section visibility toggle — far left of the footer, opposite Settings on
+        # the far right. Was previously a bare-chevron icon button in the title bar; moved
+        # here (same footer_btn_style as every other footer button) so it reads as a normal
+        # labeled action rather than a one-off icon, and to keep the title bar uncluttered.
+        # Mirrors switch_projects_mode()'s direct-toggle pattern (flip + save +
+        # refresh_projects()) rather than the Settings-dialog's _apply_settings() path, since
+        # there's no dialog involved here.
+        self.toggle_projects_section_btn = QPushButton()
+        self.toggle_projects_section_btn.setMinimumHeight(30)
+        self.toggle_projects_section_btn.setStyleSheet(footer_btn_style)
+        self._update_toggle_projects_section_btn()
+        self.toggle_projects_section_btn.clicked.connect(self._toggle_projects_section)
+        footer_layout.addWidget(self.toggle_projects_section_btn)
+
+        # Footer text (left side) with version
+        version = self.get_version()
+        footer_text = QLabel(f"ProjectFlow  •  Open source project launcher  •  {version}")
+        footer_text.setStyleSheet(f"color: {self.t('fg_footer')}; font-size: 11px;")
+        footer_layout.addWidget(footer_text)
+
+        footer_layout.addStretch()
 
         # Aliases button — shown when projectflow_aliases has entries
         _aliases_file = self.get_aliases_file_path()

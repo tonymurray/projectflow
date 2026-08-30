@@ -21,14 +21,14 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="11.5625"
-     inkscape:cx="32"
-     inkscape:cy="32"
-     inkscape:window-width="1707"
-     inkscape:window-height="985"
+     inkscape:zoom="2.890625"
+     inkscape:cx="42.551351"
+     inkscape:cy="33.383784"
+     inkscape:window-width="1125"
+     inkscape:window-height="452"
      inkscape:window-x="0"
      inkscape:window-y="0"
-     inkscape:window-maximized="1"
+     inkscape:window-maximized="0"
      inkscape:current-layer="g9" />
   <defs
      id="defs2">
@@ -118,7 +118,7 @@
            id="path7" />
       </g>
       <circle
-         style="fill:url(#g8bgrad);stroke-width:0.970062"
+         style="fill:#094d2e;stroke-width:0.970062;fill-opacity:1"
          cx="85.708328"
          cy="157.7623"
          id="circle7"
