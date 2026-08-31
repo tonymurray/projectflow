@@ -2,6 +2,14 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-08-31
+
+### Added
+- **`.nix` files now open in the internal code editor by default**, alongside the existing `.js`/`.py`/`.html`/`.css`/`.php`/`.json`/`.txt` set — added to `_CODE_ROUTE_EXTENSIONS` and the Editor toolbar's "Open" file-picker filter. No CodeMirror language package is vendored for Nix, so it renders as plain text with line numbers, the same fallback `.txt` already gets.
+
+### Fixed
+- **Terminal "+ New Terminal" button now actually opens a new tab when the target folder already has one open**, instead of silently switching to the existing tab there. `_open_terminal_tab()` gained a `force_new` parameter — the toolbar's "+ New Terminal" dialog now passes `force_new=True`, matching what its own tooltip/docstring already promised ("always opens a genuinely new tab") but the implementation didn't actually do, since it went through the same cwd-reuse check every other "open a terminal here" call site uses. Log-tailing, launcher-item routing, and startup restore all keep the reuse behavior unchanged.
+
 ## 2026-08-30
 
 ### Changed

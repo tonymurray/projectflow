@@ -13987,15 +13987,17 @@ function filterAliases(q) {{
 
     def _new_terminal_tab_dialog(self):
         """"+ New Terminal" toolbar button: prompts for a directory and always opens it as a
-        genuinely new tab (subject to the cwd-reuse rule and TERMINAL_TAB_CAP in
-        _open_terminal_tab) — unlike console_open_directory()/the Open button, which
-        retarget the currently-active tab instead."""
+        genuinely new tab (force_new=True — still subject to TERMINAL_TAB_CAP in
+        _open_terminal_tab, just not the cwd-reuse rule) — unlike console_open_directory()/
+        the Open button, which retarget the currently-active tab instead. Picking a folder
+        that already has a tab open now spawns a second shell there instead of just
+        switching to the existing one, since that's the entire point of this button."""
         folder_path = QFileDialog.getExistingDirectory(
             self, "New Terminal — Select Directory",
             getattr(self, 'console_path', None) or os.path.expanduser("~")
         )
         if folder_path:
-            self._open_terminal_tab(folder_path)
+            self._open_terminal_tab(folder_path, force_new=True)
 
     # Hard cap on simultaneously-live terminal tabs (see TerminalTabState) — each one is a
     # real ttyd subprocess + OS port + QWebEngineView, a materially more expensive resource
@@ -14071,15 +14073,21 @@ function filterAliases(q) {{
         tab.webview.setUrl(QUrl(f"http://127.0.0.1:{port}/"))
         return True
 
-    def _open_terminal_tab(self, cwd):
+    def _open_terminal_tab(self, cwd, force_new=False):
         """Open (or reuse) a terminal tab rooted at `cwd` and make it active. If a live tab
         already sits at this exact directory, activates it instead of spawning a duplicate
-        shell. Otherwise, refuses to open past TERMINAL_TAB_CAP simultaneously-live tabs
-        (no silent eviction — see TERMINAL_TAB_CAP's own comment). Returns True if a tab is
-        now active at `cwd` (whether reused or newly created), False if refused or ttyd
-        failed to start."""
+        shell — unless `force_new` is set, in which case a fresh shell is always spawned at
+        `cwd` regardless of whether one's already open there (still subject to
+        TERMINAL_TAB_CAP below). `force_new` exists specifically for _new_terminal_tab_dialog
+        (the toolbar's "+ New Terminal" button) — its whole point is "give me another shell
+        here even if one's already open", so silently reusing an existing tab defeated it.
+        Every other call site (log-tailing, launcher-item routing, startup restore) wants the
+        reuse behavior, so they leave this at the default. Otherwise, refuses to open past
+        TERMINAL_TAB_CAP simultaneously-live tabs (no silent eviction — see TERMINAL_TAB_CAP's
+        own comment). Returns True if a tab is now active at `cwd` (whether reused or newly
+        created), False if refused or ttyd failed to start."""
         cwd = os.path.expanduser(cwd)
-        existing = self._find_terminal_tab_for_cwd(cwd)
+        existing = -1 if force_new else self._find_terminal_tab_for_cwd(cwd)
         if existing != -1:
             self._activate_terminal_tab(existing)
             return True
@@ -15997,10 +16005,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     # local FILES open in the editor, only URLs (and explicit firefox/chrome-app launcher
     # items) open in the web viewer. The "👁 Rendered" toggle in the code editor (and
     # "</> Edit Source" the other way from the webview) still exist for switching a given
-    # .html file between the two views. .txt/.json are added on top of _CODE_EXT_LANGUAGE's
-    # keys since they route here too despite having no language entry (plain text/JS-as-
-    # JSON respectively).
-    _CODE_ROUTE_EXTENSIONS = tuple(set(_CODE_EXT_LANGUAGE) | {'.txt'})
+    # .html file between the two views. .txt/.json/.nix are added on top of
+    # _CODE_EXT_LANGUAGE's keys since they route here too despite having no language entry
+    # (plain text/JS-as-JSON/plain text respectively — no CodeMirror language package is
+    # vendored for Nix, so .nix just gets basicSetup's plain-text-with-line-numbers handling).
+    _CODE_ROUTE_EXTENSIONS = tuple(set(_CODE_EXT_LANGUAGE) | {'.txt', '.nix'})
 
     # Cap on simultaneously-remembered Web tabs (see WebTabState) — oldest tab is closed
     # to make room once reached (_open_web_tab()). Since only one real QWebEngineView is
@@ -16195,7 +16204,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         open_image_file()'s existing QFileDialog pattern."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Open File", os.path.expanduser("~"),
-            "Code Files (*.js *.jsx *.mjs *.cjs *.py *.html *.htm *.css *.php *.json *.txt);;All Files (*)"
+            "Code Files (*.js *.jsx *.mjs *.cjs *.py *.html *.htm *.css *.php *.json *.txt *.nix);;All Files (*)"
         )
         if file_path:
             self._open_code_file_in_editor(file_path)
