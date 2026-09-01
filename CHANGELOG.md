@@ -2,6 +2,20 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-01
+
+### Changed
+- **"Open All" category-header button is now opt-in per category, off by default — including Documentation.** A single click firing every item in a category is a real footgun now that `alias`/`run` launcher items can execute arbitrary commands, and nothing enforces that only "safe" items live in any given category. Toggle it on/off via the category header's right-click menu (new "⚡ Enable/Disable \"Open All\"" entry, alongside the existing Rename/Delete). Even once enabled, opening a category whose items include any command-executing type (`alias`/`run`/`terminal`/`ssh_session`/`npm`/`directorydev`/`rsync_backup*`/a custom `"type": "shell"` handler) now shows a confirmation naming exactly what will run before proceeding — websites/docs/images still open with no extra prompt. Fixed a pre-existing dormant bug as a side effect: right-click Rename/Delete on the Group-by-Type Docs bucket header previously silently no-op'd for any project whose Documentation category isn't literally named "Docs".
+
+### Added
+- **Pinned "🏠" quick-jump button, always the first item in the Notes tab strip (Focus layout)** — jumps to (or opens) this project's own note, reusing an already-open project-note tab rather than creating a duplicate. Previously the only way back to the project note with several others open was scanning the launcher column's Docs section for the pinned notes entry, which also always opened a redundant new tab even when the project note was already open. The toolbar's existing "🏠 Project Note" button now shares this same reuse-aware logic instead of its old in-place-navigation approach, which used to silently discard whichever note the active tab had been showing.
+- **"+ Add to Project" button in the PDF, Web, Image, Editor, and Folder viewer footers** (main Folder viewer and the launcher column's Quick File Browser Panel both included) — adds whatever's currently showing (the loaded PDF/image/code file, current folder, or web viewer's URL/local HTML/markdown file) as a new launcher item in the currently-open project. A small dialog lets you edit the display name and pick a category — including "Documentation", offered even before that category has ever been created for the project.
+- **New `run` launcher type**: point it at a script/command (e.g. `~/Programs/nixupdate.sh --check`) and it opens in the built-in Terminal viewer by default, landing in the script's own directory before running it — a small "$_" icon next to the item opens it in an external terminal instead. Selectable from the "Application" dropdown in the Add/Edit Item dialog, same as any other app type. Deliberately not wired into the shell-alias file/`projects/aliases.json` system — it's a per-launcher convenience, not something meant to be `source`d into a shell profile.
+- **`alias`-type launcher items now default into the built-in Terminal viewer too**, with the same external-terminal "$_" icon — previously they always spawned an external terminal with no built-in alternative at all. Unlike every other internal/external inversion in this app, this applies in **both** Standard and Focus layout (not just Focus) since the Console tab exists in both, and there's no viewable-content distinction to invert for a launcher whose whole job is running a command.
+
+### Fixed
+- **Code Editor tab labels now disambiguate same-named files from different folders**: two open tabs both named `default.txt` (from different directories) used to show identical, indistinguishable "default.txt" labels in the tab strip — each now gets its immediate parent folder name prefixed (`gtr/default.txt` vs `folder2/default.txt`) whenever another currently-open tab shares its basename.
+
 ## 2026-08-31
 
 ### Added

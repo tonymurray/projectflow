@@ -1055,6 +1055,11 @@ class ProjectFlowApp(QMainWindow):
         self.group_by_type = False
         self._group_view_origin = {}
 
+        # "Open All" per-category opt-in — off by default for every category (including
+        # Documentation), see _toggle_open_all_for_category()/open_all_in_group(). A plain
+        # set of category names, loaded fresh in load_config().
+        self.open_all_categories = set()
+
         # Focus-layout launcher column tab: "files" (Quick File Browser Panel) / "docs" /
         # "resources" / "apps" (per-project curated app grid, see _build_apps_tab_items).
         # Per-project — load_config() overrides this once the active project's config is read.
@@ -4911,6 +4916,52 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving group_by_type: {e}")
 
+    def _persist_open_all_categories(self):
+        """Write self.open_all_categories to the active project's own config file (plain
+        read-modify-write, mirrors _save_group_by_type_to_config() — this isn't part of the
+        columns/items structure, just a parallel per-project list). Omits the key entirely
+        when empty (the common case, since every category starts opted out) so a project
+        that never touches this stays clean."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            if self.open_all_categories:
+                config_data['open_all_categories'] = sorted(self.open_all_categories)
+            else:
+                config_data.pop('open_all_categories', None)
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving open_all_categories: {e}")
+
+    def _toggle_open_all_for_category(self, category_name):
+        """Flip whether the "Open All" button is active for `category_name` — opt-in, off
+        by default for every category including Documentation, since one click firing
+        every item in a category is a real footgun now that alias/run launcher items can
+        execute arbitrary commands (see open_all_in_group()'s own confirmation guard on
+        top of this). Reached via the category header's right-click menu
+        (_show_category_context_menu)."""
+        if category_name in self.open_all_categories:
+            self.open_all_categories.discard(category_name)
+        else:
+            self.open_all_categories.add(category_name)
+        self._persist_open_all_categories()
+        self.refresh_projects()
+
+    def _sync_open_all_category_rename(self, old_name, new_name):
+        """Keep open_all_categories in sync when a category is renamed — called from every
+        active rename path (rename_category_from_edit, _show_category_context_menu's rename
+        action) before save_config_to_json(). A no-op unless the renamed category actually
+        had "Open All" enabled."""
+        if old_name in self.open_all_categories:
+            self.open_all_categories.discard(old_name)
+            self.open_all_categories.add(new_name)
+            self._persist_open_all_categories()
+
     def _save_active_launcher_tab_to_config(self):
         """Persist the active Focus-layout launcher tab (Files/Docs/Resources/Apps) into
         the active project's own config file, so it's remembered next time this project is
@@ -5128,6 +5179,10 @@ StartupNotify=true
                 self.config_browser_new_tab = config_data.get('browser_new_tab', None)
                 # Load per-project color for the projects section
                 self.config_project_color = config_data.get('project_color', None)
+                # "Open All" per-category opt-in (see _toggle_open_all_for_category()) —
+                # loaded fresh every call, not gated on is_project_switch, since it's
+                # always sourced straight from disk and toggling it saves immediately.
+                self.open_all_categories = set(config_data.get('open_all_categories', []))
                 # Load linked Kimai project ID and name
                 self.config_kimai_project_id = config_data.get('kimai_project_id', None)
                 self.config_kimai_project_name = config_data.get('kimai_project_name', None)
@@ -6251,6 +6306,13 @@ function filterAliases(q) {{
                     self.complex_handlers = handlers_module.COMPLEX_HANDLERS
                 if hasattr(handlers_module, 'COMPLEX_HANDLER_INFO'):
                     self.complex_handler_info = handlers_module.COMPLEX_HANDLER_INFO
+                # "run" is a hardcoded handler in open_in_app() (not a COMPLEX_HANDLERS
+                # entry — see its own docstring for why), but still benefits from an
+                # example placeholder in the add/edit item dialog.
+                self.complex_handler_info["run"] = {
+                    "description": "Run a script/command — opens in the built-in Terminal viewer by default",
+                    "example": "~/Programs/nixupdate.sh",
+                }
                 # Configure terminal for complex handlers
                 if hasattr(handlers_module, 'set_terminal_config'):
                     handlers_module.set_terminal_config(
@@ -9118,8 +9180,28 @@ function filterAliases(q) {{
 
                         group_container_layout.addWidget(category_header)
                     else:
-                        # VIEW MODE: Show normal "Open All" button
-                        title_btn = QPushButton(f"⚡ {category_name} - Open All")
+                        # VIEW MODE: category header. "Open All" is opt-in per category (off
+                        # by default, including Documentation — see
+                        # _toggle_open_all_for_category()) rather than always shown, since one
+                        # click firing every item in a category is a real footgun now that
+                        # alias/run items can execute arbitrary commands.
+                        #
+                        # In the pooled Docs bucket, category_name is the display LABEL
+                        # ("Docs"), which can differ from the real backing category — resolve
+                        # to the true name (same best-effort logic as the CategoryDropZone
+                        # resolution above) so the opt-in flag — and the context menu's
+                        # rename/delete actions — read/write "Documentation" consistently
+                        # rather than a transient label that may not back any real category.
+                        if category_name == "Docs":
+                            _open_all_name = next(
+                                (n for n in ("Documentation", "Docs") if any(n in cd for cd in self.COLUMN_1)),
+                                "Documentation"
+                            )
+                        else:
+                            _open_all_name = category_name
+                        open_all_enabled = _open_all_name in self.open_all_categories
+
+                        title_btn = QPushButton(f"⚡ {category_name} - Open All" if open_all_enabled else category_name)
                         title_btn.setMinimumHeight(30)
                         title_btn.setStyleSheet(f"""
                             QPushButton {{
@@ -9138,13 +9220,16 @@ function filterAliases(q) {{
                                 color: {self.t('fg_on_dark')};
                             }}
                         """)
-                        title_btn.clicked.connect(
-                            lambda checked=False, group_items=items: self.open_all_in_group(group_items)
-                        )
-                        title_btn.setToolTip(f"Click to open all items in {category_name}\nRight-click to rename or delete")
+                        if open_all_enabled:
+                            title_btn.clicked.connect(
+                                lambda checked=False, group_items=items: self.open_all_in_group(group_items)
+                            )
+                            title_btn.setToolTip(f"Click to open all items in {category_name}\nRight-click to rename, delete, or disable \"Open All\"")
+                        else:
+                            title_btn.setToolTip(f"Right-click to rename, delete, or enable \"Open All\" for {category_name}")
                         title_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                         title_btn.customContextMenuRequested.connect(
-                            lambda pos, btn=title_btn, ci=col_idx, cn=category_name:
+                            lambda pos, btn=title_btn, ci=col_idx, cn=_open_all_name:
                                 self._show_category_context_menu(btn, ci, cn)
                         )
                         group_container_layout.addWidget(title_btn)
@@ -9563,6 +9648,32 @@ function filterAliases(q) {{
                                 btn_layout.addWidget(folder_btn)
 
                                 # Add layout to group
+                                btn_container = QWidget()
+                                btn_container.setLayout(btn_layout)
+                                drop_zone_layout.addWidget(btn_container)
+                                category_drop_zone.add_item(btn_container, true_idx)
+
+                            # Alias/Run launchers now default into the built-in Terminal
+                            # viewer (see open_in_app's unconditional alias/run routing
+                            # block — not Focus-layout-gated like every other preview icon
+                            # here), so the icon's job is always "open externally" instead,
+                            # regardless of layout.
+                            elif app in ("alias", "run"):
+                                btn_layout = QHBoxLayout()
+                                btn_layout.setContentsMargins(0, 0, 0, 0)
+                                btn_layout.setSpacing(2)
+                                btn_layout.addWidget(btn, 1)
+
+                                preview_btn = QPushButton("$_")
+                                preview_btn.setMaximumWidth(28)
+                                preview_btn.setMinimumHeight(30)
+                                preview_btn.setToolTip("Open in external terminal")
+                                preview_btn.setStyleSheet(icon_btn_style)
+                                preview_btn.clicked.connect(
+                                    lambda checked=False, p=path, a=app: self.open_in_app(p, a, force_external=True)
+                                )
+                                btn_layout.addWidget(preview_btn)
+
                                 btn_container = QWidget()
                                 btn_container.setLayout(btn_layout)
                                 drop_zone_layout.addWidget(btn_container)
@@ -10094,7 +10205,8 @@ function filterAliases(q) {{
                 pdf_container_layout.addWidget(
                     self._make_viewer_footer(
                         pdf_footer_label, "Open PDF in external viewer", self.open_pdf_in_external_viewer,
-                        left_widget=self._build_pdf_footer_page_nav()
+                        left_widget=self._build_pdf_footer_page_nav(),
+                        extra_buttons=[("+ Add to Project", "Add this PDF to the project as a launcher", self._add_pdf_to_project)]
                     )
                 )
 
@@ -10129,7 +10241,10 @@ function filterAliases(q) {{
 
                 browser_name = self.detect_default_browser().capitalize()
                 webview_container_layout.addWidget(
-                    self._make_viewer_footer(f"Open in {browser_name}", "Open URL in external browser", self.open_webview_in_external_browser)
+                    self._make_viewer_footer(
+                        f"Open in {browser_name}", "Open URL in external browser", self.open_webview_in_external_browser,
+                        extra_buttons=[("+ Add to Project", "Add this page to the project as a launcher", self._add_webview_to_project)]
+                    )
                 )
 
                 # Image viewer container
@@ -10166,7 +10281,10 @@ function filterAliases(q) {{
                 image_container_layout.addWidget(self.image_scroll)
 
                 image_container_layout.addWidget(
-                    self._make_viewer_footer("Open in Gwenview", "Open image in Gwenview", self.open_image_in_external_viewer)
+                    self._make_viewer_footer(
+                        "Open in Gwenview", "Open image in Gwenview", self.open_image_in_external_viewer,
+                        extra_buttons=[("+ Add to Project", "Add this image to the project as a launcher", self._add_image_to_project)]
+                    )
                 )
 
                 # Code editor container — internal CodeMirror 6 editor for JS/Python/HTML/
@@ -10188,7 +10306,10 @@ function filterAliases(q) {{
 
                 editor_name = os.path.basename(self.get_configured_editor()).capitalize()
                 code_container_layout.addWidget(
-                    self._make_viewer_footer(f"Open in {editor_name}", "Open this file in the configured editor", self.open_code_file_in_external_editor)
+                    self._make_viewer_footer(
+                        f"Open in {editor_name}", "Open this file in the configured editor", self.open_code_file_in_external_editor,
+                        extra_buttons=[("+ Add to Project", "Add this file to the project as a launcher", self._add_code_file_to_project)]
+                    )
                 )
 
                 # Settings viewer container — Project Settings, embedded as a viewer instead
@@ -10472,7 +10593,10 @@ function filterAliases(q) {{
 
                 fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
                 folder_container_layout.addWidget(
-                    self._make_viewer_footer(f"Open in {fm_name}", "Open in file manager", self.folder_open_external)
+                    self._make_viewer_footer(
+                        f"Open in {fm_name}", "Open in file manager", self.folder_open_external,
+                        extra_buttons=[("+ Add to Project", "Add this folder to the project as a launcher", self._add_current_folder_to_project)]
+                    )
                 )
 
                 # Initialize folder browser state - preserve navigation on same-project refresh;
@@ -11096,8 +11220,54 @@ function filterAliases(q) {{
                 f"Failed to create project:\n{str(e)}"
             )
 
+    # App types that actually execute a command/script rather than just opening a viewer,
+    # file manager, or browser — used by open_all_in_group()'s confirmation guard below.
+    # Firing a website or a doc open with one click is harmless; silently running several
+    # scripts/SSH sessions/backup commands at once is not.
+    COMMAND_EXECUTING_APPS = frozenset({
+        'alias', 'run', 'terminal', 'konsole', 'ssh_session', 'ssh_cd_npm',
+        'npm', 'directorydev', 'terminal_cmd', 'terminal_npm',
+        'rsync_backup', 'rsync_backup_id', 'rsync_backup_id_port',
+    })
+
+    def _items_with_command_execution(self, items):
+        """Return the display names of items in `items` whose app type actually executes a
+        command/script — every COMMAND_EXECUTING_APPS entry, plus any custom handler
+        explicitly marked "type": "shell" in launch_handlers_custom.json."""
+        names = []
+        for item in items:
+            if len(item) < 3:
+                continue
+            display_name, _path, app = item[0], item[1], item[2]
+            risky = app in self.COMMAND_EXECUTING_APPS
+            if not risky:
+                custom = getattr(self, 'custom_handlers', {}).get(app)
+                risky = isinstance(custom, dict) and custom.get('type') == 'shell'
+            if risky:
+                names.append(display_name)
+        return names
+
     def open_all_in_group(self, items):
-        """Open all items in a group"""
+        """Open all items in a group. If any item is a command-executing type (see
+        COMMAND_EXECUTING_APPS/_items_with_command_execution), asks for confirmation first
+        and names exactly what will run — opening N websites/docs at once needs no extra
+        guard, but firing off scripts/SSH sessions/backups with one click does. This is on
+        top of "Open All" itself being opt-in per category (see
+        _toggle_open_all_for_category) — the category-level toggle is the main guard
+        against an accidental click; this is the second guard against what happens once
+        someone has actually opted in and the category's contents later change to include
+        something riskier."""
+        risky_names = self._items_with_command_execution(items)
+        if risky_names:
+            reply = QMessageBox.question(
+                self, "Open All",
+                "This will also run:\n\n" + "\n".join(risky_names) + "\n\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         import time
         opened_count = 0
 
@@ -12162,7 +12332,10 @@ function filterAliases(q) {{
             self.handle_item_move_to_category(category_name, item_idx, target_category, len(dest_items))
 
     def _show_category_context_menu(self, btn, col_idx, category_name):
-        """Show right-click Rename/Delete menu for a category header."""
+        """Show right-click Rename/Delete/"Open All" toggle menu for a category header.
+        The toggle is offered here regardless of the category's current "Open All" state —
+        see _toggle_open_all_for_category() for why it's opt-in per category rather than
+        always shown."""
         menu = QMenu(self)
         menu.setStyleSheet(f"""
             QMenu {{
@@ -12177,20 +12350,27 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """)
+        open_all_enabled = category_name in self.open_all_categories
+        toggle_label = '⚡  Disable "Open All"' if open_all_enabled else '⚡  Enable "Open All"'
+        toggle_action = menu.addAction(toggle_label)
         rename_action = menu.addAction("✏️  Rename")
         delete_action = menu.addAction("🗑  Delete")
 
         action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        if action == rename_action:
+        if action == toggle_action:
+            self._toggle_open_all_for_category(category_name)
+        elif action == rename_action:
             from PyQt6.QtWidgets import QInputDialog
             new_name, ok = QInputDialog.getText(
                 self, "Rename Category", "New name:", text=category_name
             )
             if ok and new_name.strip() and new_name.strip() != category_name:
+                new_name = new_name.strip()
                 for cat_dict in self.COLUMN_1:
                     if category_name in cat_dict:
-                        cat_dict[new_name.strip()] = cat_dict.pop(category_name)
+                        cat_dict[new_name] = cat_dict.pop(category_name)
                         break
+                self._sync_open_all_category_rename(category_name, new_name)
                 self.save_config_to_json()
                 self.refresh_projects()
         elif action == delete_action:
@@ -12347,6 +12527,7 @@ function filterAliases(q) {{
                 edit_widget.setProperty("original_name", new_name)
                 break
 
+        self._sync_open_all_category_rename(old_name, new_name)
         self.save_config_to_json()
 
     def rename_category(self, col_idx, old_name, new_name):
@@ -12380,6 +12561,10 @@ function filterAliases(q) {{
                 if category_name in category_dict:
                     del category_dict[category_name]
                     break
+
+            if category_name in self.open_all_categories:
+                self.open_all_categories.discard(category_name)
+                self._persist_open_all_categories()
 
             self.save_config_to_json()
             self.refresh_projects()
@@ -13023,12 +13208,18 @@ function filterAliases(q) {{
         apply_fit()  # immediate best-effort so something shows before layout settles
         QTimer.singleShot(500, apply_fit)
 
-    def _make_viewer_footer(self, label, tooltip, callback, left_widget=None):
+    def _make_viewer_footer(self, label, tooltip, callback, left_widget=None, extra_buttons=None):
         """Create a thin footer strip with a single right-aligned action button, and an
         optional extra widget pinned to the left (e.g. the PDF viewer's paging controls,
         so paging is reachable without scrolling back up to the toolbar on a tall page)
         so the two don't have to fight over layout. Every other caller leaves this at
-        its default of no left content."""
+        its default of no left content.
+
+        `extra_buttons`: optional list of (label, tooltip, callback) tuples for additional
+        right-aligned buttons placed BEFORE the primary one (e.g. "+ Add to Project" — see
+        _add_viewer_item_to_project()), so the primary external-open action stays the
+        rightmost button, matching its established position in every viewer that already
+        has one."""
         footer = QWidget()
         footer.setStyleSheet(f"background-color: {self.t('bg_secondary')}; border-top: 1px solid {self.t('border')};")
         layout = QHBoxLayout(footer)
@@ -13036,8 +13227,7 @@ function filterAliases(q) {{
         if left_widget is not None:
             layout.addWidget(left_widget)
         layout.addStretch()
-        btn = QPushButton(label)
-        btn.setStyleSheet(f"""
+        footer_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
                 color: {self.t('fg_primary')};
@@ -13050,7 +13240,15 @@ function filterAliases(q) {{
                 background-color: {self.t('bg_button_hover')};
                 color: {self.t('fg_on_dark')};
             }}
-        """)
+        """
+        for ex_label, ex_tooltip, ex_callback in (extra_buttons or ()):
+            ex_btn = QPushButton(ex_label)
+            ex_btn.setStyleSheet(footer_btn_style)
+            ex_btn.setToolTip(ex_tooltip)
+            ex_btn.clicked.connect(ex_callback)
+            layout.addWidget(ex_btn)
+        btn = QPushButton(label)
+        btn.setStyleSheet(footer_btn_style)
         btn.setToolTip(tooltip)
         btn.clicked.connect(callback)
         layout.addWidget(btn)
@@ -14421,6 +14619,66 @@ function filterAliases(q) {{
         shell_cmd = f"cd {shlex.quote(workdir)}" + (f" && {command}" if command else "")
         self._run_in_ttyd_when_ready(tab, shell_cmd)
 
+    def _open_alias_launcher_in_console(self, path):
+        """Built-in Terminal-viewer routing for `alias`-type launcher items — opens (or
+        reuses, see _open_terminal_tab's cwd-reuse rule) a terminal tab and pastes the
+        alias's command into it, instead of always spawning an external terminal (see
+        open_in_app's "1c. Alias handler" branch, which remains the force_external /
+        non-ttyd-backend fallback). Unlike the terminal/konsole and tail_log routing above,
+        this is NOT gated on Focus layout — the Console tab exists in both layouts, and an
+        alias's whole point is running a command, so there's no "viewable content" reason to
+        restrict this to Focus layout the way image/PDF/markdown previews are. Only reachable
+        when the ttyd backend is active (checked by the caller) — qtconsole has no live
+        interactive shell to paste into.
+
+        Mirrors open_in_app's own "cd <dir>" / "cd <dir> && cmd" / plain-dir / plain-command
+        parsing exactly, so console-routed and externally-launched aliases behave
+        identically — just landing in the internal terminal vs an external window.
+        """
+        _alias_name, _, _rest = path.partition(' ')
+        _rest = _rest.strip()
+        if _rest.lower().startswith('cd ') and not re.search(r'&&|\|\||;', _rest):
+            workdir = os.path.expanduser(_rest[3:].strip())
+            shell_cmd = ""
+        elif re.match(r'^cd\s+\S+\s*&&', _rest, re.IGNORECASE):
+            _cd_match = re.match(r'^cd\s+(\S+)\s*&&\s*(.+)$', _rest.strip(), re.IGNORECASE)
+            workdir = os.path.expanduser(_cd_match.group(1))
+            shell_cmd = _cd_match.group(2).strip()
+        else:
+            _expanded_rest = os.path.expanduser(_rest)
+            if os.path.isdir(_expanded_rest):
+                workdir = _expanded_rest
+                shell_cmd = ""
+            else:
+                workdir = getattr(self, 'console_path', None) or os.path.expanduser("~")
+                shell_cmd = _rest
+        if self.column2_mode != "console":
+            self.switch_to_viewer_mode("console")
+        if not self._open_terminal_tab(workdir):
+            return
+        if shell_cmd:
+            tab = self.terminal_tabs[self.terminal_active_index]
+            self._run_in_ttyd_when_ready(tab, shell_cmd)
+
+    def _open_run_launcher_in_console(self, path):
+        """Built-in Terminal-viewer routing for `run`-type launcher items (see open_in_app's
+        "1d. Run handler" branch for the external-launch counterpart and the app type's own
+        rationale) — opens (or reuses) a terminal tab rooted at the target script's own
+        directory and pastes the full command (script path + any trailing args, exactly as
+        entered) into it. Not gated on Focus layout, same reasoning as
+        _open_alias_launcher_in_console above. Only reachable when the ttyd backend is
+        active (checked by the caller)."""
+        expanded_cmd = os.path.expanduser(path)
+        first_token = expanded_cmd.split()[0] if expanded_cmd.split() else expanded_cmd
+        workdir = os.path.dirname(first_token) or os.path.expanduser("~")
+        if self.column2_mode != "console":
+            self.switch_to_viewer_mode("console")
+        if not self._open_terminal_tab(workdir):
+            return
+        tab = self.terminal_tabs[self.terminal_active_index]
+        shell_cmd = f"cd {shlex.quote(workdir)} && {expanded_cmd}"
+        self._run_in_ttyd_when_ready(tab, shell_cmd)
+
     def _show_alias_overflow_menu(self, aliases, anchor_btn):
         """Show the aliases past the console toolbar's cap (see create_console_toolbar) in a
         popup menu, so they're still reachable rather than just silently cut off."""
@@ -14742,7 +15000,10 @@ function filterAliases(q) {{
 
         fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
         column_layout.addWidget(
-            self._make_viewer_footer(f"Open in {fm_name}", "Open current folder in file manager", self.folder_open_external)
+            self._make_viewer_footer(
+                f"Open in {fm_name}", "Open current folder in file manager", self.folder_open_external,
+                extra_buttons=[("+ Add to Project", "Add this folder to the project as a launcher", self._add_current_folder_to_project)]
+            )
         )
 
         # populate_folder_browser is otherwise only called when the Folder viewer tab is active
@@ -15162,10 +15423,10 @@ function filterAliases(q) {{
         Image/Markdown) when the project actually has matching content.
 
         Deliberately excludes structural/path-action handlers (npm, ssh_session,
-        directorydev, alias, dolphin_tabs, tail_log, rsync_backup*, file_manager, konsole/
-        terminal, and any custom "shell"-type handler) — those are actions on a specific
-        path, not standalone applications you'd open blank, so they stay reachable only via
-        their normal launcher items in the Resources tab.
+        directorydev, alias, run, dolphin_tabs, tail_log, rsync_backup*, file_manager,
+        konsole/terminal, and any custom "shell"-type handler) — those are actions on a
+        specific path, not standalone applications you'd open blank, so they stay reachable
+        only via their normal launcher items in the Resources tab.
 
         Returns a list of dicts: {'label', 'icon', 'kind': 'viewer'|'markdown'|'app', 'target'}.
         'target' is a switch_to_viewer_mode() mode string for kind='viewer' (PDF/Image, which
@@ -15176,7 +15437,7 @@ function filterAliases(q) {{
         """
         STRUCTURAL_APPS = {
             'browser', 'file_manager', 'dolphin', 'editor', 'default',
-            'konsole', 'terminal', 'alias', 'projectflowlink',
+            'konsole', 'terminal', 'alias', 'run', 'projectflowlink',
             'tail_log', 'ssh_session', 'ssh_cd_npm', 'terminal_cmd', 'terminal_npm',
             'npm', 'directorydev', 'dolphin_tabs',
             'rsync_backup', 'rsync_backup_id', 'rsync_backup_id_port',
@@ -15673,7 +15934,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.notes_home_btn = QPushButton("🏠 Project Note")
         self.notes_home_btn.setStyleSheet(btn_style)
         self.notes_home_btn.setToolTip("Back to this project's own note")
-        self.notes_home_btn.clicked.connect(self._navigate_notes_home)
+        self.notes_home_btn.clicked.connect(self._jump_or_open_project_note)
         toolbar_layout.addWidget(self.notes_home_btn)
 
         parent_layout.addWidget(toolbar_widget)
@@ -15768,20 +16029,35 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """Open any .md file in the Focus-layout Notes tab (the consolidated note viewer) —
         stable public entry point used by every "open a markdown file" call site in Focus
         layout (see _open_markdown_file()). Always opens as a new tab (see
-        _open_notes_tab()) — the "🏠 Project Note" button uses _navigate_notes_home()
-        instead, which navigates the current tab in place rather than opening a new one."""
+        _open_notes_tab()) — jumping back to the project's own note instead goes through
+        _jump_or_open_project_note(), which reuses an already-open project-note tab rather
+        than opening a new one."""
         self._open_notes_tab(path)
 
-    def _navigate_notes_home(self):
-        """"🏠 Project Note" button: navigate the CURRENT tab back to the project's own note
-        in place, rather than opening a new tab — mirrors webview_home()'s in-place
-        navigation vs. _open_web_tab()'s always-new-tab for launcher clicks."""
-        if 0 <= self.notes_active_index < len(self.notes_tabs):
-            self.notes_tabs[self.notes_active_index].path = None
-            self._activate_notes_tab(self.notes_active_index)
-            self.save_notes()
-        else:
-            self._open_notes_tab(self.get_notes_file_path())
+    def _jump_or_open_project_note(self):
+        """Jump to this project's own note — the pinned "🏠" button that's always the
+        first item in the Notes tab strip, and also what the toolbar's "🏠 Project Note"
+        button (visible only when viewing something else) now calls. Activates the
+        EXISTING project-note tab (the one whose `path is None`) if one is already open
+        among self.notes_tabs, rather than risking a second, redundant "Project Note" tab
+        — with several notes open, this is exactly the case that prompted adding this
+        button in the first place (previously the only way back was scanning the launcher
+        column's Docs section for the pinned notes entry, which always opened a NEW tab
+        even when the project note was already sitting open in one of the existing ones).
+        Opens a fresh tab only if no tab currently represents the project's own note.
+
+        Supersedes the previous in-place-navigation approach (rewriting the currently
+        active tab's own identity to become the project note) — that silently discarded
+        whichever arbitrary note the active tab had been showing, with no way back to it
+        except reopening it from scratch. Switching to a separate, already-open tab avoids
+        that loss entirely."""
+        for i, tab in enumerate(self.notes_tabs):
+            if tab.path is None:
+                if self.column2_mode != "notes":
+                    self.switch_to_viewer_mode("notes")
+                self._activate_notes_tab(i)
+                return
+        self._open_notes_tab(self.get_notes_file_path())
 
     def _close_notes_tab(self, index):
         """Close and discard the Notes tab at `index`, picking a sensible new active tab.
@@ -15837,18 +16113,32 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             if w is not None:
                 w.deleteLater()
 
-        # Only worth showing once there's more than the trivial single project-note tab —
-        # otherwise it's a permanent, always-visible single button doing nothing useful.
-        self.notes_tab_strip_widget.setVisible(len(self.notes_tabs) > 1)
-        for i, tab in enumerate(self.notes_tabs):
-            is_active = (i == self.notes_active_index)
-            group = self._build_tab_group_widget(
-                self._notes_tab_title(tab), tab.path or "This project's own note",
-                self._viewer_tab_button_style(is_active),
-                lambda checked=False, idx=i: self._activate_notes_tab(idx),
-                lambda checked=False, idx=i: self._close_notes_tab(idx),
-            )
-            self.notes_tab_strip_layout.addWidget(group)
+        # The strip is now always visible — it starts with a pinned "🏠" quick-jump button
+        # (see _jump_or_open_project_note()) that's useful even with a single tab open, if
+        # that tab isn't the project's own note. The actual per-tab buttons below it are
+        # still only added once there's more than the trivial single project-note tab.
+        self.notes_tab_strip_widget.setVisible(True)
+        is_on_project_note = not self.notes_md_path
+        home_btn = QPushButton("🏠")
+        home_btn.setToolTip("Project Note — jump to (or open) this project's own note")
+        home_btn.setMaximumWidth(28)
+        home_btn.setStyleSheet(self._viewer_tab_button_style(is_on_project_note))
+        home_btn.clicked.connect(self._jump_or_open_project_note)
+        self.notes_tab_strip_layout.addWidget(home_btn)
+
+        # Individual tab buttons stay gated on "more than the trivial single project-note
+        # tab" as before — with only the project note open, showing both the pinned 🏠
+        # AND a "Project Note ×" tab button right next to it would be pure redundancy.
+        if len(self.notes_tabs) > 1:
+            for i, tab in enumerate(self.notes_tabs):
+                is_active = (i == self.notes_active_index)
+                group = self._build_tab_group_widget(
+                    self._notes_tab_title(tab), tab.path or "This project's own note",
+                    self._viewer_tab_button_style(is_active),
+                    lambda checked=False, idx=i: self._activate_notes_tab(idx),
+                    lambda checked=False, idx=i: self._close_notes_tab(idx),
+                )
+                self.notes_tab_strip_layout.addWidget(group)
         self.notes_tab_strip_layout.addStretch()
         if len(self.notes_tabs) > 1:
             self.notes_tab_strip_layout.addWidget(
@@ -16210,8 +16500,22 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self._open_code_file_in_editor(file_path)
 
     def _code_tab_title(self, tab):
-        """Short display label for one Editor tab's strip button."""
-        return os.path.basename(tab.path) or tab.path
+        """Short display label for one Editor tab's strip button. Plain basename normally
+        (e.g. "default.txt"); when another currently-open tab shares the same basename,
+        prefixes the immediate parent folder name to disambiguate (e.g. "gtr/default.txt"
+        vs "folder2/default.txt") — otherwise two tabs for same-named files in different
+        folders would show identical, unhelpful labels with no way to tell them apart in
+        the tab strip."""
+        basename = os.path.basename(tab.path) or tab.path
+        duplicate = any(
+            t is not tab and (os.path.basename(t.path) or t.path) == basename
+            for t in self.code_tabs
+        )
+        if duplicate:
+            parent = os.path.basename(os.path.dirname(tab.path.rstrip('/')))
+            if parent:
+                return f"{parent}/{basename}"
+        return basename
 
     def _activate_code_tab(self, index):
         """Make self.code_tabs[index] the active tab. Async: if the editor currently has
@@ -16661,6 +16965,178 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             selected_project = combo.currentText()
             project_path = os.path.join(projects_dir, f"{selected_project}.json")
             self.add_resource_to_project(file_path, project_path)
+
+    def _add_viewer_item_to_project(self, default_name, path, app):
+        """"Add to Project" action available in each viewer's footer (PDF/Web/Image/Editor/
+        Folder — see each viewer's own `_add_*_to_project()` trigger, wired into their
+        footer's `extra_buttons`) — appends the currently-viewed document/site/file as a
+        new launcher item in the CURRENTLY OPEN project (self.COLUMN_1), after asking which
+        category via a small picker dialog.
+
+        Distinct from add_resource_to_project() below (the Dolphin-service-menu flow): that
+        one operates on an arbitrary TARGET project chosen from a list and always files into
+        a hardcoded "Added Resources" category, reading/writing that project's JSON directly
+        from disk since it may not even be the currently-loaded project. This one always
+        targets the project already open in front of you, and lets you pick (or type a new)
+        category — including Documentation, auto-created via _ensure_documentation_category()
+        the same way every other Documentation entry point does.
+        """
+        if not getattr(self, 'current_config_file', None):
+            QMessageBox.information(self, "Add to Project", "No project is currently open.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add to Project")
+        dialog.resize(420, 200)
+        layout = QFormLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        input_style = f"""
+            QLineEdit, QComboBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+        """
+        label_style = f"color: {self.t('fg_primary')};"
+
+        path_label = QLabel(path)
+        path_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        path_label.setWordWrap(True)
+        layout.addRow(path_label)
+
+        name_label = QLabel("Name:")
+        name_label.setStyleSheet(label_style)
+        name_input = QLineEdit(default_name)
+        name_input.setStyleSheet(input_style)
+        layout.addRow(name_label, name_input)
+
+        category_label = QLabel("Category:")
+        category_label.setStyleSheet(label_style)
+        category_combo = QComboBox()
+        category_combo.setEditable(True)
+        category_combo.setStyleSheet(input_style)
+        category_combo.setToolTip("Pick an existing category, or type a new name to create one")
+
+        # Documentation is always offered first — even before it's ever been created for
+        # this project — since it's the one category every "add a doc/file" flow in this
+        # app steers people toward (Scan for Docs, Kickstart, Move to category all do the
+        # same). Existing categories follow in their on-disk order; picking the literal
+        # "Documentation"/legacy "Docs" name resolves to whichever already exists below.
+        existing_categories = [name for cd in self.COLUMN_1 for name in cd.keys()]
+        doc_name = next((n for n in ("Documentation", "Docs") if n in existing_categories), None)
+        combo_items = ([] if doc_name else ["Documentation"]) + existing_categories
+        category_combo.addItems(combo_items)
+        layout.addRow(category_label, category_combo)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addRow(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name = name_input.text().strip()
+        category = category_combo.currentText().strip()
+        if not name or not category:
+            return
+
+        if category in ("Documentation", "Docs"):
+            category = self._ensure_documentation_category()
+        elif not any(category in cd for cd in self.COLUMN_1):
+            self.COLUMN_1.append({category: []})
+
+        for cd in self.COLUMN_1:
+            if category in cd:
+                if any(len(it) > 1 and it[1] == path for it in cd[category]):
+                    QMessageBox.information(self, "Add to Project", f"This item is already in '{category}'.")
+                    return
+                break
+
+        self._add_item_to_config(0, category, name, path, app)
+        self.save_config_to_json()
+        self.set_status(f"✓ Added '{name}' to {category}", "success")
+        self.refresh_projects()
+
+    def _titleize_stem(self, name):
+        """Filename/folder-name stem -> a friendlier display name (underscores/hyphens as
+        spaces, title-cased) — the same convention show_add_to_documentation_dialog() and
+        the project-display-name helpers throughout this file already use, applied here so
+        every "Add to Project" trigger below suggests a consistent-looking default name
+        rather than a raw filesystem stem."""
+        return name.replace('_', ' ').replace('-', ' ').title()
+
+    def _add_pdf_to_project(self):
+        """"Add to Project" trigger for the PDF viewer footer — see
+        _add_viewer_item_to_project()."""
+        if not self.pdf_path:
+            QMessageBox.information(self, "Add to Project", "No PDF loaded.")
+            return
+        stem = os.path.splitext(os.path.basename(self.pdf_path))[0]
+        self._add_viewer_item_to_project(self._titleize_stem(stem), self.pdf_path, "default")
+
+    def _add_image_to_project(self):
+        """"Add to Project" trigger for the Image viewer footer — see
+        _add_viewer_item_to_project()."""
+        if not getattr(self, 'image_path', None):
+            QMessageBox.information(self, "Add to Project", "No image loaded.")
+            return
+        stem = os.path.splitext(os.path.basename(self.image_path))[0]
+        # "gwenview" mirrors add_resource_to_project()'s own convention for image files.
+        self._add_viewer_item_to_project(self._titleize_stem(stem), self.image_path, "gwenview")
+
+    def _add_webview_to_project(self):
+        """"Add to Project" trigger for the Web viewer footer — see
+        _add_viewer_item_to_project(). Reads the active WebTabState directly (rather than
+        just the webview_url/webview_md_path proxies) so it correctly distinguishes a plain
+        URL from a local HTML/markdown file even though both proxies can't be trusted alone
+        (see WebTabState's kind field)."""
+        if 0 <= self.web_active_index < len(self.web_tabs):
+            tab = self.web_tabs[self.web_active_index]
+            kind, value = tab.kind, tab.value
+        elif self.webview_md_path:
+            kind, value = "markdown", self.webview_md_path
+        elif self.webview_url:
+            kind, value = "url", self.webview_url
+        else:
+            QMessageBox.information(self, "Add to Project", "Nothing loaded in the web viewer.")
+            return
+        if kind in ("markdown", "html_file"):
+            stem = os.path.splitext(os.path.basename(value))[0]
+            name = self._titleize_stem(stem)
+            app = "default"
+        else:
+            # A real page title (set by the site itself) is already human-readable — don't
+            # run it through _titleize_stem(), which would mangle normal sentence casing.
+            title = self.webview.title() if self.webview else ""
+            name = title if title else value
+            app = "firefox"
+        self._add_viewer_item_to_project(name, value, app)
+
+    def _add_code_file_to_project(self):
+        """"Add to Project" trigger for the Code Editor footer — see
+        _add_viewer_item_to_project()."""
+        session = self._code_session
+        if not session.path:
+            QMessageBox.information(self, "Add to Project", "No file open in the editor.")
+            return
+        stem = os.path.splitext(os.path.basename(session.path))[0]
+        self._add_viewer_item_to_project(self._titleize_stem(stem), session.path, "default")
+
+    def _add_current_folder_to_project(self):
+        """"Add to Project" trigger for the Folder viewer's footer (and the launcher
+        column's Quick File Browser Panel footer, which shares the same folder_current_path)
+        — see _add_viewer_item_to_project()."""
+        path = getattr(self, 'folder_current_path', None)
+        if not path:
+            QMessageBox.information(self, "Add to Project", "No folder to add.")
+            return
+        stem = os.path.basename(path.rstrip('/')) or path
+        self._add_viewer_item_to_project(self._titleize_stem(stem), path, "file_manager")
 
     def add_resource_to_project(self, file_path, project_path):
         """Add a file or folder to a project's 'Added Resources' category"""
@@ -17478,6 +17954,21 @@ Project created: {date_str}
             # Expand ~ to home directory
             expanded_path = os.path.expanduser(path)
 
+            # Alias/Run launchers land in the built-in Terminal viewer by default — NOT
+            # gated on Focus layout (unlike the block below) since the Console tab exists
+            # in both Standard and Focus layouts, and there's no "viewable content" reason
+            # to restrict a command-running action to Focus layout the way image/PDF/
+            # markdown previews are. force_external=True (the small icon button next to
+            # these items) always uses a real external terminal instead. Falls through to
+            # the always-external handling further below on the qtconsole backend, since it
+            # has no live interactive shell to paste a command into.
+            if app == "alias" and not force_external and self.resolve_console_backend() == "ttyd":
+                self._open_alias_launcher_in_console(path)
+                return
+            if app == "run" and not force_external and self.resolve_console_backend() == "ttyd":
+                self._open_run_launcher_in_console(path)
+                return
+
             # Focus layout: route viewable content to internal viewer instead of external apps.
             # force_external=True lets the small icon button bypass this and always launch externally.
             if self.layout_mode == "focus" and not force_external:
@@ -17592,6 +18083,25 @@ Project created: {date_str}
                         cmd = self._get_terminal_command(shell_cmd, hold=False)
                 subprocess.Popen(cmd, start_new_session=True)
                 self.status_label.setText(f"✓ Alias '{_alias_name}': {_rest}")
+                self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                return
+
+            # 1d. Run handler — path = a script/command, run as-is (optionally with
+            # trailing args, e.g. "~/Programs/nixupdate.sh --check"). Unlike "alias" there's
+            # no separate name to strip — the whole path IS the command. Deliberately NOT
+            # wired into the shell-alias file/aliases.json system (_write_alias_to_file) —
+            # this is a per-launcher-item convenience, not a shell alias to export. This is
+            # the force_external / non-ttyd-backend fallback; the common case (ttyd backend,
+            # not force_external) is routed straight into the Terminal viewer above by
+            # _open_run_launcher_in_console() instead and never reaches here.
+            if app == "run":
+                _expanded_cmd = os.path.expanduser(path)
+                _first_token = _expanded_cmd.split()[0] if _expanded_cmd.split() else _expanded_cmd
+                _workdir = os.path.dirname(_first_token) or os.path.expanduser("~")
+                shell_cmd = f'cd {shlex.quote(_workdir)} && (trap "exit 0" INT; {_expanded_cmd}); exec bash'
+                cmd = self._get_terminal_command(shell_cmd, hold=False)
+                subprocess.Popen(cmd, start_new_session=True)
+                self.status_label.setText(f"✓ Running: {path}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
                 return
 

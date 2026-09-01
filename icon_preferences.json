@@ -3,6 +3,10 @@
     "icon": "utilities/alias.svg",
     "name": "Shell Alias"
   },
+  "run": {
+    "icon": "▶️$_",
+    "name": "Run Script"
+  },
   "browser": {
     "icon": "\ud83c\udf10",
     "name": "Default Browser"
