@@ -45,7 +45,7 @@
   var muya = null;
   var dirty = false;
 
-  window.__initMuya = function (markdown) {
+  window.__initMuya = function (markdown, cursorState) {
     var container = document.getElementById('editor');
     muya = new M.Muya(container, {
       markdown: markdown || '',
@@ -54,6 +54,27 @@
     muya.init();
     dirty = false;
     muya.on('json-change', function () { dirty = true; });
+
+    // Restore the caret/scroll position from before this tab was last switched away
+    // from (see __getMuyaCursorState below) — a fresh Muya instance always seats the
+    // caret at the top of the document, which otherwise silently drops your place on
+    // every tab switch. getCursorOffset()/setCursorByOffset() round-trip a source-mode
+    // {line, ch} pair through the markdown text itself, so it survives the full
+    // document rebuild a tab switch does here (same mechanism the desktop's own
+    // WYSIWYG<->source-mode toggle uses).
+    if (cursorState) {
+      try {
+        if (cursorState.cursor) muya.setCursorByOffset(cursorState.cursor);
+      } catch (e) {}
+      if (cursorState.scrollTop) window.scrollTo(0, cursorState.scrollTop);
+    }
+  };
+
+  window.__getMuyaCursorState = function () {
+    if (!muya) return null;
+    var cursor = null;
+    try { cursor = muya.getCursorOffset(); } catch (e) {}
+    return { cursor: cursor, scrollTop: window.scrollY || document.documentElement.scrollTop || 0 };
   };
 
   window.__getMuyaMarkdown = function () {

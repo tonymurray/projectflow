@@ -2,6 +2,12 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-02
+
+### Fixed
+- **Notes/Documentation markdown editor was nearly unreadable in dark mode** — Muya's bundled `core.css` hardcodes its own `:root` CSS custom properties for text color (`--editor-color`, `--editor-color-80` for headings, etc.) to a light-theme palette, and `.mu-container` applies them directly to every paragraph/heading, silently overriding the app's own `body { color }` rule. `_notes_paper_css()` now also injects a dark-mode `:root` override (body text, headings, blockquotes, tables, code blocks, the floating format toolbar, and links) whenever the theme is dark; light mode is untouched since Muya's own defaults already read fine against the light paper background.
+- **Switching Editor (code) or Notes tabs reset the cursor to the top of the file/note**, discarding your place — annoying mid copy-paste between files. Both editors now capture cursor position (and scroll offset) when you switch away from a tab and restore it when you switch back, independent of whether that tab had unsaved changes (moving the caret alone doesn't set either editor's dirty flag, so this is captured unconditionally, not just as a side effect of the existing unsaved-content flush). The Code Editor uses CodeMirror's own selection/scroll state directly (`CodeTabState.view_state`); Notes uses Muya's `getCursorOffset()`/`setCursorByOffset()` API, which round-trips a source-mode `{line, ch}` position through the markdown text itself so it survives Muya's full-document reload on every tab switch. Both are session-only — never written to the project file.
+
 ## 2026-09-01
 
 ### Changed

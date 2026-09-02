@@ -732,6 +732,7 @@ class MuyaSession:
         self.editing = False
         self.path = None
         self.pending_markdown = None
+        self.pending_view_state = None
         self.autosave_timer = QTimer()
         self.autosave_timer.setInterval(autosave_interval_ms)
 
@@ -761,6 +762,9 @@ class CodeEditorSession:
         # though the content itself differs from what's on disk, so the true dirty state
         # has to be supplied externally rather than trusted from the editor.
         self.pending_dirty = False
+        # Cursor/scroll to restore once __initCodeEditor() actually finishes loading —
+        # see _load_code_editor_shell()'s view_state param and CodeTabState.view_state.
+        self.pending_view_state = None
         self.dirty_poll_timer = QTimer()
         self.dirty_poll_timer.setInterval(dirty_poll_interval_ms)
 
@@ -819,6 +823,10 @@ class NotesTabState:
 
     def __init__(self, path=None):
         self.path = path
+        # Caret/scroll position from the last time this tab was active — see
+        # _activate_notes_tab(). Session-only, never persisted (a stale {line, ch} pair
+        # is harmless: setCursorByOffset() no-ops on a mismatch and falls back silently).
+        self.view_state = None
 
 
 class CodeTabState:
@@ -836,6 +844,11 @@ class CodeTabState:
         self.language = language
         self.pending_unsaved_content = None
         self.dirty = False
+        # Cursor/scroll position from the last time this tab was active (captured on
+        # switch-away regardless of dirty state — moving the caret or scrolling doesn't
+        # set `dirty`). Session-only, never persisted, same reasoning as
+        # pending_unsaved_content. See _activate_code_tab()/_do_activate_code_tab().
+        self.view_state = None
 
 
 class TerminalTabState:
@@ -15811,15 +15824,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     def _on_muya_webview_load_finished(self, ok, session):
         """Fires for every navigation of a Muya-hosting webview. Injects pending content once loaded."""
         if ok and session.pending_markdown is not None:
-            js = f"window.__initMuya({json.dumps(session.pending_markdown)})"
+            view_state_json = json.dumps(session.pending_view_state) if session.pending_view_state else "null"
+            js = f"window.__initMuya({json.dumps(session.pending_markdown)}, {view_state_json})"
             session.webview.page().runJavaScript(js)
             session.pending_markdown = None
+            session.pending_view_state = None
 
-    def _load_muya_shell(self, session, path, content, extra_css=""):
+    def _load_muya_shell(self, session, path, content, extra_css="", view_state=None):
         """Load the Muya editor shell into session.webview with the given content, targeting
         path as the save destination. Shared by the file-backed and notes-backed openers below.
         extra_css is injected verbatim into the shell's <style> block (used for the Notes-view
-        paper effect; empty for the plain file editor)."""
+        paper effect; empty for the plain file editor). view_state, if given, is a
+        {"cursor": {...}, "scrollTop": N} dict captured by __getMuyaCursorState() before this
+        tab was last switched away from — see _activate_notes_tab()."""
         if not session.webview:
             return
         editor_dir = os.path.join(self.script_dir, "assets", "muya")
@@ -15839,11 +15856,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         session.path = path
         session.editing = True
         session.pending_markdown = content
+        session.pending_view_state = view_state
         session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
         if not session.autosave_timer.isActive():
             session.autosave_timer.start()
 
-    def _open_path_in_muya_session(self, session, path, extra_css=""):
+    def _open_path_in_muya_session(self, session, path, extra_css="", view_state=None):
         """Load a markdown file into the given MuyaSession's webview and start autosaving it."""
         if not path or not session.webview:
             return
@@ -15853,7 +15871,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         except OSError as e:
             self.status_label.setText(f"✗ Could not open {os.path.basename(path)}: {e}")
             return
-        self._load_muya_shell(session, path, content, extra_css=extra_css)
+        self._load_muya_shell(session, path, content, extra_css=extra_css, view_state=view_state)
 
     def _notes_paper_css(self):
         """CSS for the 'paper on page' look — a Typora/Documentary-style paper card floating
@@ -15861,7 +15879,17 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         the general Muya markdown-file viewer (e.g. clicking a Documentation launcher item).
         Light mode uses the user's own Documentary Typora theme colors; dark mode uses their
         specified dark palette. Paper opacity is higher in Standard layout's narrower
-        3-column view (90%) than in Focus layout's wider 2-column one (80%)."""
+        3-column view (90%) than in Focus layout's wider 2-column one (80%).
+
+        Also overrides Muya's own `:root` CSS custom properties (`--editor-color` and
+        friends, defined in core.css) in dark mode. Muya hardcodes these to a light-theme
+        palette (`--editor-color: #4d4d4d`, `--editor-color-80: #333` for headings, etc.) —
+        `.mu-container` sets `color: var(--editor-color)` directly, which silently overrides
+        the plain `body { color }` rule below for every actual document element (paragraphs,
+        headings, blockquotes...). Left unset, dark theme rendered dark-grey text on the dark
+        paper background — barely legible. Light mode's real ink color (`#263241`) has the
+        same override problem, but Muya's own light-theme defaults happen to still read fine
+        against the light paper, so light mode is left alone here rather than fixed too."""
         alpha = 0.80 if self.layout_mode == "focus" else 0.90
         if self.current_theme == "dark":
             page_bg = "#141414"
@@ -15869,13 +15897,36 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             ink = "#DEDEDE"
             shadow = "0 18px 46px rgba(0, 0, 0, 0.55)"
             border = "1px solid rgba(255, 255, 255, 0.06)"
+            muya_root_vars = """
+                :root {
+                    --editor-color: #DEDEDE;
+                    --editor-color-80: #F2F2F2;
+                    --editor-color-50: #A8A8A8;
+                    --editor-color-30: #6E6E6E;
+                    --editor-color-10: #4A4A4A;
+                    --editor-color-04: #2A2A2A;
+                    --editor-bg-color: #2B2F33;
+                    --code-block-bg-color: #ffffff12;
+                    --table-border-color: #55595E;
+                    --input-bg-color: #ffffff14;
+                    --float-bg-color: #2B2F33;
+                    --float-border-color: rgba(255, 255, 255, 0.12);
+                    --float-hover-color: rgba(255, 255, 255, 0.08);
+                    --button-bg-color: #2B2F33;
+                    --button-bg-color-hover: #34383D;
+                    --icon-color: #9AA1A8;
+                    --link-color: #6EA8FE;
+                }
+            """
         else:
             page_bg = "rgb(229, 231, 237)"
             paper_rgb = "240, 240, 240"    # matches documentary.css --paper base
             ink = "#263241"
             shadow = "0 18px 46px rgba(57, 67, 84, 0.12)"
             border = "1px solid rgba(255, 255, 255, 0.42)"
+            muya_root_vars = ""
         return f"""
+            {muya_root_vars}
             body {{ background: {page_bg}; color: {ink}; overflow-x: hidden; }}
             #editor {{
                 box-sizing: border-box;
@@ -15976,14 +16027,26 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         load_notes()) rather than re-reading the file, since the notes file may not exist
         yet for a brand-new project; the arbitrary-note branch reads from disk via the same
         _open_path_in_muya_session() the general webview uses — it's already generic over
-        which MuyaSession it targets."""
+        which MuyaSession it targets.
+
+        Also restores whichever tab is active's remembered caret/scroll position (see
+        NotesTabState.view_state / _activate_notes_tab()), so switching Notes tabs doesn't
+        silently drop your place in a note the way a bare reload otherwise would."""
+        active_tab = None
+        if 0 <= self.notes_active_index < len(self.notes_tabs):
+            active_tab = self.notes_tabs[self.notes_active_index]
+        view_state = active_tab.view_state if active_tab else None
+
         if self.notes_md_path and self.notes_md_path != self.get_notes_file_path():
-            self._open_path_in_muya_session(self._notes_muya_session, self.notes_md_path, extra_css=self._notes_paper_css())
+            self._open_path_in_muya_session(
+                self._notes_muya_session, self.notes_md_path,
+                extra_css=self._notes_paper_css(), view_state=view_state
+            )
         else:
             content = self.notes_data.get("content", "") if self.notes_data else ""
             self._load_muya_shell(
                 self._notes_muya_session, self.get_notes_file_path(), content,
-                extra_css=self._notes_paper_css()
+                extra_css=self._notes_paper_css(), view_state=view_state
             )
         self._update_notes_toolbar()
 
@@ -15992,11 +16055,31 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         return "Project Note" if tab.path is None else os.path.basename(tab.path)
 
     def _activate_notes_tab(self, index):
-        """Make self.notes_tabs[index] the active tab. Flushes any unsaved content in the
-        CURRENTLY displayed note first (see _muya_flush_before_switch()) — without this,
-        switching tabs faster than the ~1.2s autosave poll silently dropped the last few
-        seconds of edits, since _open_notes_in_muya() below replaces the page outright."""
-        self._muya_flush_before_switch(self._notes_muya_session, lambda: self._do_activate_notes_tab(index))
+        """Make self.notes_tabs[index] the active tab. First captures the CURRENTLY
+        displayed note's caret/scroll position onto its own NotesTabState (unconditionally —
+        moving the caret or scrolling doesn't set the editor's dirty flag, so this can't be
+        folded into the dirty-gated flush below), then flushes any unsaved content (see
+        _muya_flush_before_switch()) — without that flush, switching tabs faster than the
+        ~1.2s autosave poll silently dropped the last few seconds of edits, since
+        _open_notes_in_muya() below replaces the page outright."""
+        session = self._notes_muya_session
+        prev_index = self.notes_active_index
+
+        def proceed():
+            self._muya_flush_before_switch(session, lambda: self._do_activate_notes_tab(index))
+
+        if session.editing and session.webview and 0 <= prev_index < len(self.notes_tabs):
+            prev_tab = self.notes_tabs[prev_index]
+
+            def on_captured(view_state):
+                prev_tab.view_state = view_state
+                proceed()
+
+            session.webview.page().runJavaScript(
+                "window.__getMuyaCursorState ? window.__getMuyaCursorState() : null", on_captured
+            )
+        else:
+            proceed()
 
     def _do_activate_notes_tab(self, index):
         """The actual tab switch, once any previous note's content has been safely flushed.
@@ -16324,12 +16407,15 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return {"keyword": "#ff7b72", "string": "#a5d6ff", "comment": "#8b949e"}
         return {"keyword": "#cf222e", "string": "#0a3069", "comment": "#6e7781"}
 
-    def _load_code_editor_shell(self, session, path, content, language, initial_dirty=False):
+    def _load_code_editor_shell(self, session, path, content, language, initial_dirty=False, view_state=None):
         """Load the CodeMirror 6 editor shell into session.webview with the given content.
         initial_dirty is stashed onto session.pending_dirty and applied once loading
         actually finishes (see _on_code_editor_webview_load_finished()) — used when
         restoring an Editor tab whose cached content differs from disk (CodeMirror's own
-        dirty tracking would otherwise read false, since nothing's changed since THIS init)."""
+        dirty tracking would otherwise read false, since nothing's changed since THIS init).
+        view_state, if given, is a {"anchor": N, "head": N, "scrollTop": N} dict captured by
+        __getCodeEditorViewState() before this tab was last switched away from — see
+        _activate_code_tab()."""
         if not session.webview:
             return
         editor_dir = os.path.join(self.script_dir, "assets", "codemirror")
@@ -16359,6 +16445,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         session.editing = True
         session.pending_content = content
         session.pending_dirty = initial_dirty
+        session.pending_view_state = view_state
         session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
         if not session.dirty_poll_timer.isActive():
             session.dirty_poll_timer.start()
@@ -16384,9 +16471,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         CodeMirror's own tracking."""
         if ok and session.pending_content is not None:
             wrap_enabled = self.settings.get('code_editor_wrap', True)
-            js = f"window.__initCodeEditor({json.dumps(session.pending_content)}, {json.dumps(session.language)}, {json.dumps(wrap_enabled)})"
+            view_state_json = json.dumps(session.pending_view_state) if session.pending_view_state else "null"
+            js = f"window.__initCodeEditor({json.dumps(session.pending_content)}, {json.dumps(session.language)}, {json.dumps(wrap_enabled)}, {view_state_json})"
             session.webview.page().runJavaScript(js)
             session.pending_content = None
+            session.pending_view_state = None
             session.dirty = session.pending_dirty
             self._update_code_editor_buttons()
 
@@ -16518,35 +16607,51 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         return basename
 
     def _activate_code_tab(self, index):
-        """Make self.code_tabs[index] the active tab. Async: if the editor currently has
-        live dirty content, first flushes it out and caches it on the PREVIOUSLY active
-        tab's own CodeTabState — never force-saved, never discarded, since the whole point
+        """Make self.code_tabs[index] the active tab. Async: always captures the currently
+        displayed editor's cursor/scroll position onto the PREVIOUSLY active tab's own
+        CodeTabState (regardless of dirty state — moving the caret or scrolling doesn't set
+        session.dirty), and if the editor currently has live dirty content, also flushes it
+        out and caches it there — never force-saved, never discarded, since the whole point
         of Editor tabs is that switching away from unsaved work must not require either —
-        then loads the target tab (_do_activate_code_tab). Deliberately flushes even when
+        then loads the target tab (_do_activate_code_tab). Deliberately runs even when
         `index` equals the tab already active (a theme change reloads the shell HTML from
         scratch via setHtml(), which would otherwise silently discard live-typed,
         never-flushed edits just because "switching to the same tab" sounds like a no-op)."""
         session = self._code_session
         prev_index = self.code_active_index
-        if session.editing and session.dirty and session.webview and 0 <= prev_index < len(self.code_tabs):
+        if session.editing and session.webview and 0 <= prev_index < len(self.code_tabs):
             prev_tab = self.code_tabs[prev_index]
+            was_dirty = session.dirty
 
-            def on_flushed(content):
-                if content is not None:
-                    prev_tab.pending_unsaved_content = content
+            def on_flushed(result):
+                result = result or {}
+                if was_dirty and result.get('content') is not None:
+                    prev_tab.pending_unsaved_content = result['content']
                     prev_tab.dirty = True
+                prev_tab.view_state = result.get('viewState')
                 self._do_activate_code_tab(index)
 
-            session.webview.page().runJavaScript(
-                "window.__getCodeEditorContent ? window.__getCodeEditorContent() : null", on_flushed
-            )
+            # Single round trip for both the (dirty-gated) content flush and the
+            # (unconditional) cursor/scroll capture — see docstring above for why the
+            # latter can't be folded into the existing dirty check.
+            js = f"""
+                (function () {{
+                    var content = {'true' if was_dirty else 'false'}
+                        ? (window.__getCodeEditorContent ? window.__getCodeEditorContent() : null)
+                        : null;
+                    var viewState = window.__getCodeEditorViewState ? window.__getCodeEditorViewState() : null;
+                    return {{ content: content, viewState: viewState }};
+                }})()
+            """
+            session.webview.page().runJavaScript(js, on_flushed)
         else:
             self._do_activate_code_tab(index)
 
     def _do_activate_code_tab(self, index):
         """The actual tab switch, once any previous tab's content has been safely flushed
         (see _activate_code_tab()). Uses the tab's cached pending_unsaved_content if it has
-        any, else reads fresh from disk."""
+        any, else reads fresh from disk. Also restores the tab's own remembered cursor/scroll
+        position (view_state), if any was ever captured."""
         self.code_active_index = index
         tab = self.code_tabs[index]
         if tab.pending_unsaved_content is not None:
@@ -16558,7 +16663,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             except OSError as e:
                 self.status_label.setText(f"✗ Could not open {os.path.basename(tab.path)}: {e}")
                 content = ""
-        self._load_code_editor_shell(self._code_session, tab.path, content, tab.language, initial_dirty=tab.dirty)
+        self._load_code_editor_shell(
+            self._code_session, tab.path, content, tab.language,
+            initial_dirty=tab.dirty, view_state=tab.view_state
+        )
         self._rebuild_code_tab_strip()
         self._update_code_editor_buttons()
 

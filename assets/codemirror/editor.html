@@ -58,7 +58,7 @@
     php: CM.languages.php,
   };
 
-  window.__initCodeEditor = function (content, language, wrapEnabled) {
+  window.__initCodeEditor = function (content, language, wrapEnabled, viewState) {
     var extensions = [
       CM.basicSetup,
       CM.keymap.of(CM.defaultKeymap),
@@ -82,6 +82,28 @@
     if (view) view.destroy();
     view = new CM.EditorView({ state: state, parent: document.getElementById("editor") });
     dirty = false;
+
+    // Restore cursor/scroll from before this tab was last switched away from (see
+    // __getCodeEditorViewState below) — a fresh EditorState always starts at doc
+    // position 0, which otherwise silently drops the caret to the top of the file
+    // on every tab switch.
+    if (viewState) {
+      try {
+        var docLen = view.state.doc.length;
+        var anchor = Math.min(viewState.anchor || 0, docLen);
+        var head = Math.min(viewState.head || 0, docLen);
+        view.dispatch({ selection: { anchor: anchor, head: head } });
+      } catch (e) {}
+      if (viewState.scrollTop) view.scrollDOM.scrollTop = viewState.scrollTop;
+    }
+  };
+
+  // Captured before switching away from this tab so it can be restored on return —
+  // see __initCodeEditor's viewState param above.
+  window.__getCodeEditorViewState = function () {
+    if (!view) return null;
+    var sel = view.state.selection.main;
+    return { anchor: sel.anchor, head: sel.head, scrollTop: view.scrollDOM.scrollTop };
   };
 
   window.__setCodeEditorWrap = function (enabled) {
