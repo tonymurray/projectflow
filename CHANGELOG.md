@@ -15,6 +15,7 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 ### Changed
 - **"Tagged Files" category color changed from purple to KDE's Breeze blue (`#3DAEE9`)** — the previous purple read as too dominant/attention-grabbing for what's meant to be a secondary, supplementary category.
 - **Project Settings**: "Console Path" relabeled "Terminal Path"; "Default Viewer" relabeled "Default Viewer Tab" and reordered to sit after "Default Launcher Tab"; per-project Terminal and Browser Links overrides removed in favor of always using the global Settings values (existing projects that already had one set keep honoring it — there's just no UI left to set or clear one).
+- **"+ Add" and the per-category "+" buttons now use the same darker blue as the Docs/Resources/Files/Apps tab row** (`tab_launcher_resting`/`_active`) instead of green — reads as visually related to "add a launcher" rather than an arbitrary color. The "☰ Group" toggle, which shared the same green style, is unaffected.
 
 ### Fixed
 - **Baloo-tagged files that were already a real launcher item in the project showed up twice** — once under their real category, once again under "Tagged Files". `get_tagged_files()` now excludes any tagged path that already matches a launcher item's path elsewhere in the project.

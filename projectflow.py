@@ -9346,6 +9346,26 @@ function filterAliases(q) {{
                         }}
                     """
 
+                    # Add-launcher buttons — the header's "+ Add" and each category's own "+" —
+                    # deliberately share the launcher tab row's own blue (tab_launcher_resting/
+                    # _active) rather than green_btn_style's green, so "add a launcher" reads as
+                    # visually related to the Docs/Resources/Files/Apps tab row rather than an
+                    # arbitrary color. The "☰ Group" toggle above keeps green_btn_style as-is —
+                    # this is scoped to the two add-buttons only.
+                    add_btn_style = f"""
+                        QPushButton {{
+                            background-color: {self.t('tab_launcher_resting')};
+                            color: {self.t('fg_on_dark')};
+                            font-weight: bold;
+                            border-radius: 3px;
+                            padding: 5px;
+                        }}
+                        QPushButton:hover {{
+                            background-color: {self.t('tab_launcher_active')};
+                            color: {self.t('fg_on_dark')};
+                        }}
+                    """
+
                     # Focus-layout launcher tab row (Files/Docs/Resources/Apps) — replaces the
                     # old separate File-Browser-toggle + "☰ Group" toggle with one tab bar,
                     # styled like the wide-viewer's tab row (see tab_btn_style/active_tab_style
@@ -9502,7 +9522,7 @@ function filterAliases(q) {{
                         add_btn = QPushButton("  +  Add")
                         add_btn.setMinimumHeight(self.d('header_btn_height'))
                         add_btn.setToolTip("Quick-add a launcher to the first category")
-                        add_btn.setStyleSheet(green_btn_style)
+                        add_btn.setStyleSheet(add_btn_style)
                         add_btn.clicked.connect(self.quick_add_launcher)
                         header_layout.addWidget(add_btn)
 
@@ -9652,7 +9672,7 @@ function filterAliases(q) {{
                             add_to_category_btn = QPushButton("+")
                             add_to_category_btn.setFixedSize(30, 30)
                             add_to_category_btn.setToolTip(f"Add a launcher to {category_name}")
-                            add_to_category_btn.setStyleSheet(green_btn_style)
+                            add_to_category_btn.setStyleSheet(add_btn_style)
                             if category_name == "Docs":
                                 add_to_category_btn.clicked.connect(
                                     lambda checked=False, ci=col_idx:
