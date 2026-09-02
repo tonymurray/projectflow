@@ -1,50 +1,86 @@
-<h1>Welcome to ProjectFlow</h1>
-<p class="lede">A graphical launcher for organizing your desktop around <strong>projects</strong> — not folders, not apps, not browser bookmarks.</p>
+<div class="helpHeader"><img src="../assets/icon.svg" alt="Project Flow logo"><h1>Welcome to ProjectFlow</h1></div>
+<p class="lede">A graphical launcher for organizing your desktop around <strong>projects</strong>.</p>
 
-<h2>The problem</h2>
+<h2>Goal</h2>
 <p>
-  Real work rarely fits neatly inside one application. A single "project" — a website you're building,
-  a business task like filing a tax return, a hobby like learning the guitar, a maintenance chore like
-  backups — usually means juggling a folder of files, a handful of websites, a few terminal commands you
-  always forget, some scattered notes, and maybe a PDF or two. That context lives nowhere in particular:
-  spread across browser bookmarks, shell history, a random notes app, and memory.
+  The overall goal of ProjectFlow application is re-focusing desktop organization around <strong>projects</strong> aggregating a project's files, documentation, websites, functions and routines in one place.  
 </p>
+<h2>Problem</h2>
+<p>Typically project resources reside in various directories, networks, websites, shortcuts, emails, applications, routines, notes. Switching between projects and task can create friction.</p>
+<h2>Solution</h2>
+<p>ProjectFlow aims to aggregate project resources, while closely integrating and complementing existing desktop tools, applications and paradigms, making managing, revisiting and working on projects more productive and fun.</p>
+
+<h2>Projects</h2>
+<p>Projects on a desktop could be many things. Some examples are:</p>
+<ul>
+<li>A software project - for example building a website</li>
+<li>A business task - such as filing quarterly tax returns</li>
+<li>A maintenance task like photo back-up</li>
+<li>An educational / learning activity</li>
+<li>A real-world hobby that combines online research, notes taking, helper applications</li>
+</ul>
+<h2>Inspiration</h2>
+
+<p>The idea was inspired by articles and ongoing efforts towards  <strong>Semantic and Context-Oriented Desktops</strong>. See reference articles at bottom of this page. </p>
 
 <h2>The idea</h2>
 <p>
-  ProjectFlow treats a <strong>project</strong> as the basic unit of organization, and gives each one a
-  single place to keep everything that belongs to it: quick-launch shortcuts to files, folders, websites,
-  and terminal commands; a live markdown notepad; and built-in viewers (PDF, image, web, code editor,
-  terminal) so you often don't need to leave the app at all. Switching projects switches your entire
-  context — shortcuts, notes, and whatever you were viewing — in one click.
-</p>
-<p>
-  This works for anything you'd call a "project" in the loosest sense: a software repo, a WordPress site,
-  a backup routine, a piece of admin like a VAT return, a folder of research notes, even a hobby you're
-  learning. If it has files, links, or commands you come back to, it can be a ProjectFlow project.
+  ProjectFlow treats a <strong>project</strong> as the basic unit of organization, and gives each project a
+  single configuration file to house everything that belongs to it (<strong>"items"</strong>). The app provides quick-launch shortcuts to <strong>items:</strong> files, folders, websites,
+  and terminal commands; Resources (PDF, image, web, code editor, terminal) can be edited, viewed, or launched in embedded viewer apps, or in the default desktop application. The application favours user curation of project items, with some automated helpers such as documentation discovery.
 </p>
 
-<h2>The three-panel layout</h2>
-<p>ProjectFlow's Standard layout has three columns, left to right:</p>
+<h2>ProjectFlow implementation</h2>
+<p>The application aims towards a project oriented 'desktop' by enabling the desktop user to create project containers and assemble a wide variety of notes, links, websites, PDFs, images, Apps, directory locations related to the project - and to curate, edit and view these 'resources' within the ProjectFlow interface, or launch them in the default, or designated Application or Web/File browser</p>
+<h2>ProjectFlow layout</h2>
+<p>ProjectFlow has by default a '2-column' layout; the 'blue' column on the left contains the 'Launcher' buttons that appear on the larger right-hand 'viewers'/editors, or in desktop applications</p>
 <ul>
-  <li><strong>Viewer</strong> — whatever you're currently looking at or working in: a web page, a PDF, an
-    image, the code editor, a terminal, or your project notes.</li>
   <li><strong>Shortcuts</strong> — the launcher column: categorized buttons for every file, folder, URL,
     or command that belongs to this project.</li>
-  <li><strong>Notepad</strong> — a live markdown editor, always visible, always this project's own notes.</li>
+  <li><strong>Viewer</strong> — whatever you're currently looking at or working in: a web page, a PDF, an
+    image, the code editor, a terminal, or your project notes (generally in Markdown file format).</li>
 </ul>
-<p>
-  There's also a <strong>Focus layout</strong> — a wider two-column view (Launchers | Viewer) better
-  suited to documentation-heavy work, where Notes becomes one of several tabs in the viewer instead of
-  its own permanent column. You can switch a project between the two any time from its Project Settings
-  (see the <strong>Settings</strong> tab of this guide).
+<h2>ProjectFlow formats</h2>
+<ul>
+  <li><strong>Notes</strong> — project notes are in Markdown format and stored in a directory of choice. The notes can be edited in other [Markdown] editors</li> 
+  <li><strong>Project configs</strong> — are in <a href="https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/JSON">JSON format</a>.</li>
+  <li><strong>Portability</strong> The Notes, the project configs, can be backed-up or copied to share other computers (for example via NextCloud sync). Application settings are per-computer and also JSON</li>
+  <li><strong>Resource storage: </strong> files generally reside in their current locations on your computer - they are not imported. It may be useful to use for example Nextcloud Sync to store project files like images in a shared directory</li>
+</ul>
+
+
+<h2>Alternative and complimentary solutions</h2>
+<p>The application will not suit every type of desktop user/person. Some people achieve similar results using only their file-system, their browser, 'emacs', their code editor, wiki-type notes application, online project management, and so-forth. Some people have a single main 'project' - and do not often switch between projects. Nevertheless, the application is worth exploring and can also be used in tandum with other tools. See also the references below.
 </p>
 
 <h2>Where to go next</h2>
 <ul>
+  <li><strong>Explore</strong> — add a new project, add some items. Hover-over most buttons and menus for more information</li>
   <li><strong>Launchers</strong> — how the Shortcuts column works: categories, launch handlers, aliases, drag-and-drop, and the Kickstart setup wizard.</li>
   <li><strong>Viewers</strong> — the built-in Notes/Editor/Terminal/Web/PDF/Image/Time viewers, and how tabs work across them.</li>
-  <li><strong>Integrations</strong> — Kimai time tracking, Joplin notes sync, and KDE Baloo file tags.</li>
+
   <li><strong>Settings</strong> — the global Settings dialog and each project's own Settings viewer.</li>
-  <li><strong>Examples</strong> — a full reference of every launch handler with copy-paste examples.</li>
+  <li><strong>Integrations</strong> — Desktop integratons, Kimai time tracking, Joplin notes sync, and KDE Baloo file tags (so far).</li>
+  <li><strong>Example</strong> — an example project.</li>
+</ul>
+
+<h2>References</h2>
+
+<ul>
+<li><a href="https://lwn.net/Articles/334911/" target="_blank">Activities and the move to context-oriented desktops</a></li>
+<li><a href="https://www.researchgate.net/publication/221519528_Support_for_activity-based_computing_in_a_personal_computing_operating_system" target="_blank">Conference Paper: 
+Support for activity-based computing in a personal computing operating system</a></li>
+<li><a href="https://userbase.kde.org/Nepomuk" target="_blank">Nepomuk (KDE User Base)</a></li>
+<li><a href="https://cacm.acm.org/research/activity-centric-computing-systems/" target="_blank">Activity-Centric Computing Systems</a></li>
+<li><a href="https://www.reddit.com/r/kde/comments/pa80p/nepomuk_does_anyone_actually_use_it/" target="_blank">Nepomuk: Does anyone actually use it? (discussion)</a></li>
+</ul>
+
+<h2>Alternative and complimentary approaches</h2>
+<ul>
+  <li><a href="https://en.wikipedia.org/wiki/Comparison_of_project_management_software">Wikipedia: Comparison of project management software</a></li>
+  <li><a href="https://community.kde.org/KDE_Visual_Design_Group/Plasma_Activities">KDE Visual Design Group/Plasma Activities</a></li>
+  <li><a href="https://taonaw.com/2024/12/24/how-i-handled-projects-in.html">Emacs / Projects</a></li>
+    <li><a href="https://taskforge.md/blog/obsidian-project-management/">Obsidian / Project Management</a></li>
+  <li><a href="https://code.visualstudio.com/docs/csharp/project-management">Visual Studio, Project Management, Solution Explorer</a></li>
+  <li><a href="https://community.kde.org/Baloo">Baloo</a></li>
 </ul>

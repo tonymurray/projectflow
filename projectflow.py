@@ -14102,7 +14102,16 @@ function filterAliases(q) {{
         flushed: navigates the one shared self.webview to the target tab (markdown files go
         through the existing Muya bridge; URLs/local HTML get a plain setUrl()) and
         refreshes the tab strip. See WebTabState for why there's only ever one real webview
-        regardless of tab count."""
+        regardless of tab count.
+
+        `index` was captured before the async flush above (a runJavaScript round-trip) —
+        self.web_tabs can shrink (or empty out entirely — unlike Notes, Web tabs CAN reach
+        zero, see _close_web_tab()) if a tab was closed while the flush was in flight, making
+        `index` stale by the time this runs. Same crash-causing race as
+        _do_activate_notes_tab() (see its docstring) if left unguarded."""
+        if not self.web_tabs:
+            return
+        index = min(index, len(self.web_tabs) - 1)
         self.web_active_index = index
         tab = self.web_tabs[index]
         if self.column2_mode != "webview":
@@ -16618,7 +16627,20 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         _open_note_in_notes_tab() already ordered these two steps; calling
         switch_to_viewer_mode() from here would also be unsafe during the initial
         build_main_content() restore, which calls this before the rest of column2_stack
-        necessarily exists yet."""
+        necessarily exists yet.
+
+        `index` was captured before the async flush above (a runJavaScript round-trip, or
+        two in a row — cursor capture then dirty-check) — self.notes_tabs can shrink in the
+        meantime if a tab was closed while the flush was in flight, making `index` stale by
+        the time this actually runs. Clamped rather than trusted outright (crashed the whole
+        app with an IndexError otherwise — an exception escaping a runJavaScript callback
+        makes PyQt6 call qFatal()/abort() instead of just printing a traceback, since this
+        isn't a normal signal/slot connection PyQt can safely swallow). notes_tabs is never
+        actually empty (_close_notes_tab() always re-appends a project-note tab rather than
+        letting it go to zero), so clamping to the last valid index is always safe here."""
+        if not self.notes_tabs:
+            return
+        index = min(index, len(self.notes_tabs) - 1)
         self.notes_active_index = index
         self.notes_md_path = self.notes_tabs[index].path
         self._open_notes_in_muya()
@@ -17220,7 +17242,15 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """The actual tab switch, once any previous tab's content has been safely flushed
         (see _activate_code_tab()). Uses the tab's cached pending_unsaved_content if it has
         any, else reads fresh from disk. Also restores the tab's own remembered cursor/scroll
-        position (view_state), if any was ever captured."""
+        position (view_state), if any was ever captured.
+
+        `index` was captured before the async flush above (a runJavaScript round-trip) —
+        self.code_tabs can shrink (or empty out entirely) if a tab was closed while the flush
+        was in flight, making `index` stale by the time this runs. Same crash-causing race as
+        _do_activate_notes_tab() (see its docstring) if left unguarded."""
+        if not self.code_tabs:
+            return
+        index = min(index, len(self.code_tabs) - 1)
         self.code_active_index = index
         tab = self.code_tabs[index]
         if tab.pending_unsaved_content is not None:

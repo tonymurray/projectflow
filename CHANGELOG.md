@@ -2,6 +2,18 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-03
+
+### Added
+- **Logo header on every Help tab** — each `help/tabs/*.html` fragment now opens with a `.helpHeader` (logo + `<h1>`) instead of a bare heading, and `help/shell.html` gained matching table styles (`table`/`th`/`td`, a subtle header-row background, a `.viewer` column style) for the Viewers tab's new "Viewer Technologies" in-depth reference section (renders/architecture per viewer, ported from `docs/technologies.md`).
+- **Help → Introduction rewritten**: expanded philosophy/goal/problem/solution framing, a "Projects" examples list, an "Inspiration" section citing prior art on context/activity-oriented desktops (LWN, ACM, Nepomuk), a "ProjectFlow formats" summary (Markdown notes, JSON configs, portability, resource storage), and an "Alternative and complementary approaches" reference list (other project-management tools/paradigms).
+- **Help → Launchers** gained a note on the Documentation/Resources tab split and a new "Files" section documenting the launcher column's file browser and Templates-directory tip.
+- **`docs/formats_portability_security.md`** — a written summary of the project's recurring tactical decisions around file formats (markdown notes, JSON configs), portability (relative paths, path-mapping-as-fallback-only, per-machine vs per-project settings), and security safeguards (why risky launcher types like `alias`/`run`/`rsync_backup`/terminal are treated as no riskier than any other desktop app, the "Open All" opt-in + confirmation guards, ttyd's loopback+origin-check binding and process lifecycle, Baloo's merge-only tagging).
+- **`docs/technologies.html`** — a plain-language HTML version of `docs/technologies.md`'s viewer-technology reference table, with implementation-level jargon trimmed for a less technical audience.
+
+### Fixed
+- **Crash ("fatal error and was closed") when switching Notes, Web, or Editor tabs.** `_activate_notes_tab()`/`_activate_web_tab()`/`_activate_code_tab()` all defer the real tab switch through one or two async `runJavaScript` round-trips (flushing unsaved content, capturing cursor position) before calling into `_do_activate_*_tab(index)` — if another tab was closed while that round-trip was still in flight, the tab list could shrink out from under the captured `index`, raising `IndexError`. Because that exception escapes inside a `runJavaScript` callback rather than a normal Qt signal/slot connection, PyQt6's default behavior is to call `qFatal()`/abort the whole process instead of just printing a traceback — confirmed via a `coredumpctl` backtrace matching the user's own terminal-printed traceback and native crash dump exactly. All three `_do_activate_*_tab()` methods now clamp `index` to the current tab-list length on entry (or return early if the list emptied out), rather than trusting a possibly-stale value.
+
 ## 2026-09-02
 
 ### Added

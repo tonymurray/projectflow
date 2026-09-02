@@ -1,4 +1,4 @@
-<h1>Viewers</h1>
+<div class="helpHeader"><img src="../assets/icon.svg" alt="Project Flow logo"><h1>Viewers</h1></div>
 <p class="lede">Everything you can look at or work in without leaving ProjectFlow.</p>
 
 <h2>The viewer tabs</h2>
@@ -45,3 +45,65 @@
   for "New from Template" (using your desktop's own Templates folder), or right-click a file/folder for the
   usual open/rename/delete actions plus "Add to Project."
 </p>
+<h1>In-depth reference</h1>
+<h2>Viewer Technologies</h2>
+
+<p>A quick reference for what actually renders each viewer in ProjectFlow.</p>
+
+<div class="card">
+    <table>
+      <thead>
+        <tr><th>Viewer</th><th>Technology</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="viewer">Notes</td>
+          <td><a href="https://github.com/marktext/marktext" target="_blank" rel="noopener">Muya</a> — the same live, WYSIWYG markdown editor engine used by the popular MarkText desktop app, embedded directly into the interface.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Editor</td>
+          <td><a href="https://codemirror.net/" target="_blank" rel="noopener">CodeMirror 6</a> — a mature, widely used code-editing engine (the same family powers many web-based code editors), with built-in support for JavaScript, Python, HTML, CSS, and PHP.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Web</td>
+          <td>The same underlying browser engine used by the rest of the app's toolkit — no extra library needed to browse the web.</td>
+        </tr>
+        <tr>
+          <td class="viewer">PDF</td>
+          <td>Each page is rendered as a plain image and displayed directly — a lightweight approach with no browser engine involved at all.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Image</td>
+          <td>Handled natively by the toolkit's own image display components — the same lightweight approach as PDF.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Terminal</td>
+          <td>Two modes: a quick command console for simple commands (the default), or a full real terminal for anything needing an interactive program like a text editor.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Settings</td>
+          <td>Built directly with the toolkit's own standard interface components — no external library.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Folder browser</td>
+          <td>Same as Settings — standard interface components only.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Time (⏱ Kimai)</td>
+          <td>Standard interface components, communicating with the Kimai time-tracking service over the web.</td>
+        </tr>
+        <tr>
+          <td class="viewer">Help</td>
+          <td>A set of help pages assembled from simple text files — easy to edit or add to without touching the app itself.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Notes</h2>
+  <ul>
+    <li><strong>Muya and CodeMirror are the two "real editors"</strong> in the app — genuine, full-featured editing engines running inside an embedded browser view, not simplified custom-built text boxes.</li>
+    <li><strong>PDF and Image are the only viewers with no browser engine at all</strong> — just images rendered into ordinary display widgets. That lighter weight is also why each one can comfortably have several documents open in tabs at once, at almost no extra cost.</li>
+    <li><strong>Web, Notes, and Editor each share a single embedded browser view</strong>, no matter how many tabs are open — switching tabs reuses that same view rather than opening a new one each time, which keeps things fast and light on memory.</li>
+  </ul>
+</div>
