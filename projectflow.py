@@ -1655,14 +1655,6 @@ class ProjectFlowApp(QMainWindow):
         notes_layout.addWidget(notes_browse)
         layout.addRow(notes_label, notes_layout)
 
-        # Baloo Tags
-        baloo_label = QLabel("Baloo Tags:")
-        baloo_label.setStyleSheet(label_style)
-        self._settings_baloo = QCheckBox("Enable Baloo tag querying for tagged files")
-        self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
-        self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
-        layout.addRow(baloo_label, self._settings_baloo)
-
         # Projects section visibility
         show_section_label = QLabel("Projects Section:")
         show_section_label.setStyleSheet(label_style)
@@ -2001,6 +1993,32 @@ class ProjectFlowApp(QMainWindow):
         self._settings_joplin.setEchoMode(QLineEdit.EchoMode.Password)
         self._settings_joplin.setStyleSheet(input_style)
         layout.addRow(joplin_label, self._settings_joplin)
+
+        # === Baloo File Tags section === (moved here from the Settings tab — this is
+        # more an integration with KDE's file indexer than a core app setting)
+        baloo_section = QLabel("Baloo File Tags (KDE)")
+        baloo_section.setStyleSheet(section_style)
+        layout.addRow(baloo_section)
+
+        self._settings_baloo = QCheckBox("Enable Baloo tag querying for tagged files")
+        self._settings_baloo.setChecked(self.settings.get("enable_baloo_tags", False))
+        self._settings_baloo.setStyleSheet(f"color: {self.t('fg_primary')};")
+        layout.addRow(self._settings_baloo)
+
+        desc_style = f"color: {self.t('fg_secondary')}; font-size: 11px;"
+        bulk_tag_row = QVBoxLayout()
+        bulk_tag_btn = QPushButton("Create Baloo tags for all projects")
+        bulk_tag_btn.clicked.connect(self._bulk_create_baloo_tags)
+        bulk_tag_desc = QLabel(
+            "Tags each project's notes file with that project's name, so it shows up "
+            "under Tagged Files immediately and the tag exists for further manual "
+            "tagging in Dolphin. Skips projects with no notes written yet."
+        )
+        bulk_tag_desc.setWordWrap(True)
+        bulk_tag_desc.setStyleSheet(desc_style)
+        bulk_tag_row.addWidget(bulk_tag_btn)
+        bulk_tag_row.addWidget(bulk_tag_desc)
+        layout.addRow(bulk_tag_row)
 
         return widget
 
@@ -2769,13 +2787,35 @@ class ProjectFlowApp(QMainWindow):
         body_layout.addLayout(alias_row)
         alias_preview = QLabel()
         alias_preview.setStyleSheet(info_style)
+        alias_preview.setWordWrap(True)
         body_layout.addWidget(alias_preview)
 
-        def _update_alias_preview(text=""):
+        # Debounced shadow-name check (see _alias_shadow_warning()) — each check spawns
+        # a bash subprocess, so this runs ~400ms after typing stops, not per-keystroke.
+        alias_warn_timer = QTimer(dlg)
+        alias_warn_timer.setSingleShot(True)
+        alias_warn_timer.setInterval(400)
+
+        def _update_alias_preview():
             name = alias_name_edit.text().strip() or "?"
+            warning = self._alias_shadow_warning(name) if name != "?" else None
+            if warning:
+                alias_preview.setStyleSheet(f"color: {self.t('bg_danger')}; font-size: 11px;")
+                alias_preview.setText(f"→ {name}  =  cd {folder_path}\n⚠ {warning}")
+            else:
+                alias_preview.setStyleSheet(info_style)
+                alias_preview.setText(f"→ {name}  =  cd {folder_path}")
+
+        def _preview_name_only():
+            # Instant feedback on the name itself while the debounce timer catches up
+            # with the (slower) shadow check.
+            name = alias_name_edit.text().strip() or "?"
+            alias_preview.setStyleSheet(info_style)
             alias_preview.setText(f"→ {name}  =  cd {folder_path}")
 
-        alias_name_edit.textChanged.connect(_update_alias_preview)
+        alias_warn_timer.timeout.connect(_update_alias_preview)
+        alias_name_edit.textChanged.connect(_preview_name_only)
+        alias_name_edit.textChanged.connect(alias_warn_timer.start)
         _update_alias_preview()
 
         body_layout.addStretch()
@@ -3021,7 +3061,17 @@ class ProjectFlowApp(QMainWindow):
         self._proj_use_three_columns = QCheckBox("Use three columns view")
         form_layout.addRow(field_label("Layout:"), self._proj_use_three_columns)
 
-        # Default Viewer
+        # Default Launcher Tab (Focus layout) — pins Files/Docs/Resources/Apps, mirrors
+        # Default Viewer Tab below (see _set_launcher_tab_as_default()). Ordered before
+        # Default Viewer Tab (launcher tab first, then viewer) for consistency with how
+        # the two concepts are named/paired.
+        self._proj_default_launcher_tab = QComboBox()
+        # Order matches the launcher tab row (Docs, Resources, Files, Apps).
+        self._proj_default_launcher_tab.addItems(["", "docs", "resources", "files", "apps"])
+        form_layout.addRow(field_label("Default Launcher Tab:"), self._proj_default_launcher_tab)
+
+        # Default Viewer Tab (label only — "Viewer" alone was ambiguous next to "Default
+        # Launcher Tab" above; internal attribute/values unchanged)
         self._proj_default_viewer = QComboBox()
         # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Code, Time);
         # "help" isn't a tab (opened via the footer's "❓ Help" button instead), so it's
@@ -3030,14 +3080,7 @@ class ProjectFlowApp(QMainWindow):
         # (see Code Editor in CLAUDE.md); picking "code" here with no code_file set just
         # opens the editor empty, same as "notes"/"time" having no resource field either.
         self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "code", "time", "help"])
-        form_layout.addRow(field_label("Default Viewer:"), self._proj_default_viewer)
-
-        # Default Launcher Tab (Focus layout) — pins Files/Docs/Resources/Apps, mirrors
-        # Default Viewer above (see _set_launcher_tab_as_default())
-        self._proj_default_launcher_tab = QComboBox()
-        # Order matches the launcher tab row (Docs, Resources, Files, Apps).
-        self._proj_default_launcher_tab.addItems(["", "docs", "resources", "files", "apps"])
-        form_layout.addRow(field_label("Default Launcher Tab:"), self._proj_default_launcher_tab)
+        form_layout.addRow(field_label("Default Viewer Tab:"), self._proj_default_viewer)
 
         # PDF File
         pdf_layout = QHBoxLayout()
@@ -3064,7 +3107,10 @@ class ProjectFlowApp(QMainWindow):
         image_layout.addWidget(self._proj_image_browse_btn)
         form_layout.addRow(field_label("Image File:"), image_layout)
 
-        # Console Path
+        # Terminal Path — label only ("Terminal" reads more consistently with the rest of
+        # the app's naming than "Console"); underlying attribute/JSON key (console_path)
+        # unchanged to avoid a migration, same precedent as the Code Editor's internal
+        # column2_mode staying "code" while its tab reads "Editor".
         console_layout = QHBoxLayout()
         self._proj_console_path = QLineEdit()
         self._proj_console_path.setPlaceholderText("Working directory for console")
@@ -3072,7 +3118,7 @@ class ProjectFlowApp(QMainWindow):
         self._proj_console_browse_btn.clicked.connect(lambda: self._browse_folder(self._proj_console_path))
         console_layout.addWidget(self._proj_console_path)
         console_layout.addWidget(self._proj_console_browse_btn)
-        form_layout.addRow(field_label("Console Path:"), console_layout)
+        form_layout.addRow(field_label("Terminal Path:"), console_layout)
 
         # Folder Start Path
         folder_start_layout = QHBoxLayout()
@@ -3084,28 +3130,33 @@ class ProjectFlowApp(QMainWindow):
         folder_start_layout.addWidget(self._proj_folder_browse_btn)
         form_layout.addRow(field_label("Folder Start Path:"), folder_start_layout)
 
-        # Terminal (per-config override)
-        self._proj_terminal = QComboBox()
-        self._proj_terminal.setEditable(True)
-        terminal_options = [
-            "",  # Empty = use global setting
-            "konsole", "gnome-terminal", "alacritty", "kitty", "wezterm",
-            "terminator", "tilix", "xfce4-terminal", "guake", "tilda",
-            "foot", "ghostty", "warp-terminal", "hyper", "tabby",
-            "urxvt", "xterm"
-        ]
-        self._proj_terminal.addItems(terminal_options)
-        form_layout.addRow(field_label("Terminal:"), self._proj_terminal)
+        # Note: per-project Terminal/Browser Links override fields were removed from this
+        # form — always use the global Settings dialog's values now. self.config_terminal/
+        # self.config_browser_new_tab are still read from an existing project's JSON (see
+        # load_config()) and honored by get_configured_terminal()/_get_browser_new_tab(),
+        # so a project that already had an override keeps it; there's just no UI left to
+        # set or clear one going forward.
 
-        # Browser Links (per-project override)
-        self._proj_browser_new_tab = QComboBox()
-        self._proj_browser_new_tab.addItems(["(use global setting)", "New tab", "New window"])
-        self._proj_browser_new_tab.setToolTip("Override global browser link behaviour for this project")
-        form_layout.addRow(field_label("Browser Links:"), self._proj_browser_new_tab)
+        main_layout.addLayout(form_layout)
+        main_layout.addSpacing(20)
 
-        # Kimai Project ID — row always exists (unlike the old dialog, which only created
-        # it when Kimai was configured); _populate_settings_form() toggles its visibility
-        # via QFormLayout.setRowVisible() instead, since this widget is now permanent.
+        # === Integrations section === (Kimai, Baloo tags, Desktop Menu Entry — grouped
+        # together since all three are integrations with something outside the project's
+        # own data, mirroring the global Settings dialog's own "Integrations" tab naming.
+        # Uses its own QFormLayout, separate from form_layout above, so setRowVisible()
+        # can gate the Kimai/Baloo rows independently without disturbing the plain fields.)
+        integrations_header = QLabel("Integrations")
+        self._settings_integrations_header = integrations_header
+        main_layout.addWidget(integrations_header)
+
+        integrations_layout = QFormLayout()
+        integrations_layout.setSpacing(12)
+        self._integrations_layout = integrations_layout
+
+        # --- Kimai Project ID — row always exists (unlike the old dialog, which only
+        # created it when Kimai was configured); _populate_settings_form() toggles its
+        # visibility via QFormLayout.setRowVisible() instead, since this widget is now
+        # permanent. ---
         self._settings_kimai_label = field_label("Kimai Project ID:")
         kimai_pid_row = QHBoxLayout()
         self._proj_kimai_project_id = QLineEdit()
@@ -3114,26 +3165,38 @@ class ProjectFlowApp(QMainWindow):
         self._proj_kimai_browse_btn.clicked.connect(lambda: self._kimai_pick_project_into(self._proj_kimai_project_id))
         kimai_pid_row.addWidget(self._proj_kimai_project_id)
         kimai_pid_row.addWidget(self._proj_kimai_browse_btn)
-        form_layout.addRow(self._settings_kimai_label, kimai_pid_row)
+        integrations_layout.addRow(self._settings_kimai_label, kimai_pid_row)
 
-        main_layout.addLayout(form_layout)
-        main_layout.addSpacing(20)
+        # --- Baloo File Tags — button text is set per-project in _populate_settings_form()
+        # (needs this project's own tag name); visibility gated on the global "Enable
+        # Baloo Tags" setting, same mechanism as the Kimai row above. ---
+        self._proj_baloo_tag_btn = QPushButton()
+        self._proj_baloo_tag_btn.clicked.connect(self._tag_current_project_files_baloo)
+        integrations_layout.addRow(self._proj_baloo_tag_btn)
+        self._proj_baloo_desc = QLabel(
+            "Tags this project's notes file plus every existing local file/folder its "
+            "launchers point at, using the Baloo tag Dolphin would show under this "
+            "project's own Tagged Files category."
+        )
+        self._proj_baloo_desc.setWordWrap(True)
+        integrations_layout.addRow(self._proj_baloo_desc)
 
-        # Desktop Menu Entry section
-        self._settings_menu_label = QLabel("Desktop Menu Entry:")
-        main_layout.addWidget(self._settings_menu_label)
-
+        # --- Desktop Menu Entry (moved from its own standalone main_layout block into a
+        # row group here) ---
+        self._settings_menu_label = field_label("Desktop Menu Entry:")
+        integrations_layout.addRow(self._settings_menu_label)
         self._settings_menu_desc = QLabel("Create a .desktop file for this project in your application menu. Includes a right-click menu to quickly switch between projects.")
         self._settings_menu_desc.setWordWrap(True)
-        main_layout.addWidget(self._settings_menu_desc)
-
+        integrations_layout.addRow(self._settings_menu_desc)
         menu_btn_layout = QHBoxLayout()
         self._settings_create_menu_btn = QPushButton("Create Menu Entry")
         self._settings_create_menu_btn.setToolTip("Create/update .desktop file for this project")
         self._settings_create_menu_btn.clicked.connect(self.regenerate_desktop_file)
         menu_btn_layout.addWidget(self._settings_create_menu_btn)
         menu_btn_layout.addStretch()
-        main_layout.addLayout(menu_btn_layout)
+        integrations_layout.addRow(menu_btn_layout)
+
+        main_layout.addLayout(integrations_layout)
 
         main_layout.addStretch()  # Push form to top
 
@@ -3178,8 +3241,8 @@ class ProjectFlowApp(QMainWindow):
         for widget in (
             self._proj_project_name, self._proj_default_viewer, self._proj_default_launcher_tab,
             self._proj_pdf_file, self._proj_webview_url, self._proj_image_file,
-            self._proj_console_path, self._proj_folder_path, self._proj_terminal,
-            self._proj_browser_new_tab, self._proj_kimai_project_id,
+            self._proj_console_path, self._proj_folder_path,
+            self._proj_kimai_project_id,
         ):
             widget.setStyleSheet(input_style)
 
@@ -3187,6 +3250,7 @@ class ProjectFlowApp(QMainWindow):
             self._proj_color_clear_btn, self._proj_pdf_browse_btn, self._proj_image_browse_btn,
             self._proj_console_browse_btn, self._proj_folder_browse_btn, self._proj_kimai_browse_btn,
             self._settings_create_menu_btn, self._settings_scan_docs_btn, self._settings_kickstart_btn,
+            self._proj_baloo_tag_btn,
         ):
             btn.setStyleSheet(btn_style)
 
@@ -3194,8 +3258,10 @@ class ProjectFlowApp(QMainWindow):
         self._style_project_color_button()
         section_label_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;"
         desc_style = f"color: {self.t('fg_secondary')}; font-size: 12px;"
+        self._settings_integrations_header.setStyleSheet(section_label_style)
         self._settings_menu_label.setStyleSheet(section_label_style)
         self._settings_menu_desc.setStyleSheet(desc_style)
+        self._proj_baloo_desc.setStyleSheet(desc_style)
         self._settings_scan_docs_desc.setStyleSheet(desc_style)
         self._settings_kickstart_desc.setStyleSheet(desc_style)
 
@@ -3247,27 +3313,16 @@ class ProjectFlowApp(QMainWindow):
         self._proj_console_path.setText(getattr(self, 'config_console_path', None) or "")
         self._proj_folder_path.setText(getattr(self, 'config_folder_path', None) or "")
 
-        current_terminal = getattr(self, 'config_terminal', None) or ""
-        idx = self._proj_terminal.findText(current_terminal)
-        if idx >= 0:
-            self._proj_terminal.setCurrentIndex(idx)
-        else:
-            self._proj_terminal.setCurrentText(current_terminal)
-        global_terminal = self.get_configured_terminal()
-        self._proj_terminal.setToolTip(f"Override global terminal for this project (empty = use global: {global_terminal})")
-
-        per_config_browser = getattr(self, 'config_browser_new_tab', None)
-        if per_config_browser is True:
-            self._proj_browser_new_tab.setCurrentText("New tab")
-        elif per_config_browser is False:
-            self._proj_browser_new_tab.setCurrentText("New window")
-        else:
-            self._proj_browser_new_tab.setCurrentText("(use global setting)")
-
         kimai_configured = bool(self.settings.get('kimai_url') and self.settings.get('kimai_token'))
-        self._settings_form_layout.setRowVisible(self._settings_kimai_label, kimai_configured)
+        self._integrations_layout.setRowVisible(self._settings_kimai_label, kimai_configured)
         current_kid = getattr(self, 'config_kimai_project_id', None)
         self._proj_kimai_project_id.setText(str(current_kid) if current_kid else "")
+
+        tag_name = self.get_tag_name_for_config()
+        self._proj_baloo_tag_btn.setText(f"Tag files in this project with Baloo tag '{tag_name}'")
+        baloo_enabled = self.settings.get('enable_baloo_tags', False)
+        self._integrations_layout.setRowVisible(self._proj_baloo_tag_btn, baloo_enabled)
+        self._integrations_layout.setRowVisible(self._proj_baloo_desc, baloo_enabled)
 
     def create_settings_toolbar(self, parent_layout):
         """Toolbar for the Settings viewer (column2_mode == "settings") — rebuilt fresh
@@ -3374,6 +3429,34 @@ class ProjectFlowApp(QMainWindow):
 
         layout.addRow(app_label, app_combo)
 
+        # Live warning when the alias name being typed shadows a real shell builtin/
+        # command/function — see _alias_shadow_warning(). Debounced (checked ~400ms after
+        # typing stops, not per-keystroke) since each check spawns a bash subprocess.
+        alias_warning_label = QLabel("")
+        alias_warning_label.setStyleSheet(f"color: {self.t('bg_danger')}; font-size: 11px;")
+        alias_warning_label.setWordWrap(True)
+        alias_warning_label.setVisible(False)
+        layout.addRow(alias_warning_label)
+
+        alias_warn_timer = QTimer(dialog)
+        alias_warn_timer.setSingleShot(True)
+        alias_warn_timer.setInterval(400)
+
+        def _check_alias_shadow():
+            if app_combo.currentText().strip() != "alias":
+                alias_warning_label.setVisible(False)
+                return
+            alias_name = path_input.toPlainText().strip().split(' ', 1)[0].split('\n', 1)[0]
+            warning = self._alias_shadow_warning(alias_name) if alias_name else None
+            alias_warning_label.setText(f"⚠ {warning}" if warning else "")
+            alias_warning_label.setVisible(bool(warning))
+
+        alias_warn_timer.timeout.connect(_check_alias_shadow)
+        path_input.textChanged.connect(alias_warn_timer.start)
+        app_combo.currentTextChanged.connect(alias_warn_timer.start)
+        if current_app == "alias":
+            _check_alias_shadow()
+
         # Delete button for existing items
         btn_layout = QHBoxLayout()
         if not is_new:
@@ -3421,13 +3504,34 @@ class ProjectFlowApp(QMainWindow):
                 self.save_config_to_json()
 
                 # Write alias to projectflow_aliases if this is an alias launcher.
-                # force=True so edits always overwrite the previous entry.
+                # force=True so edits always overwrite the previous entry. Gated on a
+                # confirm if the name shadows a real shell builtin/command/function
+                # (see _alias_shadow_warning()) — declining only skips the shell-file
+                # write, since that's the actually-risky part (it gets sourced into the
+                # real shell); the launcher item itself is saved either way, it's inert
+                # data until sourced.
                 if new_app == "alias":
                     alias_name, _, alias_cmd = new_path.partition(' ')
-                    self._write_alias_to_file(alias_name.strip(), alias_cmd.strip(), force=True)
-                    if hasattr(self, 'status_label'):
-                        self.status_label.setText(f"✓ Alias '{alias_name.strip()}' saved — re-source aliases file to activate")
-                        self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                    alias_name = alias_name.strip()
+                    alias_cmd = alias_cmd.strip()
+                    warning = self._alias_shadow_warning(alias_name)
+                    write_alias = True
+                    if warning:
+                        reply = QMessageBox.question(
+                            dialog, "Alias name already in use",
+                            f"{warning}\n\nCreate this alias anyway?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.No
+                        )
+                        write_alias = reply == QMessageBox.StandardButton.Yes
+                    if write_alias:
+                        self._write_alias_to_file(alias_name, alias_cmd, force=True)
+                        if hasattr(self, 'status_label'):
+                            self.status_label.setText(f"✓ Alias '{alias_name}' saved — re-source aliases file to activate")
+                            self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+                    elif hasattr(self, 'status_label'):
+                        self.status_label.setText(f"Alias '{alias_name}' not written to shell file (shadows an existing command)")
+                        self.status_label.setStyleSheet("color: #e67e22; margin: 10px; font-weight: bold;")
 
                 # Update UI appropriately
                 if inline_widget is not None:
@@ -4322,15 +4426,10 @@ class ProjectFlowApp(QMainWindow):
             self.config_image_file = self._proj_image_file.text().strip() or None
             self.config_console_path = self._proj_console_path.text().strip() or None
             self.config_folder_path = self._proj_folder_path.text().strip() or None
-            self.config_terminal = self._proj_terminal.currentText().strip() or None
-
-            browser_text = self._proj_browser_new_tab.currentText()
-            if browser_text == "New tab":
-                self.config_browser_new_tab = True
-            elif browser_text == "New window":
-                self.config_browser_new_tab = False
-            else:
-                self.config_browser_new_tab = None
+            # self.config_terminal/self.config_browser_new_tab are deliberately NOT
+            # touched here anymore — no UI sets them going forward (see the removal note
+            # in _build_settings_form()), so whatever load_config() read from the JSON
+            # simply passes through unchanged on every save.
 
             kimai_id_text = self._proj_kimai_project_id.text().strip()
             self.config_kimai_project_id = int(kimai_id_text) if kimai_id_text.isdigit() else None
@@ -5454,8 +5553,252 @@ StartupNotify=true
             except Exception as e:
                 print(f"Error querying Baloo: {e}")
 
-        # Filter non-existent files
-        return [f for f in tagged if os.path.exists(f)]
+        # Filter non-existent files, and any path already filed as a real launcher item in
+        # this project — otherwise a file tagged via _tag_current_project_files_baloo()
+        # (which deliberately tags files already referenced by this project's own
+        # launchers, see that method) shows up twice: once under its real category, once
+        # again here. Same "a real item wins, the dynamic bucket hides its own copy"
+        # precedent as the AI bucket's own item dedup (see Group-by-Type Launcher View in
+        # CLAUDE.md). Walks self.COLUMN_1 the same unfiltered way the Kickstart-dialog
+        # dedup / _tag_current_project_files_baloo() do.
+        existing_paths = set()
+        for cat_dict in self.COLUMN_1:
+            for items in cat_dict.values():
+                for item in items:
+                    if len(item) > 1:
+                        existing_paths.add(os.path.expanduser(item[1]))
+
+        return [f for f in tagged if os.path.exists(f) and f not in existing_paths]
+
+    def _notes_file_path_for_config(self, config_path, config_data):
+        """Standalone equivalent of get_notes_file_path() for an ARBITRARY project's
+        (path, parsed-json) pair, rather than the currently-loaded project's instance
+        state (self.current_config_file/self.config_notes_file). Used by
+        _bulk_create_baloo_tags() so it never has to touch those for a project that
+        isn't actually open — reassigning them mid-loop would risk corrupting whatever
+        project genuinely is open."""
+        notes_file = config_data.get('notes_file')
+        if notes_file:
+            config_dir = os.path.dirname(config_path)
+            if notes_file == '.' or notes_file.startswith('./'):
+                notes_path = os.path.join(config_dir, notes_file[2:] if notes_file.startswith('./') else '')
+            elif not os.path.isabs(notes_file):
+                notes_path = os.path.join(config_dir, notes_file)
+            else:
+                notes_path = notes_file
+            return os.path.expanduser(notes_path)
+
+        folder = self.get_notes_folder()
+        config_name = os.path.splitext(os.path.basename(config_path))[0]
+        return os.path.join(folder, f"{config_name.replace('_', '-')}.md")
+
+    def _baloo_tag_append(self, path, tag_name):
+        """Add tag_name to path's Baloo/Dolphin tags (the `user.xdg.tags` extended
+        attribute) WITHOUT clobbering any tags already there — reads the current value
+        via getfattr first and merges, rather than a plain setfattr overwrite. Returns
+        True on success (including "already tagged", a no-op). Requires setfattr/
+        getfattr (util-linux/attr package); the caller checks availability once up front."""
+        existing = []
+        try:
+            result = subprocess.run(
+                ['getfattr', '--only-values', '-n', 'user.xdg.tags', path],
+                capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0 and result.stdout:
+                existing = [t.strip() for t in result.stdout.split(',') if t.strip()]
+        except Exception:
+            pass
+
+        if tag_name in existing:
+            return True
+
+        new_value = ','.join(existing + [tag_name])
+        try:
+            result = subprocess.run(
+                ['setfattr', '-n', 'user.xdg.tags', '-v', new_value, path],
+                capture_output=True, timeout=3
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _show_baloo_tag_results_dialog(self, title, tagged=None, skipped=None, failed=None):
+        """Read-only results dialog listing exactly what a Baloo-tagging action did —
+        shared by _bulk_create_baloo_tags() and _tag_current_project_files_baloo(), since
+        a one-line status-bar count ("Tagged 40 files") isn't enough to actually see what
+        got tagged. Matches _show_hidden_items_dialog()'s plain-list-+-Close style, minus
+        any action button since this is purely informational. Each of tagged/skipped/
+        failed is a list of already-formatted display strings (paths, or "tag: reason"
+        for skips) — callers build these, this just renders them under a summary line."""
+        tagged = tagged or []
+        skipped = skipped or []
+        failed = failed or []
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(520, 380)
+        layout = QVBoxLayout(dialog)
+
+        summary_parts = [f"Tagged: {len(tagged)}"]
+        if skipped:
+            summary_parts.append(f"Skipped: {len(skipped)}")
+        if failed:
+            summary_parts.append(f"Failed: {len(failed)}")
+        summary_label = QLabel("  ·  ".join(summary_parts))
+        summary_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; padding-bottom: 4px;")
+        layout.addWidget(summary_label)
+
+        list_widget = QListWidget()
+        for line in tagged:
+            list_widget.addItem(QListWidgetItem(f"✓ {line}"))
+        for line in skipped:
+            list_widget.addItem(QListWidgetItem(f"— {line}"))
+        for line in failed:
+            list_widget.addItem(QListWidgetItem(f"✗ {line}"))
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dialog.exec()
+
+    def _bulk_create_baloo_tags(self):
+        """For every main project (projects/*.json, excluding aliases.json), tag its
+        notes file with the project's derived Baloo tag name (get_tag_name_for_config()'s
+        logic, applied per-project — see _notes_file_path_for_config()) — the same
+        `user.xdg.tags` xattr mechanism Dolphin itself uses. This makes the tag exist
+        (Baloo has no notion of an empty/unattached tag — it only exists via a file
+        association) so it shows up under that project's own Tagged Files section
+        immediately, and becomes available for further manual tagging in Dolphin.
+
+        Skips a project if its notes file doesn't exist on disk yet — notes are created
+        lazily on first save (see load_notes()), and this action deliberately never
+        creates one itself, to avoid scattering empty .md files the user never asked
+        for. Requires setfattr/getfattr and (optionally) balooctl6/balooctl — soft-fails
+        with a status message rather than raising if either is missing."""
+        if not shutil.which('setfattr'):
+            self.status_label.setText("✗ 'setfattr' not found — cannot create Baloo tags (needs the 'attr' package)")
+            self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
+            return
+
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        if not os.path.isdir(projects_dir):
+            return
+
+        tagged_lines = []
+        skipped_lines = []
+        failed_lines = []
+        newly_tagged_paths = []
+
+        for fname in sorted(os.listdir(projects_dir)):
+            if not fname.endswith('.json') or fname == 'aliases.json':
+                continue
+            config_path = os.path.join(projects_dir, fname)
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            tag_name = os.path.splitext(fname)[0]
+            notes_path = self._notes_file_path_for_config(config_path, config_data)
+            if not os.path.exists(notes_path):
+                skipped_lines.append(f"{tag_name}: no notes file yet")
+                continue
+
+            if self._baloo_tag_append(notes_path, tag_name):
+                newly_tagged_paths.append(notes_path)
+                tagged_lines.append(f"{tag_name}: {notes_path}")
+            else:
+                failed_lines.append(f"{tag_name}: {notes_path}")
+
+        # Nudge Baloo to pick up the new tags immediately rather than waiting for its
+        # own file-watcher/periodic scan — best-effort, the tags are already on disk
+        # via the xattr regardless of whether this succeeds.
+        if newly_tagged_paths:
+            balooctl = shutil.which('balooctl6') or shutil.which('balooctl')
+            if balooctl:
+                try:
+                    subprocess.run([balooctl, 'index'] + newly_tagged_paths, capture_output=True, timeout=15)
+                except Exception:
+                    pass
+
+        self.status_label.setText(f"✓ Tagged {len(tagged_lines)} project note file(s) for Baloo — see details")
+        self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+
+        if tagged_lines or skipped_lines or failed_lines:
+            self._show_baloo_tag_results_dialog(
+                "Baloo Tags — All Projects",
+                tagged=tagged_lines, skipped=skipped_lines, failed=failed_lines,
+            )
+
+    def _tag_current_project_files_baloo(self):
+        """Per-project counterpart to _bulk_create_baloo_tags() — wired to the
+        "Integrations" section's Baloo button in the Project Settings viewer. Unlike the
+        bulk button (which only tags each OTHER project's notes file, read from disk),
+        this always acts on the CURRENTLY loaded project, so it uses live instance state
+        directly, and deliberately has a RICHER scope: this project's notes file (if it
+        exists) PLUS every existing local file/folder any of its launcher items point at
+        — a deliberate, confirmed difference from the bulk button, not an inconsistency
+        to "fix" later.
+
+        Walks self.COLUMN_1 the same unfiltered way the Kickstart-dialog dedup does
+        (existing_paths = {item[1] for item in items ...}), then filters to paths that
+        actually exist on disk — a compound path+command value (npm/alias/ssh items) or a
+        plain URL just never exists as a literal path, so it's silently skipped, same as
+        get_tagged_files()'s own os.path.exists() filter and the documented path-mapping-
+        fallback caveat for this exact idiom."""
+        if not shutil.which('setfattr'):
+            self.status_label.setText("✗ 'setfattr' not found — cannot create Baloo tags (needs the 'attr' package)")
+            self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
+            return
+
+        tag_name = self.get_tag_name_for_config()
+        paths = set()
+
+        notes_path = self.get_notes_file_path()
+        if notes_path and os.path.exists(notes_path):
+            paths.add(notes_path)
+
+        for cat_dict in self.COLUMN_1:
+            for items in cat_dict.values():
+                for item in items:
+                    if len(item) > 1:
+                        p = os.path.expanduser(item[1])
+                        if os.path.exists(p):
+                            paths.add(p)
+
+        tagged_lines = []
+        failed_lines = []
+        for p in sorted(paths):
+            if self._baloo_tag_append(p, tag_name):
+                tagged_lines.append(p)
+            else:
+                failed_lines.append(p)
+
+        if paths:
+            balooctl = shutil.which('balooctl6') or shutil.which('balooctl')
+            if balooctl:
+                try:
+                    subprocess.run([balooctl, 'index'] + list(paths), capture_output=True, timeout=15)
+                except Exception:
+                    pass
+
+        self.status_label.setText(f"✓ Tagged {len(tagged_lines)} file(s)/folder(s) in this project for Baloo — see details")
+        self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+
+        if tagged_lines or failed_lines:
+            self._show_baloo_tag_results_dialog(
+                f"Baloo Tag '{tag_name}' — This Project",
+                tagged=tagged_lines, failed=failed_lines,
+            )
+        else:
+            self.status_label.setText("Nothing to tag — no notes file and no existing local launcher paths in this project")
+            self.status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; margin: 10px;")
 
     def get_notes_folder(self):
         """Get the folder where notes are stored as markdown files"""
@@ -5501,6 +5844,48 @@ StartupNotify=true
         if os.path.isdir(expanded) and not command.strip().startswith('cd '):
             return f"cd {command.strip()}"
         return command.strip()
+
+    def _classify_shell_name(self, name):
+        """Classify `name` against the user's actual shell via `type -t`, rather than
+        maintaining a static "top N commands" list — this reflects what's really a
+        builtin/keyword/command on THIS machine's PATH, not a guess, and needs no upkeep
+        as commands come and go. Returns 'builtin' / 'keyword' / 'file' / 'function' /
+        'alias' / None (not found, or the check itself failed — callers never block on
+        this, only warn)."""
+        if not name:
+            return None
+        try:
+            result = subprocess.run(
+                ['bash', '-c', f'type -t {shlex.quote(name)}'],
+                capture_output=True, text=True, timeout=2
+            )
+            return result.stdout.strip() or None
+        except Exception:
+            return None
+
+    def _alias_shadow_warning(self, name):
+        """Return a human-readable warning if `name` shadows a real shell builtin/keyword/
+        command/function, else None. An existing ALIAS is deliberately not flagged —
+        redefining your own alias (e.g. `ls` -> `ls -altr`) is a normal, common thing to
+        do, not the footgun this guards against: naming a NEW alias after a builtin like
+        `cd` silently breaks every subsequent bare `cd <dir>` elsewhere in the same shell,
+        since bash appends the real trailing argument onto the alias's own command
+        ('too many arguments' from cd's builtin, which takes at most one)."""
+        classification = self._classify_shell_name(name)
+        if classification in (None, 'alias'):
+            return None
+        kind_text = {
+            'builtin': "a shell builtin",
+            'keyword': "a shell keyword",
+            'file': "an existing command on your PATH",
+            'function': "an existing shell function",
+        }.get(classification, f"already in use ({classification})")
+        return (
+            f"'{name}' is {kind_text}. Aliasing over it can cause unexpected behavior "
+            f"elsewhere in your shell — e.g. shadowing 'cd' breaks any later bare "
+            f"'cd <dir>', since the real argument gets appended onto this alias's own "
+            f"command."
+        )
 
     def _flush_pending_alias_write(self):
         """Called by the debounce timer after the user stops typing."""
@@ -9245,7 +9630,43 @@ function filterAliases(q) {{
                             lambda pos, btn=title_btn, ci=col_idx, cn=_open_all_name:
                                 self._show_category_context_menu(btn, ci, cn)
                         )
-                        group_container_layout.addWidget(title_btn)
+
+                        # Per-category "+" — adds a launcher straight into THIS category,
+                        # instead of the header's own "+ Add" button (quick_add_launcher())
+                        # always targeting the first one, which otherwise means adding then
+                        # dragging/moving it here by hand. Excluded for AI: it's purely
+                        # filesystem-derived with no real category to add into. Mirrors the
+                        # edit-mode "Add Entry" button's own Docs-bucket special-case exactly
+                        # (lines ~10183-10191): the pooled Docs bucket's header reads "Docs" (a
+                        # display label) but the real backing category may not exist yet, so
+                        # that case resolves (and lazily auto-creates) via
+                        # _ensure_documentation_category() INSIDE the click handler — not
+                        # precomputed at render time — rather than adding into the literal
+                        # label "Docs", which _add_item_to_config() would silently drop since
+                        # no category dict is actually named "Docs" in a fresh project.
+                        if category_name != "AI":
+                            title_row = QHBoxLayout()
+                            title_row.setSpacing(4)
+                            title_row.addWidget(title_btn, 1)
+
+                            add_to_category_btn = QPushButton("+")
+                            add_to_category_btn.setFixedSize(30, 30)
+                            add_to_category_btn.setToolTip(f"Add a launcher to {category_name}")
+                            add_to_category_btn.setStyleSheet(green_btn_style)
+                            if category_name == "Docs":
+                                add_to_category_btn.clicked.connect(
+                                    lambda checked=False, ci=col_idx:
+                                        self.add_new_entry(ci, self._ensure_documentation_category())
+                                )
+                            else:
+                                add_to_category_btn.clicked.connect(
+                                    lambda checked=False, ci=col_idx, cn=category_name: self.add_new_entry(ci, cn)
+                                )
+                            title_row.addWidget(add_to_category_btn)
+
+                            group_container_layout.addLayout(title_row)
+                        else:
+                            group_container_layout.addWidget(title_btn)
 
                     # Create a group box for the items (without a title since we have the button)
                     group_box = QGroupBox()
@@ -9804,8 +10225,17 @@ function filterAliases(q) {{
                             )
                         )
 
-            # Add Tagged Files category at the bottom of Column 1
-            if col_idx == 0 and not hide_launchers_for_folder_panel:
+            # Add Tagged Files category at the bottom of Column 1 — Resources only in
+            # Focus layout (not Docs): this block isn't part of the Docs/Resources
+            # tab-content dispatch above, so without this guard it renders unconditionally
+            # on every column render regardless of which tab is active, i.e. it showed up
+            # on BOTH the Docs and Resources tabs. Standard layout has no tabs to dispatch
+            # on (focus_launcher_tab_active is always False there), so it's unaffected —
+            # Tagged Files still renders once, below whatever categories are shown.
+            if (
+                col_idx == 0 and not hide_launchers_for_folder_panel
+                and not (focus_launcher_tab_active and self.active_launcher_tab == "docs")
+            ):
                 tagged_files = self.get_tagged_files()
                 if tagged_files:
                     # Create container for tagged files category
@@ -10364,36 +10794,6 @@ function filterAliases(q) {{
                     }}
                 """)
                 help_container_layout.addWidget(self.help_browser, 1)  # stretch factor
-
-                help_editor = (self.settings.get("open_note_external") or "kate").capitalize()
-                help_footer = QWidget()
-                help_footer.setStyleSheet(f"background-color: {self.t('bg_secondary')}; border-top: 1px solid {self.t('border')};")
-                help_footer_layout = QHBoxLayout(help_footer)
-                help_footer_layout.setContentsMargins(6, 4, 6, 4)
-                help_footer_layout.addStretch()
-                for label, tooltip, callback in (
-                    (f"Open README in {help_editor}", "Open README.md in editor", self.open_help_in_external_editor),
-                    (f"Open Examples in {help_editor}", "Open EXAMPLES.html in editor", self.open_examples_in_external_editor),
-                ):
-                    footer_btn = QPushButton(label)
-                    footer_btn.setStyleSheet(f"""
-                        QPushButton {{
-                            background-color: {self.t('bg_button')};
-                            color: {self.t('fg_primary')};
-                            border: 1px solid {self.t('border')};
-                            border-radius: 4px;
-                            padding: 3px 10px;
-                            font-size: 11px;
-                        }}
-                        QPushButton:hover {{
-                            background-color: {self.t('bg_button_hover')};
-                            color: {self.t('fg_on_dark')};
-                        }}
-                    """)
-                    footer_btn.setToolTip(tooltip)
-                    footer_btn.clicked.connect(callback)
-                    help_footer_layout.addWidget(footer_btn)
-                help_container_layout.addWidget(help_footer)
 
                 # Console container (qtconsole, or a real terminal via ttyd — see
                 # resolve_console_backend/_open_terminal_tab). console_container_layout is
@@ -11031,7 +11431,7 @@ function filterAliases(q) {{
         help_btn = QPushButton("❓ Help")
         help_btn.setMinimumHeight(30)
         help_btn.setStyleSheet(footer_btn_style)
-        help_btn.setToolTip("README and launcher examples")
+        help_btn.setToolTip("Introduction, interface guide, integrations, settings & examples")
         help_btn.clicked.connect(lambda: self.switch_to_viewer_mode("help"))
         footer_layout.addWidget(help_btn)
 
@@ -14050,33 +14450,6 @@ function filterAliases(q) {{
 
         toolbar_layout.addStretch()
         parent_layout.addWidget(toolbar_widget)
-
-    def open_help_in_external_editor(self):
-        """Open README.md in the configured editor"""
-        readme_path = os.path.join(self.script_dir, "README.md")
-        editor = self.settings.get("open_note_external") or "kate"
-        if os.path.exists(readme_path):
-            subprocess.Popen([editor, readme_path], start_new_session=True)
-
-    def _load_examples_html_fragment(self):
-        """Read EXAMPLES.html with theme placeholders substituted — used as the "Launcher
-        Examples" tab's iframe content in the combined Help page (_build_help_html)."""
-        examples_path = os.path.join(self.script_dir, "EXAMPLES.html")
-        if not os.path.exists(examples_path):
-            return f"<p style='color: {self.t('fg_primary')}'>EXAMPLES.html not found.</p>"
-        try:
-            with open(examples_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            return re.sub(r'\{(\w+)\}', lambda m: self.t(m.group(1)), html_content)
-        except Exception as e:
-            return f"<p style='color: {self.t('fg_primary')}'>Could not load EXAMPLES.html: {e}</p>"
-
-    def open_examples_in_external_editor(self):
-        """Open EXAMPLES.html in the configured editor"""
-        examples_path = os.path.join(self.script_dir, "EXAMPLES.html")
-        editor = self.settings.get("open_note_external") or "kate"
-        if os.path.exists(examples_path):
-            subprocess.Popen([editor, examples_path], start_new_session=True)
 
     def create_console_toolbar(self, parent_layout):
         """Create a toolbar for the console"""
@@ -17685,74 +18058,95 @@ Project created: {date_str}
             print(f"Warning: Could not create notes file: {e}")
 
     def load_help_content(self):
-        """Load and display the combined Help page (README + Launcher Examples tabs)"""
-        self.help_browser.setHtml(self._build_help_html())
+        """Load and display the combined Help page (help/ folder's tabs)"""
+        help_dir = os.path.join(self.script_dir, "help")
+        html = self._build_help_html()
+        if html is not None:
+            self.help_browser.setHtml(html, QUrl.fromLocalFile(help_dir + os.sep))
 
     def _build_help_html(self):
-        """Build the combined Help viewer page: a README tab and a "Launcher Examples" tab,
-        switched with a pure-CSS (no JavaScript) radio-button tab pattern.
+        """Build the combined Help viewer page from the file-based help/ folder: help/shell.html
+        is the master page (shared CSS design system + theme placeholders), and every
+        help/tabs/*.html file becomes its own tab, auto-discovered by directory listing — no
+        manifest, no code change needed to add/rename/remove a tab, just drop or edit a file.
 
-        QWebEngineView does support JavaScript — it's used elsewhere in this app (Muya editor,
-        the ttyd terminal, the Aliases page's search box) — but a static two-tab reference page
-        has no real need for it, so this avoids the dependency entirely. The Examples tab is
-        embedded via <iframe srcdoc="..."> rather than merged into one shared stylesheet, since
-        EXAMPLES.html is already a complete, self-contained document with its own <style> block;
-        an iframe keeps its CSS isolated instead of risking class-name collisions with the
-        README's own styling.
-        """
-        readme_path = os.path.join(self.script_dir, "README.md")
-        try:
-            with open(readme_path, 'r', encoding='utf-8') as f:
-                readme_html = self.markdown_to_html(f.read())
-        except Exception as e:
-            readme_html = f"<p style='color: {self.t('fg_primary')}'>Could not load README.md: {e}</p>"
+        Tab switching is pure CSS (:checked ~ sibling selectors, same mechanism the old 2-tab
+        page already used) — QWebEngineView does support JavaScript (used elsewhere: Muya editor,
+        ttyd terminal, the Aliases page's search box) but a reference page like this has no real
+        need for it, and avoiding it also sidesteps a real Chromium restriction: fetch() against
+        local file:// URLs is commonly blocked outright (unlike <script src>/<link>/<img>, which
+        aren't subject to the same check) — so a JS-fetch-per-tab design would have been a real
+        risk for no benefit over just assembling everything in Python up front.
 
-        examples_html = self._load_examples_html_fragment()
-        examples_srcdoc = examples_html.replace('&', '&amp;').replace('"', '&quot;')
+        Each tabs/*.html file is a body-inner FRAGMENT only (no <html>/<head>/<style> of its own)
+        — all theming/typography/card styling lives once in shell.html's shared stylesheet, so a
+        tab file never needs to know about theme colors at all. A numeric "NN-" filename prefix
+        controls ordering and is stripped before deriving the tab label via _titleize_stem()
+        (the same helper "Add to Project" triggers already use for default names)."""
+        help_dir = os.path.join(self.script_dir, "help")
+        shell_path = os.path.join(help_dir, "shell.html")
+        tabs_dir = os.path.join(help_dir, "tabs")
+        if not os.path.exists(shell_path):
+            self.status_label.setText("✗ help/shell.html not found")
+            return None
+        with open(shell_path, 'r', encoding='utf-8') as f:
+            shell_html = f.read()
 
-        bg_help = self.t('bg_help')
-        fg_primary = self.t('fg_primary')
-        border = self.t('border')
-        bg_button = self.t('bg_button')
-        bg_button_hover = self.t('bg_button_hover')
-        fg_on_dark = self.t('fg_on_dark')
-        bg_category = self.t('bg_category')
+        tab_files = sorted(f for f in os.listdir(tabs_dir) if f.endswith('.html')) if os.path.isdir(tabs_dir) else []
 
-        return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>
-    html, body {{ height: 100%; margin: 0; }}
-    body {{
-        display: flex; flex-direction: column;
-        font-family: sans-serif; background: {bg_help}; color: {fg_primary};
-    }}
-    input[type=radio] {{ display: none; }}
-    .tabbar {{ display: flex; flex: 0 0 auto; border-bottom: 2px solid {border}; padding: 10px 10px 0; }}
-    .tabbar label {{
-        padding: 8px 16px; cursor: pointer; font-weight: bold; font-size: 12pt;
-        background: {bg_button}; color: {fg_primary};
-        border: 1px solid {border}; border-bottom: none;
-        margin-right: 4px; border-radius: 5px 5px 0 0;
-    }}
-    .tabbar label:hover {{ background: {bg_button_hover}; color: {fg_on_dark}; }}
-    #tab-readme:checked ~ .tabbar label[for="tab-readme"],
-    #tab-examples:checked ~ .tabbar label[for="tab-examples"] {{
-        background: {bg_category}; color: {fg_on_dark};
-    }}
-    .tabpanel {{ display: none; flex: 1 1 auto; overflow: auto; padding: 15px; box-sizing: border-box; }}
-    .tabpanel iframe {{ width: 100%; height: 100%; border: none; }}
-    #tab-readme:checked ~ #panel-readme {{ display: block; }}
-    #tab-examples:checked ~ #panel-examples {{ display: block; }}
-</style></head>
-<body>
-    <input type="radio" name="helptabs" id="tab-readme" checked>
-    <input type="radio" name="helptabs" id="tab-examples">
-    <div class="tabbar">
-        <label for="tab-readme">README</label>
-        <label for="tab-examples">Launcher Examples</label>
-    </div>
-    <div class="tabpanel" id="panel-readme">{readme_html}</div>
-    <div class="tabpanel" id="panel-examples"><iframe srcdoc="{examples_srcdoc}"></iframe></div>
-</body></html>"""
+        radios, labels, panels, styles = [], [], [], []
+        for i, fname in enumerate(tab_files):
+            stem = re.sub(r'^\d+-', '', os.path.splitext(fname)[0])
+            label = self._titleize_stem(stem)
+            try:
+                with open(os.path.join(tabs_dir, fname), 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except OSError as e:
+                content = f"<p>Could not load {fname}: {e}</p>"
+
+            tab_id = f"tab-{i}"
+            checked = ' checked' if i == 0 else ''
+            radios.append(f'<input type="radio" name="helptabs" id="{tab_id}"{checked}>')
+            labels.append(f'<label for="{tab_id}">{label}</label>')
+            panels.append(f'<div class="tabpanel" id="panel-{i}">{content}</div>')
+            styles.append(
+                f'#{tab_id}:checked ~ .tabbar label[for="{tab_id}"] {{ '
+                f'background: var(--pf-bg-category); color: var(--pf-fg-on-dark); }}\n'
+                f'#{tab_id}:checked ~ .content-scroll #panel-{i} {{ display: block; }}'
+            )
+
+        replacements = {
+            '__PF_BG__': self.t('bg_help'),
+            '__PF_FG__': self.t('fg_primary'),
+            '__PF_FG_SECONDARY__': self.t('fg_secondary'),
+            '__PF_FG_H1__': self.t('fg_help_h1'),
+            '__PF_FG_H2__': self.t('fg_help_h2'),
+            '__PF_FG_H3__': self.t('fg_help_h3'),
+            '__PF_BORDER_H1__': self.t('border_help_h1'),
+            '__PF_BORDER_H2__': self.t('border_help_h2'),
+            '__PF_BORDER__': self.t('border'),
+            '__PF_BG_CODE__': self.t('bg_code'),
+            '__PF_FG_CODE__': self.t('fg_code'),
+            '__PF_BG_CODE_INLINE__': self.t('bg_code_inline'),
+            '__PF_FG_LINK__': self.t('fg_link'),
+            '__PF_BG_CARD__': self.t('bg_example_card'),
+            '__PF_BORDER_CARD__': self.t('border_example_card'),
+            '__PF_BADGE_BUILTIN__': self.t('bg_example_type_builtin'),
+            '__PF_BADGE_SIMPLE__': self.t('bg_example_type_simple'),
+            '__PF_BADGE_COMPLEX__': self.t('bg_example_type_complex'),
+            '__PF_BADGE_CUSTOM__': self.t('bg_example_type_custom'),
+            '__PF_BG_BUTTON__': self.t('bg_button'),
+            '__PF_BG_BUTTON_HOVER__': self.t('bg_button_hover'),
+            '__PF_BG_CATEGORY__': self.t('bg_category'),
+            '__PF_FG_ON_DARK__': self.t('fg_on_dark'),
+            '__PF_TAB_STYLES__': '\n'.join(styles),
+            '__PF_TAB_RADIOS__': '\n'.join(radios),
+            '__PF_TAB_LABELS__': '\n'.join(labels),
+            '__PF_TAB_PANELS__': '\n'.join(panels),
+        }
+        for token, value in replacements.items():
+            shell_html = shell_html.replace(token, value)
+        return shell_html
 
     def markdown_to_html(self, text):
         """Convert markdown to HTML with theme-aware colors"""

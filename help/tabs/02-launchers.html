@@ -1,0 +1,76 @@
+<h1>Launchers</h1>
+<p class="lede">The Shortcuts column: categorized buttons that open files, folders, websites, and commands.</p>
+
+<h2>Launcher items</h2>
+<p>
+  Every shortcut is a small triple: a <strong>display name</strong>, a <strong>path</strong> (a file,
+  folder, URL, or command), and an <strong>application</strong> that decides how it opens — a specific
+  program (<code>firefox</code>, <code>gwenview</code>), a generic handler (<code>default</code>,
+  <code>file_manager</code>), or a more complex one that runs a command (<code>npm</code>,
+  <code>ssh_session</code>, <code>terminal</code>). See the <strong>Examples</strong> tab for the full
+  list with copy-paste patterns.
+</p>
+<p>Items live in <strong>categories</strong> — plain named groups you create, rename, delete, and reorder.
+  Drag an item to reorder it within a category, or drag it onto a different category's header to move it there.</p>
+
+<h2>Adding and editing</h2>
+<p>
+  Click <strong>+ Add</strong> in the launcher header for a quick-add dialog targeting the first category,
+  or use <strong>✏️ Edit Project</strong> for full editing — add categories, add entries per category, and
+  edit/delete existing ones. A search box above the list filters visible items live as you type, matching
+  name, path, or application.
+</p>
+
+<h2><code>alias</code> and <code>run</code> — command launchers</h2>
+<p>
+  These two types execute a command rather than opening a file. Both route into the built-in Terminal
+  viewer by default when it's available (a small "$_" icon next to the item opens an external terminal
+  instead).
+</p>
+<ul>
+  <li><strong>alias</strong> — path format is <code>alias_name command_or_directory</code>. The first word
+    becomes both the display name for status messages <em>and</em> a real bash alias exported to a shared
+    aliases file you can <code>source</code> from <code>~/.bashrc</code>.</li>
+  <li><strong>run</strong> — path is a script or command run exactly as typed, e.g.
+    <code>~/Programs/nixupdate.sh --check</code>. Not exported as a shell alias — just a per-launcher convenience.</li>
+</ul>
+<p>
+  <strong>A safety note:</strong> naming an alias after a real shell command (most importantly
+  <code>cd</code>) is a genuine footgun — bash appends your typed argument onto the alias's own command, so
+  aliasing <code>cd</code> to <code>cd ~/some_folder</code> silently breaks every later bare
+  <code>cd &lt;dir&gt;</code> elsewhere in the same shell ("too many arguments"). ProjectFlow checks the
+  name you type against your real shell and warns you before this happens — redefining an alias you
+  already made yourself (like <code>ls</code> → <code>ls -altr</code>) is fine and isn't flagged.
+</p>
+
+<h2>Grouping: Docs and Resources</h2>
+<p>
+  Turn on <strong>☰ Group</strong> (Standard layout) or use the <strong>Docs</strong>/<strong>Resources</strong>
+  tabs (Focus layout) to split your categories into two views: a <strong>Docs</strong> bucket backed by one
+  real "Documentation" category, and everything else under <strong>Resources</strong>. Where an item shows
+  up is simply wherever it's physically filed — moving it (drag, or right-click "Move to category") is
+  the only way to change which side it's on.
+</p>
+<p>
+  An automatic <strong>AI</strong> bucket appears above Docs if the project's folder has an <code>ai/</code>
+  subfolder or root files like <code>CLAUDE.md</code>/<code>AGENTS.md</code> — purely informational, nothing
+  is written to your config for it.
+</p>
+
+<h2>Kickstart</h2>
+<p>
+  <strong>🚀 Kickstart</strong> (in Project Settings, or automatically after creating a project from a
+  folder) scans a project's folder and suggests documentation files, dev shortcuts, detected
+  package-manager commands (npm/pip/cargo/go/composer), a project alias, and an optional website — all
+  shown unchecked in a review dialog. Nothing is written until you check what you want and click Apply.
+</p>
+
+<h2>"Open All" — an opt-in guardrail</h2>
+<p>
+  A category header can optionally get an <strong>⚡ Open All</strong> button that fires every item in it
+  at once. It's opt-in per category (right-click the header → "Enable Open All") and off by default —
+  even for Documentation — since a single click firing an arbitrary mix of items is a real risk once
+  <code>alias</code>/<code>run</code> items can execute commands. Even once enabled, if a category's
+  contents include anything that runs a command, you get a one-line confirmation naming exactly what will
+  run before it proceeds.
+</p>

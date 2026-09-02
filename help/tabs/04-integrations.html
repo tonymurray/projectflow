@@ -1,0 +1,48 @@
+<h1>Integrations</h1>
+<p class="lede">Third-party services ProjectFlow can talk to — all optional, all off until configured.</p>
+
+<h2>Kimai — time tracking</h2>
+<p>
+  Configure your Kimai server URL and API token in <strong>Settings → Integrations</strong> to unlock a
+  <strong>⏱ Time</strong> viewer tab per project. Link a project to a Kimai project (via its own Project
+  Settings) to see recent time entries, a period selector, a running total, and a quick "Log Time" form.
+  If you generate CSV exports elsewhere (e.g. from a timesheet skill), point ProjectFlow at that folder and
+  matching rows show up as "Pending Imports" ready to submit with one click.
+</p>
+
+<h2>Joplin — notes sync</h2>
+<p>
+  Add a Joplin Web Clipper API token in Settings → Integrations to enable a manual sync button in the
+  notepad toolbar, pushing this project's notes into Joplin.
+</p>
+
+<h2>Baloo — KDE file tags</h2>
+<p>
+  On KDE, tag any file or folder in Dolphin with a project's name (its config filename — e.g.
+  <code>work.json</code> → tag <code>work</code>) and it shows up automatically in that project's
+  <strong>Tagged Files</strong> category — a way to pull in files that don't belong in any specific
+  launcher category. Untag in Dolphin to remove it. Turn this on via the <strong>Enable Baloo Tags</strong>
+  checkbox in Settings → Integrations.
+</p>
+<p>Two buttons can create tags for you instead of tagging by hand in Dolphin:</p>
+<ul>
+  <li><strong>Settings → Integrations → "Create Baloo tags for all projects"</strong> — tags every
+    project's own notes file with that project's tag, in one sweep across your whole projects folder.
+    Skips any project with no notes written yet.</li>
+  <li><strong>Project Settings → Integrations → "Tag files in this project…"</strong> — a deeper, one-off
+    sweep of just the project you have open: tags its notes file <em>and</em> every real file or folder
+    any of its launcher items already points at.</li>
+</ul>
+<p>
+  Both show a results dialog listing exactly what got tagged (and skipped/failed) — not just a count —
+  and never overwrite tags a file already has, only add to them.
+</p>
+
+<h2>Path mappings</h2>
+<p>
+  If a project's files live at a different absolute path on this machine than where the config expects
+  them (e.g. a synced folder mounted under a different name), add a From/To mapping in
+  <strong>Settings → Advanced</strong>. It's applied only as a fallback when the direct path is missing —
+  never silently preferred — and a small "⇄" badge marks anything shown via a mapping so it's obvious when
+  you're not looking at the path actually saved in the config.
+</p>

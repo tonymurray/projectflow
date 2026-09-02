@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  :root {
+    --pf-bg: __PF_BG__;
+    --pf-fg: __PF_FG__;
+    --pf-fg-secondary: __PF_FG_SECONDARY__;
+    --pf-fg-h1: __PF_FG_H1__;
+    --pf-fg-h2: __PF_FG_H2__;
+    --pf-fg-h3: __PF_FG_H3__;
+    --pf-border-h1: __PF_BORDER_H1__;
+    --pf-border-h2: __PF_BORDER_H2__;
+    --pf-border: __PF_BORDER__;
+    --pf-bg-code: __PF_BG_CODE__;
+    --pf-fg-code: __PF_FG_CODE__;
+    --pf-bg-code-inline: __PF_BG_CODE_INLINE__;
+    --pf-fg-link: __PF_FG_LINK__;
+    --pf-bg-card: __PF_BG_CARD__;
+    --pf-border-card: __PF_BORDER_CARD__;
+    --pf-badge-builtin: __PF_BADGE_BUILTIN__;
+    --pf-badge-simple: __PF_BADGE_SIMPLE__;
+    --pf-badge-complex: __PF_BADGE_COMPLEX__;
+    --pf-badge-custom: __PF_BADGE_CUSTOM__;
+    --pf-bg-button: __PF_BG_BUTTON__;
+    --pf-bg-button-hover: __PF_BG_BUTTON_HOVER__;
+    --pf-bg-category: __PF_BG_CATEGORY__;
+    --pf-fg-on-dark: __PF_FG_ON_DARK__;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--pf-bg);
+    color: var(--pf-fg);
+  }
+
+  /* ---- Tab bar ---- */
+  input[type=radio] { display: none; }
+  .tabbar {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    padding: 14px 20px 0;
+    border-bottom: 2px solid var(--pf-border);
+  }
+  .tabbar label {
+    padding: 9px 18px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 12pt;
+    background: var(--pf-bg-button);
+    color: var(--pf-fg);
+    border: 1px solid var(--pf-border);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .tabbar label:hover { background: var(--pf-bg-button-hover); color: var(--pf-fg-on-dark); }
+
+  /* ---- Content area: scrollable page holding a centered "paper" card ---- */
+  .content-scroll {
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
+  .paper {
+    max-width: 880px;
+    margin: 28px auto 60px;
+    background: var(--pf-bg-card);
+    border: 1px solid var(--pf-border-card);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+    padding: 36px 44px;
+  }
+  .tabpanel { display: none; line-height: 1.7; font-size: 11pt; }
+
+  /* ---- Typography ---- */
+  h1 {
+    color: var(--pf-fg-h1);
+    border-bottom: 2px solid var(--pf-border-h1);
+    padding-bottom: 10px;
+    margin: 0 0 18px;
+    font-size: 22pt;
+  }
+  h2 {
+    color: var(--pf-fg-h2);
+    border-bottom: 1px solid var(--pf-border-h2);
+    padding-bottom: 6px;
+    margin: 34px 0 14px;
+    font-size: 15pt;
+  }
+  h2:first-child { margin-top: 0; }
+  h3 { color: var(--pf-fg-h3); margin: 24px 0 10px; font-size: 12.5pt; }
+  p { margin: 12px 0; }
+  a { color: var(--pf-fg-link); }
+  ul, ol { margin: 10px 0; padding-left: 26px; }
+  li { margin-bottom: 6px; }
+  strong { font-weight: 700; }
+  .lede { color: var(--pf-fg-secondary); font-size: 11.5pt; margin-bottom: 22px; }
+
+  /* ---- Code ---- */
+  code {
+    background: var(--pf-bg-code-inline);
+    color: var(--pf-fg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: "DejaVu Sans Mono", "Menlo", monospace;
+    font-size: 9.5pt;
+  }
+  pre {
+    background: var(--pf-bg-code);
+    color: var(--pf-fg-code);
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 9.5pt;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+
+  /* ---- Screenshots ---- */
+  img.screenshot {
+    display: block;
+    max-width: 100%;
+    margin: 18px 0;
+    border-radius: 8px;
+    border: 1px solid var(--pf-border-card);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+  }
+  .caption {
+    text-align: center;
+    color: var(--pf-fg-secondary);
+    font-size: 9.5pt;
+    margin-top: -10px;
+    margin-bottom: 18px;
+  }
+
+  /* ---- Tip callouts (Tips tab) ---- */
+  .tip {
+    background: var(--pf-bg-card);
+    border-left: 4px solid var(--pf-fg-link);
+    border-radius: 6px;
+    padding: 12px 18px;
+    margin-bottom: 16px;
+  }
+  .tip-title { font-weight: 700; color: var(--pf-fg-h2); margin-bottom: 4px; }
+  .tip p:last-child { margin-bottom: 0; }
+
+  /* ---- Handler-reference cards (Examples tab) ---- */
+  .card {
+    background: var(--pf-bg-card);
+    border: 1px solid var(--pf-border-card);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .handler-name { font-weight: 700; font-size: 12pt; color: var(--pf-fg-h1); }
+  .handler-key { font-family: monospace; font-size: 10pt; color: var(--pf-fg-secondary); }
+  .description { margin-bottom: 8px; font-size: 10pt; }
+  .example-label { font-weight: 700; color: var(--pf-fg-secondary); font-size: 10pt; }
+  .example-code {
+    background: var(--pf-bg-code);
+    color: var(--pf-fg-code);
+    border: 1px solid var(--pf-border);
+    padding: 8px 12px;
+    border-radius: 5px;
+    font-family: monospace;
+    font-size: 9pt;
+    margin-top: 4px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .type-badge {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 9pt;
+    padding: 2px 8px;
+    border-radius: 3px;
+    color: #ffffff;
+    font-weight: 700;
+  }
+  .type-builtin { background: var(--pf-badge-builtin); }
+  .type-simple { background: var(--pf-badge-simple); }
+  .type-complex { background: var(--pf-badge-complex); }
+  .type-custom { background: var(--pf-badge-custom); }
+
+  /* ---- Per-tab visibility rules, generated by Python (one per tab, e.g.
+     #tab-0:checked ~ .content-scroll #panel-0 { display: block; }) ---- */
+  __PF_TAB_STYLES__
+</style>
+</head>
+<body>
+__PF_TAB_RADIOS__
+<div class="tabbar">
+__PF_TAB_LABELS__
+</div>
+<div class="content-scroll">
+  <div class="paper">
+__PF_TAB_PANELS__
+  </div>
+</div>
+</body>
+</html>

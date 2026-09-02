@@ -74,8 +74,8 @@ THEMES = {
         "bg_danger": "#e74c3c",
         "bg_danger_hover": "#c0392b",
         "bg_warning": "#f39c12",
-        "bg_purple": "#8e44ad",
-        "bg_purple_light": "#f5eef8",
+        "bg_purple": "#3DAEE9",
+        "bg_purple_light": "#eaf6fc",
 
         # Navy/action buttons
         "bg_navy": "#0e3558",
@@ -174,8 +174,8 @@ THEMES = {
         "bg_danger": "#8b2a2a",
         "bg_danger_hover": "#a83232",
         "bg_warning": "#8b6914",
-        "bg_purple": "#4a2a6a",
-        "bg_purple_light": "#1a1028",
+        "bg_purple": "#3DAEE9",
+        "bg_purple_light": "#132733",
 
         # Navy/action buttons
         "bg_navy": "#283136",

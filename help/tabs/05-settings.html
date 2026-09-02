@@ -1,0 +1,41 @@
+<h1>Settings</h1>
+<p class="lede">Two different places to configure things: global, machine-wide settings, and each project's own settings.</p>
+
+<h2>Global Settings dialog</h2>
+<p>Open via the <strong>⚙️ Settings</strong> button in the footer. Five tabs:</p>
+<ul>
+  <li><strong>Settings</strong> — theme, startup behavior, notes folder, default application for new
+    launchers, and general app-wide preferences.</li>
+  <li><strong>Applications</strong> — your preferred editor, file manager, and terminal (auto-detected from
+    your desktop environment if left blank).</li>
+  <li><strong>Integrations</strong> — Kimai, Joplin, and Baloo File Tags (see the Integrations tab of this
+    guide).</li>
+  <li><strong>Icons</strong> — manage the application-icon mappings used throughout the launcher column.</li>
+  <li><strong>Launch Handlers</strong> — create, edit, or override launch handlers (see the Examples tab
+    for the built-in ones).</li>
+</ul>
+
+<h2>Project Settings</h2>
+<p>
+  Click <strong>✏️ Edit Project</strong> to open a project's own settings — a persistent form covering
+  everything specific to just that project:
+</p>
+<ul>
+  <li>Name, color, and layout (Standard vs Focus)</li>
+  <li>Default Launcher Tab and Default Viewer Tab (what this project opens to)</li>
+  <li>Pinned PDF/Web/Image content, Terminal Path, and Folder Start Path</li>
+  <li>Scan for Documents and 🚀 Kickstart (see the Launchers tab)</li>
+  <li>An <strong>Integrations</strong> section: linked Kimai project, the per-project Baloo tag button, and
+    Desktop Menu Entry (creates a <code>.desktop</code> file for this project in your application menu)</li>
+</ul>
+<p>
+  Per-project overrides for Terminal and Browser Links were removed in favor of always using the global
+  Settings values — one less place to look when something doesn't behave as expected.
+</p>
+
+<h2>Where things are saved</h2>
+<p>
+  Global settings live in <code>.projectflow_settings.json</code> next to the app. Each project is its own
+  JSON file (or a hidden <code>.projectflow</code> file inside a project folder) — plain text, safe to back
+  up, sync, or inspect directly if you're curious what a setting actually looks like on disk.
+</p>
