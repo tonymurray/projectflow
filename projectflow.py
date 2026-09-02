@@ -733,6 +733,10 @@ class MuyaSession:
         self.path = None
         self.pending_markdown = None
         self.pending_view_state = None
+        # Mirrors the JS-side __muyaIsDirty() flag, refreshed on every autosave-timer tick
+        # (_muya_autosave_tick()) so a Save button can reflect it synchronously without its
+        # own JS round-trip — see the Notes toolbar's Save button (_update_notes_save_btn()).
+        self.dirty = False
         self.autosave_timer = QTimer()
         self.autosave_timer.setInterval(autosave_interval_ms)
 
@@ -986,7 +990,13 @@ class ProjectFlowApp(QMainWindow):
         self.notes_webview = QWebEngineView()
         self.notes_webview.setPage(QWebEnginePage(self.web_profile, self.notes_webview))
         self._enable_web_fullscreen_support(self.notes_webview)
-        self._notes_muya_session = MuyaSession(self.notes_webview)
+        # Deliberately lazier than the general webview session's 1.2s default (see
+        # MuyaSession.__init__) — notes are the one thing routinely open in several tabs at
+        # once and sometimes edited from more than one device via Nextcloud sync; writing
+        # less often narrows the window for two autosaves to clash on the same file. The
+        # Save button (create_notes_toolbar()) covers the gap: a manual click still saves
+        # immediately regardless of this interval.
+        self._notes_muya_session = MuyaSession(self.notes_webview, autosave_interval_ms=15000)
         self.notes_webview.loadFinished.connect(
             lambda ok: self._on_muya_webview_load_finished(ok, self._notes_muya_session)
         )
@@ -1175,6 +1185,15 @@ class ProjectFlowApp(QMainWindow):
         if not self._confirm_discard_code_changes():
             event.ignore()
             return
+        # Best-effort flush of any pending Muya autosave — Notes now saves on a deliberately
+        # lazy timer (see _notes_muya_session's construction), which widens the window for
+        # unsaved keystrokes to be sitting in the editor, unwritten, right when the app
+        # closes. _muya_save() is a fire-and-forget async JS round-trip (page().runJavaScript
+        # callback), so this can't guarantee the write completes before the process actually
+        # exits, but it's strictly better than not trying — a no-op if nothing's open/dirty
+        # either way (_muya_save() itself guards on session.editing/path).
+        self._muya_save(self._muya_session)
+        self._muya_save(self._notes_muya_session)
         for _terminal_tab in self.terminal_tabs:
             self._stop_terminal_tab(_terminal_tab)
         super().closeEvent(event)
@@ -2512,6 +2531,7 @@ class ProjectFlowApp(QMainWindow):
                     added += 1
 
             self.config_folder_path = current_path[0]
+            self.folder_current_path = current_path[0]  # keep the Files tab/Folder viewer in sync
             if hasattr(self, '_proj_folder_path'):
                 self._proj_folder_path.setText(current_path[0])
 
@@ -2881,6 +2901,7 @@ class ProjectFlowApp(QMainWindow):
         # own do_add(), which does the same) — Kickstart is fundamentally about linking a
         # base folder, so this is an expected side effect, not a surprise one.
         self.config_folder_path = folder_path
+        self.folder_current_path = folder_path  # keep the Files tab/Folder viewer in sync
         if hasattr(self, '_proj_folder_path'):
             self._proj_folder_path.setText(folder_path)
 
@@ -4426,6 +4447,8 @@ class ProjectFlowApp(QMainWindow):
             self.config_image_file = self._proj_image_file.text().strip() or None
             self.config_console_path = self._proj_console_path.text().strip() or None
             self.config_folder_path = self._proj_folder_path.text().strip() or None
+            if self.config_folder_path:
+                self.folder_current_path = self.config_folder_path  # keep the Files tab/Folder viewer in sync
             # self.config_terminal/self.config_browser_new_tab are deliberately NOT
             # touched here anymore — no UI sets them going forward (see the removal note
             # in _build_settings_form()), so whatever load_config() read from the JSON
@@ -7231,24 +7254,26 @@ function filterAliases(q) {{
             config_file = config_file + '.json'
             self.current_config_file = config_file
 
-        # Create default JSON config (single column layout)
+        # Create default JSON config (single column layout) — deliberately minimal (one
+        # Places item, one Websites item): every extra default link is something a new
+        # project starts with and most people end up deleting once they've filed their own
+        # real launchers, so more isn't better here. Kept in sync manually with
+        # get_default_column_1() below and examples/projectflow.json (new_project()'s own
+        # copy-a-template path, which is what actually runs when that file exists).
         default_project = {
             "column_headers": ["Shortcuts and Actions"],
             "columns": [
                 [
-                                    
-                    {
-                        "Websites": [
-                            ["GitHub", "https://github.com/", "browser"],
-                            ["DuckDuckGo", "https://duckduckgo.com/", "browser"]
-                        ]
-                    },
                     {
                         "Places": [
                             ["Home", "~/", "file_manager"]
                         ]
+                    },
+                    {
+                        "Websites": [
+                            ["Wikipedia", "https://www.wikipedia.org/", "firefox"]
+                        ]
                     }
-  
                 ]
             ],
             "column2_default": "help",
@@ -7267,14 +7292,13 @@ function filterAliases(q) {{
         (drag-reorder, edit) elsewhere."""
         return [
             {
-                "Websites": [
-                    ["GitHub", "https://github.com/", "browser"],
-                    ["DuckDuckGo", "https://duckduckgo.com/", "browser"]
+                "Places": [
+                    ["Home", "~/", "file_manager"]
                 ]
             },
             {
-                "Places": [
-                    ["Home", "~/", "file_manager"]
+                "Websites": [
+                    ["Wikipedia", "https://www.wikipedia.org/", "firefox"]
                 ]
             },
         ]
@@ -11189,7 +11213,7 @@ function filterAliases(q) {{
         # own note, so there's nothing for a toolbar to do there.
         self.notes_current_label = None
         self.notes_open_btn = None
-        self.notes_home_btn = None
+        self.notes_save_btn = None
         # Reset before conditional (re)construction, same reasoning as the Quick File
         # Browser Panel's widget references documented elsewhere — otherwise a Standard-
         # layout rebuild leaves these pointing at widgets from a stale Focus-layout build.
@@ -11310,6 +11334,18 @@ function filterAliases(q) {{
 
         notes_panel_layout.addWidget(archive_section)
         archive_section.setVisible(not getattr(self, 'notes_md_path', None))
+
+        # "+ Add to Project" footer — the mirror-image case of archive_section above: shown
+        # ONLY for an arbitrary note (archive_section's controls make no sense there, since
+        # they're hardcoded to the project's own file), never for the project's own note
+        # (already implicitly part of the project via the pinned notes entry, so offering to
+        # "add" it again would be redundant). Same _make_viewer_footer() pattern every other
+        # viewer's "+ Add to Project" button already uses (see _add_viewer_item_to_project()).
+        self.notes_add_to_project_footer = self._make_viewer_footer(
+            "+ Add to Project", "Add this note to the project as a launcher", self._add_note_to_project
+        )
+        notes_panel_layout.addWidget(self.notes_add_to_project_footer)
+        self.notes_add_to_project_footer.setVisible(bool(getattr(self, 'notes_md_path', None)))
 
         # Place notes_panel into whichever container matches the current layout — decided
         # once, here, instead of built into the Standard-layout slot and reparented later.
@@ -11644,7 +11680,27 @@ function filterAliases(q) {{
                 if link_reply == QMessageBox.StandardButton.Yes:
                     chosen_folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", os.path.expanduser("~"))
                     if chosen_folder:
+                        # Wipe the generic template's own defaults (Places/Websites, the
+                        # pinned Wikipedia URL, "help" as the default viewer) before Kickstart
+                        # opens — otherwise those sit alongside whatever gets checked in
+                        # Kickstart, defeating its whole "review before anything's written"
+                        # premise and leaving the same "too many default links" clutter this
+                        # was meant to avoid. Mirrors create_folder_project_config()'s own
+                        # bare-skeleton starting point for the folder-based "Make Project"
+                        # flow — Kickstart's own selections become the ONLY initial content
+                        # either way. Clearing column2_default to None (not left at "help")
+                        # also lets Kickstart's own "pin as Web URL" checkbox actually take
+                        # effect — it only overrides column2_default "if not already set".
+                        self.COLUMN_1 = []
+                        self.config_webview_url = None
+                        self.config_column2_default = None
                         self._show_kickstart_dialog(folder_path=chosen_folder)
+                        # Whether the user clicked Apply or Cancel, make sure the UI actually
+                        # reflects current state — Apply already saves+refreshes on its own,
+                        # but Cancel leaves the in-memory clear above applied with no save and
+                        # no rebuild, which would otherwise only become visible (confusingly,
+                        # out of nowhere) on some later unrelated refresh.
+                        self.refresh_projects()
 
         except Exception as e:
             QMessageBox.critical(
@@ -15521,6 +15577,31 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
+    def _house_icon(self, white=False):
+        """House-outline icon for the Notes tab strip's pinned "jump to project note" button
+        — replaces the bare 🏠 emoji, matching the flat monochrome icon language used
+        everywhere else. `white=False` (default) is the theme-matched light/dark PNG pair
+        for the button's INACTIVE state (_open_icon()/_pin_icon()'s convention, sitting on
+        a plain bg_button-ish background). `white=True` is a fixed-white variant for the
+        button's ACTIVE state, which switches to a bright bg_green_3 fill
+        (_viewer_tab_button_style(True)) — the theme-matched dark/light icon reads poorly
+        against that green, the same reasoning the tab-icons row's fixed-white icons use for
+        sitting on a colored bar rather than a plain button background."""
+        if white:
+            cache_attr = '_house_icon_cache_white'
+            icon = getattr(self, cache_attr, None)
+            if icon is None:
+                icon = QIcon(os.path.join(self.script_dir, "assets", "icons", "house-white.png"))
+                setattr(self, cache_attr, icon)
+            return icon
+        cache_attr = f'_house_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "house-dark.png" if self.current_theme == "dark" else "house-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
     def _hamburger_icon(self):
         """Plain single-color hamburger (☰) icon for the title-bar project mega-menu button —
         same light/dark PNG pair convention as _open_icon()/_pin_icon(), since it sits on the
@@ -16250,6 +16331,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         session.editing = True
         session.pending_markdown = content
         session.pending_view_state = view_state
+        session.dirty = False  # a freshly-loaded document is clean until edited
         session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
         if not session.autosave_timer.isActive():
             session.autosave_timer.start()
@@ -16335,9 +16417,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     def create_notes_toolbar(self, parent_layout):
         """Create the Focus-layout Notes panel's toolbar: a filename label (blank when
         showing the project's own note, so it's never ambiguous which note is on screen),
-        a "📂 Open" file picker for arbitrary notes, and a "🏠 Project Note" button (visible
-        only when viewing something else) to jump back. Mirrors create_code_editor_toolbar()'s
-        shape/style."""
+        a "📂 Open" file picker for arbitrary notes, and a Save button. Mirrors
+        create_code_editor_toolbar()'s shape/style. No "back to project note" button here
+        anymore — the pinned "🏠" button at the start of the tab strip below already does
+        that job (_jump_or_open_project_note()), and having both read as pure duplication."""
         toolbar_widget = QWidget()
         toolbar_layout = QHBoxLayout(toolbar_widget)
         toolbar_layout.setContentsMargins(0, 0, 0, 5)
@@ -16375,11 +16458,15 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         toolbar_layout.addStretch()
 
-        self.notes_home_btn = QPushButton("🏠 Project Note")
-        self.notes_home_btn.setStyleSheet(btn_style)
-        self.notes_home_btn.setToolTip("Back to this project's own note")
-        self.notes_home_btn.clicked.connect(self._jump_or_open_project_note)
-        toolbar_layout.addWidget(self.notes_home_btn)
+        # Save button — Notes still autosaves (unlike the Code Editor, which has none by
+        # design), just on a deliberately lazy timer now (see _notes_muya_session's
+        # construction), so this both forces an immediate save on click and, via
+        # _update_notes_save_btn(), doubles as a passive "is everything saved?" indicator —
+        # muted/grey while clean, normal once something's unsaved — between autosave ticks.
+        # Sits on the right, after the stretch.
+        self.notes_save_btn = QPushButton("💾 Save")
+        self.notes_save_btn.clicked.connect(lambda: self._muya_save(self._notes_muya_session))
+        toolbar_layout.addWidget(self.notes_save_btn)
 
         parent_layout.addWidget(toolbar_widget)
         self._build_notes_tab_strip(parent_layout)
@@ -16395,17 +16482,65 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self._open_note_in_notes_tab(file_path)
 
     def _update_notes_toolbar(self):
-        """Refreshes the Notes toolbar's filename label and Project-Note button visibility
-        to reflect self.notes_md_path. No-op if the toolbar doesn't exist (Standard layout,
-        or not yet built)."""
+        """Refreshes the Notes toolbar's filename label and the archive/"+ Add to Project"
+        sections' visibility to reflect self.notes_md_path. No-op if the toolbar doesn't
+        exist (Standard layout, or not yet built)."""
         if not self.notes_current_label:
             return
         is_project_note = not self.notes_md_path
         label_text = f"{self.get_project_name()} project notes" if is_project_note else os.path.basename(self.notes_md_path)
         self.notes_current_label.setText(label_text)
-        self.notes_home_btn.setVisible(not is_project_note)
         if getattr(self, 'notes_archive_section', None):
             self.notes_archive_section.setVisible(is_project_note)
+        if getattr(self, 'notes_add_to_project_footer', None):
+            self.notes_add_to_project_footer.setVisible(not is_project_note)
+        # Called right after a (re)load (_open_notes_in_muya()) as well as at toolbar
+        # build time — a freshly-loaded tab is always clean, and _load_muya_shell() already
+        # set session.dirty = False for it, so this reliably shows "saved" immediately
+        # rather than whatever the previous tab's state happened to be.
+        self._update_notes_save_btn()
+
+    def _update_notes_save_btn(self):
+        """Refreshes the Notes Save button to reflect self._notes_muya_session.dirty — muted/
+        grey when clean (nothing pending), normal when there's something unsaved. Driven by
+        _muya_autosave_tick()/_muya_save() on the notes session, and by _update_notes_toolbar()
+        right after a (re)load. No-op if the button doesn't exist (Standard layout)."""
+        if not getattr(self, 'notes_save_btn', None):
+            return
+        dirty = self._notes_muya_session.dirty
+        if dirty:
+            self.notes_save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_button')};
+                    color: {self.t('fg_primary')};
+                    border: 1px solid {self.t('border')};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
+            self.notes_save_btn.setToolTip("Unsaved changes — click to save now")
+        else:
+            self.notes_save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_secondary')};
+                    color: {self.t('fg_secondary')};
+                    border: 1px solid {self.t('bg_secondary')};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.t('bg_button_hover')};
+                    color: {self.t('fg_on_dark')};
+                }}
+            """)
+            self.notes_save_btn.setToolTip("All changes saved")
 
     def _open_notes_in_muya(self):
         """Load the current project's notes into the persistent Notes-panel Muya session —
@@ -16490,11 +16625,26 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self._rebuild_notes_tab_strip()
 
     def _open_notes_tab(self, path):
-        """Open `path` as a new Notes tab and make it active — always-new-tab policy,
-        mirroring _open_pdf_tab()/_open_web_tab(). `path` equal to the project's own note
-        path is normalized to None (the NotesTabState convention), same as the old
-        _open_note_in_notes_tab() did."""
+        """Open `path` as a Notes tab and make it active. `path` equal to the project's own
+        note path is normalized to None (the NotesTabState convention), same as the old
+        _open_note_in_notes_tab() did.
+
+        Reuses an already-open tab for the same file instead of piling up duplicates —
+        deliberately NOT the "always new tab" policy PDF/Web/Image tabs use (where a second
+        tab on the same file is a legitimate thing to want, e.g. a different PDF page): a
+        note's whole document is always shown at once, so a second tab on the identical file
+        serves no purpose and previously just accumulated clutter every time the same file
+        was opened again from a launcher or the file picker. `path` is expanduser()'d before
+        comparing so a '~'-prefixed launcher path and an absolute file-picker path pointing
+        at the same file still match as the same tab."""
+        path = os.path.expanduser(path) if path else path
         normalized = path if path != self.get_notes_file_path() else None
+        for i, tab in enumerate(self.notes_tabs):
+            if tab.path == normalized:
+                if self.column2_mode != "notes":
+                    self.switch_to_viewer_mode("notes")
+                self._activate_notes_tab(i)
+                return
         self.notes_tabs.append(NotesTabState(normalized))
         if self.column2_mode != "notes":
             self.switch_to_viewer_mode("notes")
@@ -16504,8 +16654,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     def _open_note_in_notes_tab(self, path):
         """Open any .md file in the Focus-layout Notes tab (the consolidated note viewer) —
         stable public entry point used by every "open a markdown file" call site in Focus
-        layout (see _open_markdown_file()). Always opens as a new tab (see
-        _open_notes_tab()) — jumping back to the project's own note instead goes through
+        layout (see _open_markdown_file()). Reuses an already-open tab for the same file
+        instead of opening a duplicate (see _open_notes_tab()) — jumping back to the
+        project's own note instead goes through
         _jump_or_open_project_note(), which reuses an already-open project-note tab rather
         than opening a new one."""
         self._open_notes_tab(path)
@@ -16589,34 +16740,46 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             if w is not None:
                 w.deleteLater()
 
-        # The strip is now always visible — it starts with a pinned "🏠" quick-jump button
-        # (see _jump_or_open_project_note()) that's useful even with a single tab open, if
-        # that tab isn't the project's own note. The actual per-tab buttons below it are
-        # still only added once there's more than the trivial single project-note tab.
+        # The strip is now always visible — it starts with a pinned "Project Note" button
+        # (icon + label, see _jump_or_open_project_note()) that's always shown, whether or
+        # not a project-note tab currently exists in self.notes_tabs (e.g. right after
+        # closing it while another note stays open — see below) — it's a permanent shortcut
+        # to "go to the project note," not a rendering of a specific tab object, so the
+        # label never needs to disappear. The project note is correspondingly EXCLUDED from
+        # the per-tab loop below — it used to also get its own separate "Project Note" tab
+        # group once >1 tabs were open, which was pure duplication of this pinned button
+        # (and, worse, vanished entirely whenever exactly one tab remained — e.g. right after
+        # "Close All" — leaving no "Project Note" text visible anywhere at all).
         self.notes_tab_strip_widget.setVisible(True)
         is_on_project_note = not self.notes_md_path
-        home_btn = QPushButton("🏠")
+        home_btn = QPushButton(" Project Note")
+        # White icon on the bright bg_green_3 active fill (poor contrast for the normal
+        # theme-matched dark/light icon there); theme-matched otherwise, on the plain
+        # bg_button-ish inactive fill — see _house_icon()'s own docstring.
+        home_btn.setIcon(self._house_icon(white=is_on_project_note))
+        home_btn.setIconSize(QSize(15, 15))
         home_btn.setToolTip("Project Note — jump to (or open) this project's own note")
-        home_btn.setMaximumWidth(28)
+        home_btn.setMaximumWidth(140)  # matches _build_tab_group_widget()'s own label_btn cap
         home_btn.setStyleSheet(self._viewer_tab_button_style(is_on_project_note))
         home_btn.clicked.connect(self._jump_or_open_project_note)
         self.notes_tab_strip_layout.addWidget(home_btn)
 
-        # Individual tab buttons stay gated on "more than the trivial single project-note
-        # tab" as before — with only the project note open, showing both the pinned 🏠
-        # AND a "Project Note ×" tab button right next to it would be pure redundancy.
-        if len(self.notes_tabs) > 1:
-            for i, tab in enumerate(self.notes_tabs):
-                is_active = (i == self.notes_active_index)
-                group = self._build_tab_group_widget(
-                    self._notes_tab_title(tab), tab.path or "This project's own note",
-                    self._viewer_tab_button_style(is_active),
-                    lambda checked=False, idx=i: self._activate_notes_tab(idx),
-                    lambda checked=False, idx=i: self._close_notes_tab(idx),
-                )
-                self.notes_tab_strip_layout.addWidget(group)
+        # Arbitrary-note tabs only (path is not None) — the project note is represented
+        # solely by the pinned button above now. Still gated on "is there anything besides
+        # the project note to show" so the strip doesn't grow a trailing "Close All" button
+        # for nothing.
+        other_tabs = [(i, tab) for i, tab in enumerate(self.notes_tabs) if tab.path is not None]
+        for i, tab in other_tabs:
+            is_active = (i == self.notes_active_index)
+            group = self._build_tab_group_widget(
+                self._notes_tab_title(tab), tab.path,
+                self._viewer_tab_button_style(is_active),
+                lambda checked=False, idx=i: self._activate_notes_tab(idx),
+                lambda checked=False, idx=i: self._close_notes_tab(idx),
+            )
+            self.notes_tab_strip_layout.addWidget(group)
         self.notes_tab_strip_layout.addStretch()
-        if len(self.notes_tabs) > 1:
+        if other_tabs:
             self.notes_tab_strip_layout.addWidget(
                 self._build_close_all_tabs_button(lambda checked=False: self._close_all_notes_tabs())
             )
@@ -16633,12 +16796,20 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self._update_md_edit_buttons()
 
     def _muya_autosave_tick(self, session):
-        """Runs every ~1.2s while editing; saves the file if the editor reports unsaved changes."""
+        """Runs on session.autosave_timer's interval while editing (1.2s for the general
+        webview session; a deliberately lazier interval for Notes — see its construction in
+        __init__ — since less frequent writes reduce the window for two tabs/devices editing
+        the same file to clash mid-save). Saves the file if the editor reports unsaved
+        changes, and mirrors that dirty state onto session.dirty either way so a Save button
+        can reflect it without its own JS round-trip."""
         if not session.editing or not session.webview:
             session.autosave_timer.stop()
             return
 
         def on_dirty(is_dirty):
+            session.dirty = bool(is_dirty)
+            if session is getattr(self, '_notes_muya_session', None):
+                self._update_notes_save_btn()
             if is_dirty:
                 self._muya_save(session)
 
@@ -16647,7 +16818,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         )
 
     def _muya_save(self, session):
-        """Pull the current markdown out of the given MuyaSession's editor and write it to disk."""
+        """Pull the current markdown out of the given MuyaSession's editor and write it to
+        disk — the autosave tick's own save-if-dirty action, but also called directly for an
+        immediate manual save (the Notes toolbar's Save button)."""
         if not session.editing or not session.path or not session.webview:
             return
 
@@ -16659,6 +16832,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 with open(session.path, 'w', encoding='utf-8') as f:
                     f.write(markdown)
                 session.webview.page().runJavaScript("window.__muyaClearDirty && window.__muyaClearDirty()")
+                session.dirty = False
+                if session is getattr(self, '_notes_muya_session', None):
+                    self._update_notes_save_btn()
                 self.status_label.setText(f"✓ Autosaved {os.path.basename(session.path)}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
             except OSError as e:
@@ -17627,6 +17803,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return
         stem = os.path.splitext(os.path.basename(session.path))[0]
         self._add_viewer_item_to_project(self._titleize_stem(stem), session.path, "default")
+
+    def _add_note_to_project(self):
+        """"Add to Project" trigger for the Notes tab's footer — see
+        _add_viewer_item_to_project(). Only ever offered for an ARBITRARY note
+        (notes_add_to_project_footer's visibility is gated on notes_md_path being set) —
+        the project's own note is already implicitly part of the project via the pinned
+        notes entry, so this trigger is never reachable for it."""
+        path = getattr(self, 'notes_md_path', None)
+        if not path:
+            QMessageBox.information(self, "Add to Project", "No arbitrary note is open.")
+            return
+        stem = os.path.splitext(os.path.basename(path))[0]
+        self._add_viewer_item_to_project(self._titleize_stem(stem), path, "default")
 
     def _add_current_folder_to_project(self):
         """"Add to Project" trigger for the Folder viewer's footer (and the launcher

@@ -1,35 +1,22 @@
 {
   "column_headers": [
-    "Example launchers",
-    "Documentation",
-    "Notes"
+    "Shortcuts and Actions"
   ],
   "columns": [
     [
       {
         "Places": [
-          ["Open Home Folder", "~/", "file_manager"],
-          ["Open Documents Folder", "~/Documents", "file_manager"]
+          ["Home", "~/", "file_manager"]
         ]
       },
       {
         "Websites": [
-          ["Wikipedia", "https://www.wikipedia.org/", "firefox"],
-          ["ProjectFlow on GitHUb", "https://github.com/tonymurray/projectflow", "browser"]
-          
-        ]
-      },
-      {
-        "Actions": [
-          ["View a log file", "/var/log/messages", "tail_log"],
-          ["Terminal", "~/", "terminal"]
+          ["Wikipedia", "https://www.wikipedia.org/", "firefox"]
         ]
       }
-    ],
-    [],
-    []
+    ]
   ],
-  "column2_default": "examples",
+  "column2_default": "help",
   "webview_url": "https://www.wikipedia.org/",
   "layout_mode": "focus"
 }
