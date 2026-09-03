@@ -187,12 +187,22 @@ THEMES = {
         # the viewer tab row's active-vs-inactive background identical in dark mode and left
         # a border as the *only* selection cue — colliding with the Terminal tab's own
         # always-on border (see CLAUDE.md's Viewer tab buttons bullet) and making it look
-        # permanently selected. Now a real 4-stop progression built from the same green
-        # family as the existing bg_success/bg_success_hover accent, darkest to brightest.
-        "bg_green_1": "#123d28",
-        "bg_green_2": "#1a5a3a",
-        "bg_green_3": "#228b4a",
-        "bg_green_4": "#2fae5c",
+        # permanently selected. A real 4-stop progression was then built from the same green
+        # family as bg_success/bg_success_hover, darkest to brightest — but that first pass
+        # (bg_green_1..4 = #123d28/#1a5a3a/#228b4a/#2fae5c) read as noticeably more saturated/
+        # vivid than the launcher tab row's own subdued tab_launcher_resting/active blue-greys
+        # (~15% HSL saturation) sitting right next to it, a visible mismatch once both rows
+        # were on screen together. Re-derived at the same ~16% saturation and ~150° (green)
+        # hue as the blue pair, at roughly the original stops' lightness so the
+        # resting->hover->active brightness progression (the actual selection cue, see above)
+        # is unchanged — only the saturation/vividness was pulled down to match. No longer
+        # numerically identical to bg_success/bg_success_hover as a result (those keep their
+        # own, more vivid values — they're a general-purpose "success" accent used elsewhere,
+        # e.g. checked-button states, not exclusive to these two tab rows).
+        "bg_green_1": "#212e28",
+        "bg_green_2": "#31433a",
+        "bg_green_3": "#496456",
+        "bg_green_4": "#5a7c6b",
 
         # Recent/All configs
         "bg_config_current": "#394459",

@@ -11,7 +11,7 @@
   <li><strong>Integrations</strong> — Kimai, Joplin, and Baloo File Tags (see the Integrations tab of this
     guide).</li>
   <li><strong>Icons</strong> — manage the application-icon mappings used throughout the launcher column.</li>
-  <li><strong>Launch Handlers</strong> — create, edit, or override launch handlers (see the Examples tab
+  <li><strong>Launch Handlers</strong> — create, edit, or override launch handlers (see the Handlers tab
     for the built-in ones).</li>
 </ul>
 
@@ -28,14 +28,13 @@
   <li>An <strong>Integrations</strong> section: linked Kimai project, the per-project Baloo tag button, and
     Desktop Menu Entry (creates a <code>.desktop</code> file for this project in your application menu)</li>
 </ul>
-<p>
-  Per-project overrides for Terminal and Browser Links were removed in favor of always using the global
-  Settings values — one less place to look when something doesn't behave as expected.
-</p>
 
-<h2>Where things are saved</h2>
+
+<h2>Where Project settings are saved</h2>
 <p>
   Global settings live in <code>.projectflow_settings.json</code> next to the app. Each project is its own
-  JSON file (or a hidden <code>.projectflow</code> file inside a project folder) — plain text, safe to back
-  up, sync, or inspect directly if you're curious what a setting actually looks like on disk.
+  JSON file, in the sub-directory 'projects', or the directory you specify in the settings (or, for 'Project Folders', in a hidden <code>.projectflow</code> file in the directory itself). The format is plain text JSON. The settings files can be backed-up or edited directly.
 </p>
+<h2>Direct editing</h2>
+<p>For <strong>advanced</strong> or <strong>adventurous</strong> people, you can directly edit project settings files and the main settings.
+Direct JSON editing is useful for bulk changes, such as adding many entries quickly, provided valid JSON is saved. See for example <a href="https://code.visualstudio.com/docs/languages/json" target="_blank">Editing JSON with Visual Studio Code</a> or <a href="https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/JSON" target="_blank">MDN: Working with JSON</a>. Make a backup first, if the direct edit goes wrong, you can restore it.</p>

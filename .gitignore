@@ -17,6 +17,9 @@ notes/
 # Shared human/AI context docs (personal working notes, not versioned)
 ai/
 
+# Local dev/planning docs (working notes, not meant for the public repo)
+docs/
+
 # Local/generated files
 course/
 ErrorCrash.txt

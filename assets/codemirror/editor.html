@@ -62,10 +62,31 @@
     var extensions = [
       CM.basicSetup,
       CM.keymap.of(CM.defaultKeymap),
-      // Swallows the browser's native Ctrl+S ("Save Page As") inside the webview —
-      // actual saving is a Python-side action (toolbar Save button / Ctrl+S handler),
-      // there is deliberately no JS->Python push channel for it (see CLAUDE.md).
-      CM.keymap.of([{ key: "Mod-s", run: function () { return true; } }]),
+      // Custom bindings that intentionally override basicSetup's own defaults —
+      // wrapped in Prec.highest so they win regardless of extension array order
+      // (basicSetup's internal keymaps are default-precedence, so without this
+      // the earlier-registered binding for the same key would run first and these
+      // would never fire). See CLAUDE.md's Code Editor section for the full list
+      // and the conflicts each one deliberately gives up:
+      //  - Mod-s: swallows the browser's native "Save Page As" inside the webview —
+      //    actual saving is a Python-side action (toolbar Save button / Ctrl+S
+      //    handler), there is deliberately no JS->Python push channel for it.
+      //  - Mod-g: goto line (was Mod-Alt-g, CM6's default) — frees the more
+      //    familiar Ctrl+G for this; find-next/previous remain on F3/Shift-F3 only
+      //    (basicSetup's Mod-g/Shift-Mod-g find bindings are shadowed, unused).
+      //  - Mod-d: copy current line down (CM6 has no default binding for this —
+      //    its own default is Shift-Alt-ArrowDown, still live). Deliberately
+      //    shadows basicSetup's Mod-d (multi-cursor "select next occurrence"),
+      //    which loses its shortcut entirely — a confirmed tradeoff, not an
+      //    oversight.
+      //  - Mod-k: cut the current line (nano-style) — see cutLine in entry.js.
+      //    Shift-Mod-k (delete line, no clipboard) is unaffected.
+      CM.Prec.highest(CM.keymap.of([
+        { key: "Mod-s", run: function () { return true; } },
+        { key: "Mod-g", run: CM.gotoLine, preventDefault: true },
+        { key: "Mod-d", run: CM.copyLineDown, preventDefault: true },
+        { key: "Mod-k", run: CM.cutLine, preventDefault: true },
+      ])),
       themeExtension,
       CM.syntaxHighlighting(highlightStyle),
       CM.EditorView.updateListener.of(function (u) {

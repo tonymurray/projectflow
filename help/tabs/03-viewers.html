@@ -1,24 +1,64 @@
-<div class="helpHeader"><img src="../assets/icon.svg" alt="Project Flow logo"><h1>Viewers</h1></div>
+<div class="helpHeader"><img src="../assets/icon.svg" alt="Project Flow logo">
+  <h1>Viewers</h1>
+</div>
 <p class="lede">Everything you can look at or work in without leaving ProjectFlow.</p>
 
 <h2>The viewer tabs</h2>
 <p>A row of tabs across the top of the viewer column switches between:</p>
 <ul>
-  <li><strong>Notes</strong> — this project's live markdown notepad (also always visible as its own column in Standard layout).</li>
-  <li><strong>Editor</strong> — a built-in code editor (CodeMirror) for JS/Python/HTML/CSS/PHP/JSON and more, with find &amp; replace, multi-cursor, folding, and syntax highlighting. Saves only on an explicit Save/Ctrl+S — never silently.</li>
-  <li><strong>Terminal</strong> — a real embedded terminal (when the <code>ttyd</code> backend is available) or a Python/IPython console as a fallback.</li>
+  <li><strong>Notes</strong> — Markdown notes can be viewed and edited here. Click and/or hover over text to edit and select formats. A project-specific note is always available.</li>
+  <li><strong>Editor</strong> — a built-in text and code editor (CodeMirror) for JS/Python/HTML/CSS/PHP/JSON and more, with find
+    &amp; replace (Ctrl+F), syntax highlighting, go to line (Ctrl+G). Saves only on an explicit Save/Ctrl+S.</li>
+  <li><strong>Terminal</strong> — a real embedded terminal (when the <code>ttyd</code> backend is available) or a
+    Python/IPython console as a fallback.</li>
   <li><strong>Web</strong> — a full web browser view, also used to render local HTML and markdown files.</li>
   <li><strong>PDF</strong> and <strong>Image</strong> — built-in viewers with paging/zoom/fit controls.</li>
-  <li><strong>⏱ Time</strong> — appears once Kimai is configured (see Integrations).</li>
+  <li><strong>⏱ Time</strong> — appears when Kimai is configured (see Integrations).</li>
 </ul>
+<h3>Notes editor shortcuts</h3>
+<table>
+  <thead>
+    <tr><th>Shortcut</th><th>Action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="viewer"><code>Ctrl+B</code></td><td>Bold</td></tr>
+    <tr><td class="viewer"><code>Ctrl+I</code></td><td>Italic</td></tr>
+    <tr><td class="viewer"><code>Ctrl+U</code></td><td>Underline</td></tr>
+    <tr><td class="viewer"><code>Ctrl+D</code></td><td>Strikethrough</td></tr>
+    <tr><td class="viewer"><code>Ctrl+L</code></td><td>Link</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+H</code></td><td>Highlight</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+I</code></td><td>Image</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+R</code></td><td>Clear formatting</td></tr>
+  </tbody>
+</table>
+<p class="lede">Headings, lists, quotes, code blocks and the like currently only work by typing the markdown syntax directly (e.g. <code># </code>, <code>- </code>, <code>&gt; </code>) — dedicated shortcuts for these may follow later.</p>
+<h2>Editor shortcuts</h2>
 
+<table>
+  <thead>
+    <tr><th>Shortcut</th><th>Action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="viewer"><code>Ctrl+S</code></td><td>Save the file</td></tr>
+    <tr><td class="viewer"><code>Ctrl+F</code></td><td>Find &amp; replace</td></tr>
+    <tr><td class="viewer"><code>F3</code> / <code>Shift+F3</code></td><td>Find next / previous</td></tr>
+    <tr><td class="viewer"><code>Ctrl+G</code></td><td>Go to line</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+L</code></td><td>Select all matches of the current selection</td></tr>
+    <tr><td class="viewer"><code>Ctrl+D</code></td><td>Copy current line down</td></tr>
+    <tr><td class="viewer"><code>Ctrl+K</code></td><td>Cut current line</td></tr>
+    <tr><td class="viewer"><code>Shift+Ctrl+K</code></td><td>Delete current line (no clipboard)</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+[</code> / <code>]</code></td><td>Fold / unfold current block</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Alt+[</code> / <code>]</code></td><td>Fold / unfold all</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Z</code> / <code>Ctrl+Y</code></td><td>Undo / redo</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Space</code></td><td>Autocomplete</td></tr>
+  </tbody>
+</table>
 <h2>Multiple tabs per viewer</h2>
 <p>
   Notes, Editor, Terminal, Web, PDF, and Image all support several open items at once as their own
   sub-tabs — open a second file without losing the first. Editor and Notes both remember unsaved changes
   and your cursor/scroll position when you switch away and back. Terminal tabs are the exception: each one
-  is a genuinely separate running shell (capped at a handful at a time), so closing a terminal tab really
-  does end that session.
+  is a genuinely separate running shell (capped at a handful at a time), so closing a terminal tab ends that session.
 </p>
 
 <h2>Pinning a default</h2>
@@ -28,14 +68,9 @@
   also has its own 📌 for pinning that specific piece of content independently of which tab is the default.
 </p>
 
-<h2>Focus layout differences</h2>
+<h2>3-Column layout differences</h2>
 <p>
-  In Focus layout, clicking a launcher that would normally open an external app (a website, an image, a
-  PDF, a local markdown/HTML file) instead opens it right there in the wide viewer column — the small
-  preview icon next to such items flips to mean "open externally instead." The launcher column also gains
-  its own <strong>Files</strong> tab: a compact file browser you can use to pop files straight into the
-  viewer next to it, and an <strong>Apps</strong> tab: a curated grid of every real application this
-  project's launchers reference.
+  3-column layout is available in the project's settings, a legacy from early design. In this view the Notes viewer is always present and launchers default to external applications.
 </p>
 
 <h2>The Folder Browser</h2>
@@ -43,67 +78,86 @@
   Navigate the filesystem, see folders that already have a ProjectFlow config (marked <strong>[P]</strong>),
   and create new projects directly from a folder via <strong>Make Project</strong>. Right-click empty space
   for "New from Template" (using your desktop's own Templates folder), or right-click a file/folder for the
-  usual open/rename/delete actions plus "Add to Project."
+  usual open/rename/delete actions plus "Add to Project.". If you a project default folder has not been assigned, you can asssign it in the file browser by clicking the 'double-home' button ⌂⌂.
 </p>
-<h1>In-depth reference</h1>
-<h2>Viewer Technologies</h2>
+<h2>Viewer Technologies reference</h2>
 
-<p>A quick reference for what actually renders each viewer in ProjectFlow.</p>
+<p>A reference for what actually renders each viewer in ProjectFlow.</p>
 
 <div class="card">
-    <table>
-      <thead>
-        <tr><th>Viewer</th><th>Technology</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td class="viewer">Notes</td>
-          <td><a href="https://github.com/marktext/marktext" target="_blank" rel="noopener">Muya</a> — the same live, WYSIWYG markdown editor engine used by the popular MarkText desktop app, embedded directly into the interface.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Editor</td>
-          <td><a href="https://codemirror.net/" target="_blank" rel="noopener">CodeMirror 6</a> — a mature, widely used code-editing engine (the same family powers many web-based code editors), with built-in support for JavaScript, Python, HTML, CSS, and PHP.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Web</td>
-          <td>The same underlying browser engine used by the rest of the app's toolkit — no extra library needed to browse the web.</td>
-        </tr>
-        <tr>
-          <td class="viewer">PDF</td>
-          <td>Each page is rendered as a plain image and displayed directly — a lightweight approach with no browser engine involved at all.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Image</td>
-          <td>Handled natively by the toolkit's own image display components — the same lightweight approach as PDF.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Terminal</td>
-          <td>Two modes: a quick command console for simple commands (the default), or a full real terminal for anything needing an interactive program like a text editor.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Settings</td>
-          <td>Built directly with the toolkit's own standard interface components — no external library.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Folder browser</td>
-          <td>Same as Settings — standard interface components only.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Time (⏱ Kimai)</td>
-          <td>Standard interface components, communicating with the Kimai time-tracking service over the web.</td>
-        </tr>
-        <tr>
-          <td class="viewer">Help</td>
-          <td>A set of help pages assembled from simple text files — easy to edit or add to without touching the app itself.</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h2>Notes</h2>
-  <ul>
-    <li><strong>Muya and CodeMirror are the two "real editors"</strong> in the app — genuine, full-featured editing engines running inside an embedded browser view, not simplified custom-built text boxes.</li>
-    <li><strong>PDF and Image are the only viewers with no browser engine at all</strong> — just images rendered into ordinary display widgets. That lighter weight is also why each one can comfortably have several documents open in tabs at once, at almost no extra cost.</li>
-    <li><strong>Web, Notes, and Editor each share a single embedded browser view</strong>, no matter how many tabs are open — switching tabs reuses that same view rather than opening a new one each time, which keeps things fast and light on memory.</li>
-  </ul>
+  <table>
+    <thead>
+      <tr>
+        <th>Viewer</th>
+        <th>Technology</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="viewer">ProjectFlow<br>(the app)</td>
+        <td>Built with <a href="https://www.riverbankcomputing.com/software/pyqt/" target="_blank" rel="noopener">PyQt6</a>, the Python bindings for the Qt6 application framework.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Notes</td>
+        <td><a href="https://github.com/marktext/marktext" target="_blank" rel="noopener">Muya</a> — the same live,
+          WYSIWYG markdown editor engine used by the popular MarkText desktop app, embedded directly into the interface.
+        </td>
+      </tr>
+      <tr>
+        <td class="viewer">Editor</td>
+        <td><a href="https://codemirror.net/" target="_blank" rel="noopener">CodeMirror 6</a> — a mature, widely used
+          code-editing engine (the same family powers many web-based code editors), with built-in support for
+          JavaScript, Python, HTML, CSS, and PHP.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Web</td>
+        <td><a href="https://doc.qt.io/qt-6/qtwebengine-overview.html">Qt WebEngine</a> — a module of the Qt framework (by The Qt Company), wrapping Google's open-source Chromium browser engine. The web engine is the basis for the Web/Notes/Editor/Help viewers</td>
+      </tr>
+      <tr>
+        <td class="viewer">PDF</td>
+        <td>Each page is rendered as a plain image using the Qt toolkit and displayed directly, along with a pager.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Image</td>
+        <td>Handled natively by the Qt toolkit image display components — similar to PDF.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Terminal</td>
+        <td>There are two modes: a quick command console for simple commands (the default), or a full real terminal for anything
+          needing an interactive program like a text editor. The real terminal can be enabled in the settings.<br><br>
+          The real terminal is powered by <a href="https://github.com/tsl0922/ttyd" target="_blank" rel="noopener">ttyd</a> —
+          a lightweight terminal hosted over localhost only (never reachable from outside your own machine), streamed to the
+          page as a live web terminal. It runs with guardrails: bound strictly to localhost, origin-checked so only this app's
+          own page can connect to it, and shut down automatically whenever ProjectFlow closes.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Settings</td>
+        <td>Built directly with the Qt toolkit's standard interface components.</td>
+      </tr>
+      <tr>
+        <td class="viewer">File browser</td>
+        <td>Same as <strong>Settings</strong> — standard interface components only, re-uses desktop icons.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Time (⏱ Kimai)</td>
+        <td>Standard interface components, communicating with the Kimai time-tracking service over the web via the Kimai API.</td>
+      </tr>
+      <tr>
+        <td class="viewer">Help</td>
+        <td>Uses the Web browser /QtWeb engine as above</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
+
+<h2>Notes</h2>
+<ul>
+  <li><strong>Muya and CodeMirror are the two "real editors"</strong> in the app — genuine, full-featured editing
+    engines running inside an embedded browser view, not simplified custom-built text boxes.</li>
+  <li><strong>PDF and Image are the only viewers with no browser engine at all</strong> — just images rendered into
+    ordinary display widgets. That lighter weight is also why each one can comfortably have several documents open in
+    tabs at once, at almost no extra cost.</li>
+  <li><strong>Web, Notes, and Editor each share a single embedded browser view</strong>, no matter how many tabs are
+    open — switching tabs reuses that same view rather than opening a new one each time, which keeps things fast and
+    light on memory.</li>
+</ul>

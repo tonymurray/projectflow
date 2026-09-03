@@ -7,12 +7,13 @@
   folder, URL, or command), and an <strong>application</strong> that decides how it opens — a specific
   program (<code>firefox</code>, <code>gwenview</code>), a generic handler (<code>default</code>,
   <code>file_manager</code>), or a more complex one that runs a command (<code>npm</code>,
-  <code>ssh_session</code>, <code>terminal</code>). See the <strong>Examples</strong> tab for the full
+  <code>ssh_session</code>, <code>terminal</code>). See the <strong>Handlers</strong> tab for the full
   list with copy-paste patterns.
 </p>
 <p>Items live in <strong>categories</strong> — plain named groups you create, rename, delete, and reorder.
   Drag an item to reorder it within a category, or drag it onto a different category's header to move it there.</p>
-<p>Categories/items are divided between two main tab sections: Documentation, and Resources: "the rest". </p>
+<p>Items are grouped into two tab sections: <strong>Documentation</strong> (docs, references, and notes) and
+  <strong>Resources</strong> (everything else).</p>
 
 <h2>Adding and editing</h2>
 <p>
@@ -22,7 +23,7 @@
 
 <h2>Files</h2>
 <p>
-  The files section in the left column provides simple file management, with the default project directory location as the start point (or your home folder if none is set). Right-click to add new files as determined by your desktop. [<strong>Tip:</strong> you can make use of your Templates directory, see <a href="https://www.zdnet.com/article/how-to-make-creating-new-documents-in-linux-easier-with-templates/"></a>this article</a>. 
+  The files section in the left column provides simple file management, with the default project directory location as the start point (or your home folder if none is set). Right-click to add new files as determined by your desktop. <strong>Tip:</strong> you can make use of your Templates directory, see <a href="https://www.zdnet.com/article/how-to-make-creating-new-documents-in-linux-easier-with-templates/">this article</a>.
 </p>
 
 <h2><code>alias</code> and <code>run</code> — command launchers</h2>
@@ -36,7 +37,7 @@
     becomes both the display name for status messages <em>and</em> a real bash alias exported to a shared
     aliases file you can <code>source</code> from <code>~/.bashrc</code>.</li>
   <li><strong>run</strong> — path is a script or command run exactly as typed, e.g.
-    <code>~/Programs/nixupdate.sh --check</code>. Not exported as a shell alias — just a per-launcher convenience.</li>
+    <code>~/Programs/backup.sh</code>. Not exported as a shell alias — just a per-launcher convenience.</li>
 </ul>
 <p>
   <strong>A safety note:</strong> naming an alias after a real shell command (most importantly

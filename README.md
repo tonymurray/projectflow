@@ -1,26 +1,10 @@
-# ProjectFlow
+# About ProjectFlow
 
-A project/activity focused organizer for Linux desktops to collect links to project files, folders, websites, documents, backups, and actions with notes and to-dos. Organize your project workflow with categorized shortcuts in column 1, display a website, PDF, or image in column 2; make project related notes in column 3. The application is designed to be flexible to individual project organization and integrate with existing desktop applications and workflows. You can create individual screens for each of your projects, and switch between them, or open in new windows.
+A graphical launcher for organizing your desktop around **projects**.
 
 ![ProjectFlow dark mode](screenshots/projectflow_darkmode.png)
 
 ![ProjectFlow light mode](screenshots/projectflow_lightmode.png)
-
-## Features
-
-- **Three-column layout** with customizable categories, plus a two-column **Focus layout** (launchers + wide viewer) for documentation-heavy work — remembered per project, with a collapsible quick file browser built into the launcher column
-- **Central viewer** toggles between PDF, web browser, image viewer, help, and console
-- **Folder browser** with tree and Dolphin-style icon-grid views, plus right-click "Open in Viewer" actions for images/PDFs/Markdown/HTML
-- **Live markdown editor** with autosave, built on the Muya editor engine
-- **Code editor** for JS, Python, HTML, CSS, and PHP, built on CodeMirror 6 — syntax highlighting, save on demand (no autosave, by design), find & replace (Ctrl+F), go to line (Ctrl+Alt+G), code folding (Ctrl+Shift+[/]), undo/redo, multi-cursor / select-next-occurrence (Ctrl+D), and a line-wrap toggle (on by default) so long lines don't need horizontal scrolling
-- **Log files** (`.log` or a `tail_log` launcher item) open live-tailed (`tail -n 300 -f`) in the embedded terminal in Focus layout, instead of always spawning an external one
-- **Group-by-Type launcher view** — dynamically sorts launchers into Documentation / Websites / Resources without touching your category layout, remembered per project
-- **Quick project switching** via recent projects bar with drag-to-reorder
-- **Edit mode** for adding/modifying entries without editing JSON
-- **Per-project notes** with markdown support and archive feature
-- **Custom launch handlers** for complex workflows
-- **Theme support** with light, dark, and system-following modes
-- **Desktop menu integration** for KDE, GNOME, and other freedesktop-compliant desktops
 
 ## Installation
 
@@ -53,6 +37,8 @@ Then run:
 ./projectflow.py
 ```
 
+Pass a project file as an argument to open a specific project directly: `./projectflow.py projects/myproject.json`
+
 ### NixOS
 
 Use the provided wrapper script which handles dependencies automatically:
@@ -61,250 +47,85 @@ Use the provided wrapper script which handles dependencies automatically:
 ./projectflow-nix
 ```
 
-## Usage
+## Goal
 
-```bash
-# Standard Linux
-./projectflow.py                              # Use default project
-./projectflow.py projects/myproject.json      # Use specific project
+The overall goal of the ProjectFlow application is re-focusing desktop organization around **projects** — aggregating a project's files, documentation, websites, functions and routines in one place.
 
-# NixOS
-./projectflow-nix                             # Use default project
-./projectflow-nix projects/myproject.json     # Use specific project
-```
+## Problem
 
-### Adding to Desktop Menu
+Typically project resources reside in various directories, networks, websites, shortcuts, emails, applications, routines, notes. Switching between projects and tasks can create friction.
 
-You can add any project to your desktop application menu:
+## Solution
 
-1. Open the project in ProjectFlow
-2. Click **Edit** → **Advanced** → **Project Defaults** tab
-3. Click **Create Menu Entry**
-
-This creates a `.desktop` file with a right-click menu for quick switching between projects.
+ProjectFlow aims to aggregate project resources, while closely integrating and complementing existing desktop tools, applications and paradigms, making managing, revisiting and working on projects more productive and fun.
 
 ## Projects
 
-Projects are JSON files stored in the `projects/` directory. Each project defines categories and items.
+Projects on a desktop could be many things. Some examples are:
 
-### Basic Structure
+- A software project - for example building a website
+- A business task - such as filing quarterly tax returns
+- A maintenance task like photo back-up
+- An educational / learning activity
+- A real-world hobby that combines online research, notes taking, helper applications
 
-```json
-{
-  "column_headers": ["Projects", "Resources", "Notes"],
-  "columns": [
-    [
-      {
-        "Category Name": [
-          ["Display Name", "/path/to/item", "application"],
-          ["Website", "https://example.com", "firefox"]
-        ]
-      }
-    ],
-    [],
-    []
-  ]
-}
-```
+## Inspiration
 
-### Project Options
+The idea was inspired by articles and ongoing efforts towards **Semantic and Context-Oriented Desktops**. See the References section below.
 
-| Option | Description |
-|--------|-------------|
-| `pdf_file` | Default PDF to load |
-| `webview_url` | Default URL for web viewer |
-| `image_file` | Default image to display |
-| `console_path` | Default directory for embedded console |
-| `column2_default` | Initial viewer mode: `"pdf"`, `"webview"`, `"image"`, `"help"`, or `"console"` |
+## The idea
 
-## Launch Handlers
+ProjectFlow treats a **project** as the basic unit of organization, and gives each project a single configuration file to house everything that belongs to it (**"items"**). The app provides quick-launch shortcuts to **items:** files, folders, websites, and terminal commands; Resources (PDF, image, web, code editor, terminal) can be edited, viewed, or launched in embedded viewer apps, or in the default desktop application. The application favours user curation of project items, with some automated helpers such as documentation discovery.
 
-### Works Out of the Box
+## ProjectFlow implementation
 
-These handlers use system defaults and work on any Linux desktop:
+The application aims towards a project-oriented 'desktop' by enabling the desktop user to create project containers and assemble a wide variety of notes, links, websites, PDFs, images, Apps, directory locations related to the project - and to curate, edit and view these 'resources' within the ProjectFlow interface, or launch them in the default, or designated Application or Web/File browser.
 
-| Handler | Description |
-|---------|-------------|
-| `browser` | Open URL in default browser (xdg-open) |
-| `file_manager` | Open folder in default file manager (xdg-open) |
-| `editor` | Open file in default editor (xdg-open) |
-| `default` | Let system decide how to open (xdg-open) |
-| `terminal` | Open folder in terminal (auto-detects: KDE=konsole, GNOME=gnome-terminal, etc.) |
+## ProjectFlow layout
 
-### Browser Handlers
+New projects default to a '2-column' layout; the 'blue' column on the left contains the 'Launcher' buttons that appear on the larger right-hand 'viewers'/editors, or in desktop applications.
 
-```json
-["My Site", "https://example.com", "firefox"]
-["My Site", "https://example.com", "chrome"]
-```
+- **Shortcuts** — the launcher column: categorized buttons for every file, folder, URL, or command that belongs to this project.
+- **Viewer** — whatever you're currently looking at or working in: a web page, a PDF, an image, the code editor, a terminal, or your project notes (generally in Markdown file format).
 
-### npm Handler
+## ProjectFlow formats
 
-Run npm commands in terminal:
+- **Notes** — project notes are in Markdown format and stored in a directory of choice. The notes can be edited in other [Markdown] editors
+- **Project configs** — are in [JSON format](https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/JSON).
+- **Portability** — the Notes, the project configs, can be backed-up or copied to share other computers (for example via NextCloud sync). Application settings are per-computer and also JSON
+- **Resource storage** — files generally reside in their current locations on your computer - they are not imported. It may be useful to use for example Nextcloud Sync to store project files like images in a shared directory
 
-```json
-["My App", "~/projects/myapp", "npm"]           // npm start
-["My App", "~/projects/myapp dev", "npm"]       // npm run dev
-["My App", "~/projects/myapp build", "npm"]     // npm run build
-["My App", "~/projects/myapp test", "npm"]      // npm test
-["My App", "~/projects/myapp install", "npm"]   // npm install
-```
+## Alternatives
 
-### SSH Session Handler
+The application will not suit every type of desktop user/person. Some people achieve similar results using only their file-system, their browser, 'emacs', their code editor, wiki-type notes application, online project management, and so-forth. Some people have a single main 'project' - and do not often switch between projects. Nevertheless, the application is worth exploring and can also be used in tandem with other tools. See also the references below.
 
-SSH with cd/command support:
+## Further information
 
-```json
-["Server", "user@host", "ssh_session"]                      // SSH, run bash
-["Server", "user@host cd /var/www", "ssh_session"]          // SSH, cd to dir
-["Server", "user@host cd /app npm start", "ssh_session"]    // SSH, cd, run command
-```
+- **Explore** — add a new project, add some items. Hover-over most buttons and menus for more information
+- **[Launchers](help/tabs/02-launchers.html)** — how the Shortcuts column works: categories, launch handlers, aliases, drag-and-drop, and the Kickstart setup wizard.
+- **[Viewers](help/tabs/03-viewers.html)** — the built-in Notes/Editor/Terminal/Web/PDF/Image/Time viewers, and how tabs work across them.
+- **[Handlers](help/tabs/04-handlers.html)** — the mechanism for creating a button launcher.
+- **[Integrations](help/tabs/05-integrations.html)** — Desktop integrations, Kimai time tracking, Joplin notes sync, and KDE Baloo file tags (so far).
+- **[Settings](help/tabs/06-settings.html)** — the global Settings dialog and each project's own Settings viewer.
+- **[Example](help/tabs/07-example.html)** — an example project.
+- **[Tips](help/tabs/08-tips.html)** — additional functionality and ideas.
 
-### Dev Environment Handler
+## References
 
-Open full dev environment (file manager + terminal + VSCode, optionally npm):
+- [Activities and the move to context-oriented desktops](https://lwn.net/Articles/334911/)
+- [Conference Paper: Support for activity-based computing in a personal computing operating system](https://www.researchgate.net/publication/221519528_Support_for_activity-based_computing_in_a_personal_computing_operating_system)
+- [Nepomuk (KDE User Base)](https://userbase.kde.org/Nepomuk)
+- [Activity-Centric Computing Systems](https://cacm.acm.org/research/activity-centric-computing-systems/)
+- [Nepomuk: Does anyone actually use it? (discussion)](https://www.reddit.com/r/kde/comments/pa80p/nepomuk_does_anyone_actually_use_it/)
 
-```json
-["My Project", "~/projects/myapp", "directorydev"]           // Opens 3 apps (no npm)
-["My Project", "~/projects/myapp dev", "directorydev"]       // Also runs npm run dev
-["My Project", "~/projects/myapp build", "directorydev"]     // Also runs npm run build
-```
+## Alternative and Complementary Approaches
 
-Main button opens all apps. The npm button only appears if a command is specified.
-
-### Backup Handlers
-
-**rsync_backup** - Basic rsync with common excludes:
-```json
-["Backup", "~/source ~/dest", "rsync_backup"]
-```
-
-**rsync_backup_id** - rsync with SSH identity file:
-```json
-["Backup", "~/.ssh/my_key ~/local/path user@server:/remote/path", "rsync_backup_id"]
-```
-
-**rsync_backup_id_port** - rsync with identity file and custom SSH port:
-```json
-["Backup", "~/.ssh/my_key 2222 ~/local/path user@server:/remote/path", "rsync_backup_id_port"]
-```
-Trailing slashes on the source folder are not allowed in rsync commands because this can lead to accidental data loss. The rsync command uses options `-avz` (archive, verbose, compress) and `--delete` to keep the destination in sync with source. See the [rsync man page](https://linux.die.net/man/1/rsync) for details. If files are deleted from the destination, backups are saved to `~/.rsync_backups/`. You may wish to monitor this folder periodically to remove obsolete files.
-
-### Other Handlers
-
-**tail_log** - Tail a log file in terminal. Pass a directory to auto-detect (`debug.log` preferred, falls back to `error.log`), or pass a specific file path:
-```json
-["View Logs", "~/projects/myapp", "tail_log"]
-["View Logs", "~/somewhere/error.log", "tail_log"]
-```
-
-**dolphin_tabs** - Open multiple folders as Dolphin tabs (KDE only):
-```json
-["My Folders", "~/Documents ~/Projects ~/Pictures", "dolphin_tabs"]
-```
-
-**projectflowlink** - Link to another project:
-```json
-["Other Project", "other_project.json", "projectflowlink"]
-```
-
-### Custom Handlers
-
-You can define your own handlers via Settings > Launch Handlers tab, or edit `launch_handlers_custom.json` directly:
-
-```json
-{
-  "my_handler": {
-    "command": ["my-app", "--option", "{path}"],
-    "description": "Open in my app"
-  },
-  "my_script": {
-    "type": "shell",
-    "command": "cd {path} && ./script.sh",
-    "terminal": true,
-    "hold": true,
-    "description": "Run my script"
-  }
-}
-```
-
-## Settings
-
-User preferences are stored in `.projectflow_settings.json`:
-
-| Setting | Description |
-|---------|-------------|
-| `default_project` | Project to load on startup |
-| `projects_directory` | Subdirectory for projects (default: `"projects"`) |
-| `notes_folder` | Where markdown notes are stored (default: `"notes/"`) |
-| `theme` | Color theme: `"light"`, `"dark"`, or `"system"` (default: `"system"`) |
-| `terminal` | Terminal application (auto-detected if not set) |
-| `pdfviewer` | External PDF viewer path (adds "External" button) |
-| `open_note_external` | External markdown editor (e.g., `"zettlr"`) for edit button |
-| `joplin_token` | Joplin API token for sync button |
-| `enable_baloo_tags` | Enable KDE Baloo tag integration (default: `false`) |
-| `console_backend` | Embedded Console backend: `"qtconsole"` (default), `"ttyd"` (real terminal, requires the optional `ttyd` binary on PATH), or `"auto"` |
-| `viewer_height` | Minimum height (px) of the central viewer column (default: `1000`). Drag the handle below the viewer to resize; saved here automatically |
-
-**A note on the `ttyd` console backend:** it works by running a small local web server that the built-in viewer connects to over a WebSocket, bound only to `127.0.0.1` (`localhost`) — it is never reachable over the network. Unauthenticated access from other websites is blocked (`ttyd`'s `--check-origin` option), so a page open in your browser can't connect to it. It grants no more access than you already have via any other terminal on the same machine.
-
-## Notes and Archive
-
-Notes are stored as markdown files in the configured `notes_folder`, edited live in the same Muya WYSIWYG editor used for standalone `.md` files, with a Typora-style "paper on page" look:
-- Each project gets its own `.md` file (e.g., `work.json` -> `work.md`)
-- Notes autosave a few seconds after you stop typing
-- Markdown format enables sync with Nextcloud Notes or any markdown-compatible tool
-
-### Archive Feature
-
-Notes can be archived to a `.archive` subfolder:
-- Click the archive button to save current notes with timestamp and clear the notepad
-- Archived content is prepended (newest first) to the archive file
-- View archived notes via the view archive button
-
-## KDE-Specific Features
-
-These features require KDE Plasma:
-
-### Baloo Tags
-
-Tag files in Dolphin with your project name (derived from project filename):
-- `main.json` -> tag files with "main"
-- Tagged files appear automatically in a "Tagged Files" category
-
-Enable in Settings > Advanced Settings > Enable Baloo Tags.
-
-### Service Menu
-
-Right-click files/folders in Dolphin to add them to a ProjectFlow project:
-
-1. Copy `utilities/projectflow-servicemenu.desktop` to `~/.local/share/kio/servicemenus/`
-2. Edit the `Exec=` line to point to where you installed `add-projectflow-servicemenu.sh`
-3. Make the script executable: `chmod +x utilities/add-projectflow-servicemenu.sh`
-
-## Folder Browser
-
-The Folder viewer lets you navigate the filesystem and interact with project files directly.
-
-### Context Menu (right-click a file or folder)
-
-- **Add to Project...** — adds the file or folder to a project's "Added Resources" category. Choose the target project from a dropdown (pre-selects the current project). Handler is auto-detected: directories open in the file manager, images open in Gwenview, everything else uses the default app.
-
-- **Add to Documentation...** — adds a file to a project's "Documentation" category (created if it doesn't exist). Available for files only. Handler is auto-detected by extension: `.html`/`.htm` open in Firefox, `.md`, `.txt`, and all other formats use the default app. The display name is derived from the filename (underscores and hyphens replaced with spaces).
-
-- **Make Project / Open as Project** — available for directories. Creates a `.projectflow` config in the folder (auto-detects project type) or switches to an existing one.
-
-- **Open in Terminal** — opens the directory in your configured terminal emulator.
-
-## UI Controls
-
-- **Edit Mode** (Edit button): Toggle to add/edit entries and categories
-  - In edit mode, an "Advanced" button appears to open the full project editor
-- **Load Project**: Open a different project file
-- **Edit Project**: Open current project in default editor
-- **Refresh**: Reload current project
-- **Set as Default**: Make current project the startup default
-- **Settings**: Open settings dialog with tabs for project items, icons, handlers, and preferences
+- [Wikipedia: Comparison of project management software](https://en.wikipedia.org/wiki/Comparison_of_project_management_software)
+- [KDE Visual Design Group/Plasma Activities](https://community.kde.org/KDE_Visual_Design_Group/Plasma_Activities)
+- [Emacs / Projects](https://taonaw.com/2024/12/24/how-i-handled-projects-in.html)
+- [Obsidian / Project Management](https://taskforge.md/blog/obsidian-project-management/)
+- [Visual Studio, Project Management, Solution Explorer](https://code.visualstudio.com/docs/csharp/project-management)
+- [Baloo](https://community.kde.org/Baloo)
 
 ## License
 

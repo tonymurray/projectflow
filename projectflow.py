@@ -925,6 +925,73 @@ class LinkOpeningWebPage(QWebEnginePage):
         return temp_page
 
 
+class ExternalLinkPage(QWebEnginePage):
+    """QWebEnginePage subclass for task-focused surfaces (Help, Notes, Editor) where a
+    clicked link is incidental content — a citation, a URL someone typed into a note —
+    never something the surface itself should navigate to. Unlike LinkOpeningWebPage
+    (which opens target=_blank/new-window links into a new tab of this app's own Web
+    viewer, correct for an actual browsing surface), every http/https navigation here is
+    diverted to the system's default browser via xdg-open, and same-page link clicks are
+    blocked outright rather than left to navigate the surface away from its real content.
+
+    Two distinct Chromium hooks both need covering, since they fire for different
+    interaction types:
+      - createWindow(): target=_blank, middle-click/Ctrl-click, window.open(), and the
+        context menu's "Open link in new tab/window" — reuses LinkOpeningWebPage's
+        throwaway-page URL-capture technique (see that class's docstring) since Chromium
+        needs *some* page handed back to load the popup navigation into before it will
+        tell us the destination URL.
+      - acceptNavigationRequest(): a plain link click with no target, which Chromium
+        would otherwise navigate this same page to in-place — the bug LinkOpeningWebPage
+        alone does not cover, and irrelevant for the main Web viewer (where navigating
+        in-place on a plain click is correct browsing behavior) but wrong here.
+
+    Routing to the system browser rather than a new tab of this app's own Web viewer is
+    also a deliberate isolation choice, not just UX: self.web_profile is a *persistent*
+    profile (real cookies survive a restart, see the Cookie/session persistence notes
+    above) built for the Web viewer's own deliberate browsing. Loading an incidental link
+    from a note or a Help page into that same profile would let untrusted/incidental URLs
+    ride along with whatever the user is actually logged into there. The system browser
+    keeps that persistent authenticated profile untouched by anything not deliberately
+    browsed to.
+    """
+
+    def __init__(self, profile, parent, open_url_externally_callback):
+        super().__init__(profile, parent)
+        self._open_url_externally = open_url_externally_callback
+
+    def createWindow(self, window_type):
+        temp_page = QWebEnginePage(self.profile(), None)
+        state = {"done": False}
+
+        def _finish(url=None):
+            if state["done"]:
+                return
+            state["done"] = True
+            try:
+                temp_page.urlChanged.disconnect(_on_url_changed)
+            except Exception:
+                pass
+            if url:
+                self._open_url_externally(url)
+            temp_page.deleteLater()
+
+        def _on_url_changed(url):
+            target = url.toString()
+            if target and target != "about:blank":
+                _finish(target)
+
+        temp_page.urlChanged.connect(_on_url_changed)
+        QTimer.singleShot(5000, lambda: _finish(None))
+        return temp_page
+
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        if is_main_frame and url.scheme() in ("http", "https"):
+            self._open_url_externally(url.toString())
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
 class ProjectFlowApp(QMainWindow):
     def __init__(self, config_file_arg=None):
         super().__init__()
@@ -988,7 +1055,12 @@ class ProjectFlowApp(QMainWindow):
         # there) rather than the notes_panel-style reparenting used elsewhere in Focus/Standard
         # layout switching.
         self.notes_webview = QWebEngineView()
-        self.notes_webview.setPage(QWebEnginePage(self.web_profile, self.notes_webview))
+        # ExternalLinkPage (not a plain QWebEnginePage) so a link typed into a note opens
+        # in the system browser instead of navigating this editor surface away — see that
+        # class's docstring. Keeps self.web_profile (same persistent profile as the main
+        # webview) since Notes content itself is unaffected either way.
+        self.notes_webview.setPage(ExternalLinkPage(self.web_profile, self.notes_webview, self._open_url_externally))
+        self._relabel_external_link_actions(self.notes_webview.page())
         self._enable_web_fullscreen_support(self.notes_webview)
         # Deliberately lazier than the general webview session's 1.2s default (see
         # MuyaSession.__init__) — notes are the one thing routinely open in several tabs at
@@ -1036,6 +1108,12 @@ class ProjectFlowApp(QMainWindow):
         # detach-then-readd" pattern as notes_webview/terminal tab webviews above. No
         # autosave_timer to wire up here — see CodeEditorSession's docstring for why.
         self.code_webview = QWebEngineView()
+        # ExternalLinkPage so a link inside a rendered file (e.g. an .html file opened for
+        # source-editing) opens in the system browser instead of navigating the editor
+        # away — see that class's docstring. defaultProfile() unchanged from before (code
+        # content has no cookie-persistence need).
+        self.code_webview.setPage(ExternalLinkPage(QWebEngineProfile.defaultProfile(), self.code_webview, self._open_url_externally))
+        self._relabel_external_link_actions(self.code_webview.page())
         self._enable_web_fullscreen_support(self.code_webview)
         self._code_session = CodeEditorSession(self.code_webview)
         self.code_webview.loadFinished.connect(
@@ -3095,7 +3173,7 @@ class ProjectFlowApp(QMainWindow):
         # Launcher Tab" above; internal attribute/values unchanged)
         self._proj_default_viewer = QComboBox()
         # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Code, Time);
-        # "help" isn't a tab (opened via the footer's "❓ Help" button instead), so it's
+        # "help" isn't a tab (opened via the title bar's "❓ Help" button instead), so it's
         # appended last. Unlike pdf/image, there's no dedicated "Code File" field in this
         # form yet — pinning a specific file for "code" is done via the viewer's own 📌
         # (see Code Editor in CLAUDE.md); picking "code" here with no code_file set just
@@ -7474,12 +7552,10 @@ function filterAliases(q) {{
         # Edit toolbar on far right — buttons always use the same style
         _in_edit = getattr(self, 'edit_mode', False)
 
-        # The Edit Project/Save button — the only top-right title-bar button now (Project
-        # Details/Scan Docs/path-mapping all moved into the Settings viewer itself, see
-        # _build_settings_form(); the Layout toggle moved there earlier too). Styled like
-        # the footer buttons (New Project, Settings, etc: bg_button + a visible border)
-        # rather than the old green edit-toolbar style, with a border specifically so it
-        # reads as distinct from the plain app background instead of blending into it.
+        # Top-right title-bar buttons (Help, then Edit Project/Save). Styled like the footer
+        # buttons (New Project, Settings, etc: bg_button + a visible border) rather than the
+        # old green edit-toolbar style, with a border specifically so they read as distinct
+        # from the plain app background instead of blending into it.
         _topright_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
@@ -7501,7 +7577,21 @@ function filterAliases(q) {{
             }}
         """
 
-        self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  ✏️  Edit Project")
+        # Help — moved here from the footer (2026-09-03): reference material for the whole
+        # app, not a per-project action, so it reads better as a fixed top-right anchor next
+        # to Edit Project than mixed in among the footer's per-project action buttons.
+        help_btn = QPushButton("  Help")
+        help_btn.setIcon(self._help_icon())
+        help_btn.setIconSize(QSize(16, 16))
+        help_btn.setToolTip("Introduction, interface guide, integrations, settings & examples")
+        help_btn.setStyleSheet(_topright_btn_style)
+        help_btn.clicked.connect(lambda: self.switch_to_viewer_mode("help"))
+        title_bar.addWidget(help_btn)
+
+        self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  Edit Project")
+        if not _in_edit:
+            self.edit_project_btn.setIcon(self._edit_icon())
+            self.edit_project_btn.setIconSize(QSize(16, 16))
         self.edit_project_btn.setCheckable(True)
         self.edit_project_btn.setChecked(_in_edit)
         self.edit_project_btn.setToolTip("Save and exit edit mode" if _in_edit else "Edit project shortcuts, launchers, and settings")
@@ -9396,10 +9486,12 @@ function filterAliases(q) {{
                     # further down in this method) so switching "what the launcher column
                     # shows" feels the same as switching viewers. Standard layout is untouched
                     # (see the "☰ Group" button further below, still built there). Always shown
-                    # (even in edit mode) so Resources — real, editable categories — stays
-                    # reachable/switchable while editing; switching to Docs/Files/Apps while
-                    # editing still falls back to today's raw category list (see the
-                    # focus_launcher_tab_active dispatch above), unchanged for now.
+                    # (even in edit mode) so Docs/Resources — both real, editable categories —
+                    # stay reachable/switchable while editing (see the focus_launcher_tab_active
+                    # dispatch above). Files/Apps have nothing meaningful to manage while
+                    # editing, so _switch_launcher_tab() itself blocks switching to either with
+                    # an explanatory message rather than silently falling back to the raw
+                    # category list, which used to look like the click did nothing.
                     if self.layout_mode == "focus":
                         # Blue (tab_launcher_resting/active/bg_category_hover) rather than
                         # the wide-viewer tab row's green — matches the category header bars
@@ -10816,10 +10908,10 @@ function filterAliases(q) {{
                 settings_scroll.setWidget(self.settings_form)
                 settings_container_layout.addWidget(settings_scroll, 1)
 
-                # Help viewer container — combines README + Launcher Examples as two HTML tabs
-                # in a single page (see _build_help_html). Lives outside the normal project-viewer
-                # tab row (accessed via the footer's "❓ Help" button instead) since it's reference
-                # material, not something tied to a specific project.
+                # Help viewer container — an assembled multi-tab page built from the help/
+                # folder (see _build_help_html). Lives outside the normal project-viewer tab
+                # row (accessed via the title bar's "❓ Help" button instead) since it's
+                # reference material, not something tied to a specific project.
                 self.help_container = QWidget()
                 help_container_layout = QVBoxLayout(self.help_container)
                 help_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -10830,6 +10922,14 @@ function filterAliases(q) {{
                 # QWebEngineView (not QTextBrowser) so the combined page's CSS-only tab
                 # switching (:checked ~ sibling selectors) actually works.
                 self.help_browser = QWebEngineView()
+                # ExternalLinkPage so the reference links inside Help (citations, upstream
+                # docs) open in the system browser instead of navigating this reference
+                # page away or spawning a Web-viewer tab — see that class's docstring.
+                # defaultProfile() unchanged from before (Help content has no
+                # cookie-persistence need). Rebuilt fresh every build_main_content() call
+                # like the rest of this container, so no detach/readd concern here.
+                self.help_browser.setPage(ExternalLinkPage(QWebEngineProfile.defaultProfile(), self.help_browser, self._open_url_externally))
+                self._relabel_external_link_actions(self.help_browser.page())
                 self._enable_web_fullscreen_support(self.help_browser)
                 self.help_browser.setStyleSheet(f"""
                     QWebEngineView {{
@@ -11480,16 +11580,6 @@ function filterAliases(q) {{
             aliases_btn.setToolTip("Open Aliases project")
             aliases_btn.clicked.connect(self.open_aliases_project)
             footer_layout.addWidget(aliases_btn)
-
-        # Help button — README + Launcher Examples (see _build_help_html). Lives here rather
-        # than in the viewer tab row since it's app reference material, not a per-project
-        # viewer, and was feeling out of place next to Web/PDF/Image/Terminal.
-        help_btn = QPushButton("❓ Help")
-        help_btn.setMinimumHeight(30)
-        help_btn.setStyleSheet(footer_btn_style)
-        help_btn.setToolTip("Introduction, interface guide, integrations, settings & examples")
-        help_btn.clicked.connect(lambda: self.switch_to_viewer_mode("help"))
-        footer_layout.addWidget(help_btn)
 
         # New Project button
         new_project_btn = QPushButton("📄 New Project")
@@ -12740,7 +12830,20 @@ function filterAliases(q) {{
     def _switch_launcher_tab(self, tab_name):
         """Switch the Focus-layout launcher column's active tab (Files/Docs/Resources/Apps).
         Display-only, like _toggle_group_by_type — never rewrites the project's category
-        structure, just which pooled/panel view build_main_content renders for column 0."""
+        structure, just which pooled/panel view build_main_content renders for column 0.
+
+        Files/Apps are blocked while editing rather than allowed to switch: build_main_content
+        has nothing meaningful to render for either while self.edit_mode is on (see the
+        focus_launcher_tab_active dispatch there), so switching to them used to just silently
+        keep showing the same raw category list with no visible change — confusing, easy to
+        read as "the tab is broken" rather than "there's nothing to show here yet"."""
+        if self.edit_mode and tab_name in ("files", "apps"):
+            QMessageBox.information(
+                self, "Not Available While Editing",
+                f"The {tab_name.title()} tab isn't available while editing.\n\n"
+                "Save your changes (💾 Save) or exit edit mode first."
+            )
+            return
         if tab_name == self.active_launcher_tab:
             return
         self.active_launcher_tab = tab_name
@@ -13777,7 +13880,7 @@ function filterAliases(q) {{
         """Get the viewer cycle order: default -> folder -> remaining viewers.
 
         Help is deliberately not part of this cycle — it's reference material accessed via the
-        footer's "❓ Help" button, not a per-project viewer, since combining it with Examples
+        title bar's "❓ Help" button, not a per-project viewer, since combining it with Examples
         into one page (see _build_help_html)."""
         default_viewer = getattr(self, 'config_column2_default', None) or "pdf"
         # Build cycle: default first, then folder (if not default), then remaining viewers
@@ -14136,6 +14239,34 @@ function filterAliases(q) {{
         with its destination URL and becomes a genuine new Web tab, switching focus to
         it immediately (matching what "open in new tab" does in a real browser)."""
         self._open_web_tab("url", url)
+
+    def _relabel_external_link_actions(self, page):
+        """Cosmetic only: rename the stock "Open link in new tab/window" context-menu
+        entries to "Open in external browser" on a page whose ExternalLinkPage always
+        sends those links to the system browser regardless of which one is picked — so
+        the menu wording matches what actually happens. QWebEnginePage builds its native
+        context menu directly from these named QAction objects, so retexting them here is
+        enough; no custom contextMenuEvent/QMenu needed. Best-effort: if a given WebAction
+        doesn't exist on this PyQt6/Qt build, it's silently skipped rather than raising —
+        exactly the "otherwise it can just say as it is" fallback this was scoped to."""
+        for action_name in ("OpenLinkInNewTab", "OpenLinkInNewWindow", "OpenLinkInNewBackgroundTab"):
+            web_action = getattr(QWebEnginePage.WebAction, action_name, None)
+            if web_action is None:
+                continue
+            try:
+                page.action(web_action).setText("Open in external browser")
+            except Exception:
+                pass
+
+    def _open_url_externally(self, url):
+        """Callback passed to ExternalLinkPage (Help/Notes/Editor webviews) — every link
+        clicked in one of those surfaces, however triggered, lands here and opens in the
+        system's default browser rather than navigating the surface away or spawning a
+        new tab in this app's own Web viewer. Same xdg-open convention as
+        open_webview_in_external_browser()/open_pdf_in_external_viewer()."""
+        url = url.toString() if hasattr(url, "toString") else url
+        subprocess.Popen(['xdg-open', url], start_new_session=True)
+        self.set_status(f"Opened in external browser: {url}")
 
     def _open_web_tab(self, kind, value):
         """Open a new Web tab and make it active — always-new-tab policy, mirroring
@@ -15586,6 +15717,31 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
+    def _help_icon(self):
+        """Plain single-color 'help' (question mark in a circle) icon for the title-bar Help
+        button — replaces the bare ❓ emoji/dingbat, which renders inconsistently across
+        systems and doesn't match the flat monochrome icon language used elsewhere (see
+        _open_icon()). Same theme-matched light/dark PNG pair convention."""
+        cache_attr = f'_help_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "help-circle-dark.png" if self.current_theme == "dark" else "help-circle-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
+    def _edit_icon(self):
+        """Plain single-color outline-pencil icon for the title-bar Edit Project button —
+        replaces the ✏️ emoji pencil, same theme-matched light/dark PNG pair convention as
+        _help_icon()/_open_icon()."""
+        cache_attr = f'_edit_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "edit-pencil-dark.png" if self.current_theme == "dark" else "edit-pencil-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
     def _house_icon(self, white=False):
         """House-outline icon for the Notes tab strip's pinned "jump to project note" button
         — replaces the bare 🏠 emoji, matching the flat monochrome icon language used
@@ -16403,9 +16559,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 }
             """
         else:
-            page_bg = "rgb(229, 231, 237)"
-            paper_rgb = "240, 240, 240"    # matches documentary.css --paper base
-            ink = "#263241"
+            # Matches the Help viewer's light palette (bg_help/bg_example_card/fg_primary in
+            # themes.py) — a user preference (prefers Help's light look over the original
+            # Documentary-theme light colors) confirmed for just this page/paper/ink trio.
+            page_bg = "#f5f5f5"
+            paper_rgb = "255, 255, 255"    # matches Help's light bg_example_card
+            ink = "#333333"                # matches Help's light fg_primary
             shadow = "0 18px 46px rgba(57, 67, 84, 0.12)"
             border = "1px solid rgba(255, 255, 255, 0.42)"
             muya_root_vars = ""
@@ -18354,9 +18513,26 @@ Project created: {date_str}
                 f'#{tab_id}:checked ~ .content-scroll #panel-{i} {{ display: block; }}'
             )
 
+        # Dark mode only: page/card/text use the same literal colors as the Notes paper
+        # theme's dark palette (_notes_paper_css()) instead of the theme-derived
+        # bg_help/bg_example_card/fg_primary below — a user preference (prefers Notes' dark
+        # look over Help's own) confirmed for just this trio, not the rest of Help's dark
+        # palette (headings/code/links/badges below are untouched, still theme-derived).
+        # Deliberately NOT done by editing bg_help/fg_primary/bg_example_card in themes.py
+        # itself, since fg_primary in particular is a global key used app-wide — changing it
+        # there would recolor text throughout the whole app's dark mode, not just Help.
+        if self.current_theme == "dark":
+            _pf_bg = "#141414"
+            _pf_fg = "#DEDEDE"
+            _pf_bg_card = "#363B40"
+        else:
+            _pf_bg = self.t('bg_help')
+            _pf_fg = self.t('fg_primary')
+            _pf_bg_card = self.t('bg_example_card')
+
         replacements = {
-            '__PF_BG__': self.t('bg_help'),
-            '__PF_FG__': self.t('fg_primary'),
+            '__PF_BG__': _pf_bg,
+            '__PF_FG__': _pf_fg,
             '__PF_FG_SECONDARY__': self.t('fg_secondary'),
             '__PF_FG_H1__': self.t('fg_help_h1'),
             '__PF_FG_H2__': self.t('fg_help_h2'),
@@ -18368,7 +18544,7 @@ Project created: {date_str}
             '__PF_FG_CODE__': self.t('fg_code'),
             '__PF_BG_CODE_INLINE__': self.t('bg_code_inline'),
             '__PF_FG_LINK__': self.t('fg_link'),
-            '__PF_BG_CARD__': self.t('bg_example_card'),
+            '__PF_BG_CARD__': _pf_bg_card,
             '__PF_BORDER_CARD__': self.t('border_example_card'),
             '__PF_BADGE_BUILTIN__': self.t('bg_example_type_builtin'),
             '__PF_BADGE_SIMPLE__': self.t('bg_example_type_simple'),

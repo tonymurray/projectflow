@@ -1,4 +1,4 @@
-<div class="helpHeader"><img src="../assets/icon.svg" alt="Project Flow logo"><h1>Use Cases</h1></div>
+<div class="helpHeader"><img src="../assets/icon.svg" alt="Project Flow logo"><h1>Example</h1></div>
 <p class="lede">Worked examples of setting up a real project end to end.</p>
 
 <h2>Personal Website</h2>
@@ -15,24 +15,31 @@
   project pointed at that folder and immediately opens the <strong>🚀 Kickstart</strong> dialog.
 </p>
 
-<h3>2. Let Kickstart do the boring part</h3>
+<h3>2. Using Kickstart</h3>
 <p>
-  If the site has a <code>package.json</code>, Kickstart detects it and offers <code>npm install</code>,
-  <code>npm start</code>/<code>dev</code>, and <code>npm build</code> shortcuts, plus a combined
-  <strong>Directory Dev</strong> launcher (file manager + terminal + editor in one click). It also scans for
+  Kickstart auto-scans the directory for typical files.  It scans for
   a <code>README.md</code> and offers a project alias — check the box, name it something like
   <code>site</code>, and <code>site</code> becomes a real shell command that <code>cd</code>s straight into
   the folder from any terminal, once you've sourced the generated aliases file. Review what's checked and
   click Apply — nothing is written until then.
+  <br><strong>Advanced:</strong> If the site has a <code>package.json</code>, Kickstart detects it and offers <code>npm install</code>,
+  <code>npm start</code>/<code>dev</code>, and <code>npm build</code> shortcuts, plus a combined
+  <strong>Directory Dev</strong> launcher (file manager + terminal + editor in one click).
 </p>
 
-<h3>3. Add what Kickstart couldn't know about</h3>
+<h3>2a. Kickstart dialog example</h3>
+<img src="images/kickstart_example.png" class="helpImg helpImgKickstarter" alt="Screengrab showing Kickstarter screen">
+
+<h3>3. Manually add your own launchers</h3>
 <p>Use <strong>+ Add</strong> or a category's own "+" to add things specific to this site:</p>
 <ul>
-  <li>A <strong>Resources</strong> entry for the live site URL (<code>app: firefox</code>) and the hosting provider's dashboard</li>
-  <li>An <strong>alias</strong> launcher for a deploy command, e.g. <code>["Deploy", "deploy ~/projects/personal-site && ./deploy.sh", "alias"]</code></li>
+  <li>A <strong>Resources</strong> entry for the live site URL (<code>app: browser</code>) and for example the hosting provider's dashboard</li>
+  <li>An <strong>alias</strong> launcher for a deploy command, e.g. <code>["Deploy", "deploy cd ~/projects/personal-site && ./deploy.sh", "alias"]</code></li>
   <li>A <strong>tail_log</strong> entry if the host writes an error log you check when something breaks</li>
 </ul>
+
+
+
 
 <h3>4. Pin what you look at most</h3>
 <p>
@@ -42,17 +49,13 @@
   you actually work in first.
 </p>
 
-<h3>5. Keep running notes</h3>
+<h3>5. Keep project notes</h3>
 <p>
-  Use the Notes panel as a running list: design ideas, a content TODO, credentials reminders (not
-  passwords!), or a changelog of what you last deployed and when. It autosaves as you type — nothing to
-  remember to save.
+  Use the Notes panel as a running list: design ideas, a content TODO, or a changelog of what you last deployed and when. It autosaves as you type, or you can manually save.
 </p>
 
-<h2>The same pattern applies elsewhere</h2>
-<p>
-  This isn't specific to code — the same shape (a folder or set of links, a few launcher categories, an
-  alias for the common command, running notes) works just as well for a WordPress client site, a quarterly
-  admin task like filing a VAT return, a backup routine, or a hobby you're learning. See the Introduction
-  tab for the philosophy behind treating all of these as "projects" the same way.
-</p>
+<h3>6. The Finished Project</h3>
+<p>The resulting project displayed in ProjectFlow, with its example note:</p>
+<img src="images/personal_website.png" class="helpImg helpImgResult" alt="Screengrab showing Projectflow Wesbite Example Project">
+
+
