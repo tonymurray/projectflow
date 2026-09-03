@@ -1826,8 +1826,12 @@ class ProjectFlowApp(QMainWindow):
         self._path_mappings_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._path_mappings_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._path_mappings_table.setAlternatingRowColors(True)
-        self._path_mappings_table.setMinimumHeight(90)
-        self._path_mappings_table.setMaximumHeight(140)
+        # Fixed (not the QTableWidget default Expanding) vertical size policy, height set by
+        # _update_path_mappings_table_height() below — otherwise the table stretches to fill
+        # whatever extra vertical space the surrounding QFormLayout row happens to give it,
+        # leaving a large blank strip inside its own border below the last real row that the
+        # Add/Remove buttons then sit directly under, reading as if they overlapped the table.
+        self._path_mappings_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._path_mappings_table.setStyleSheet(f"""
             QTableWidget {{
                 background-color: {self.t('bg_secondary')};
@@ -1855,6 +1859,7 @@ class ProjectFlowApp(QMainWindow):
             self._path_mappings_table.insertRow(row)
             self._path_mappings_table.setItem(row, 0, QTableWidgetItem(m.get('from', '')))
             self._path_mappings_table.setItem(row, 1, QTableWidgetItem(m.get('to', '')))
+        self._update_path_mappings_table_height()
         mappings_outer.addWidget(self._path_mappings_table)
 
         mappings_btn_layout = QHBoxLayout()
@@ -1994,8 +1999,10 @@ class ProjectFlowApp(QMainWindow):
         )
         layout.addRow(fm_label, self._settings_file_manager)
 
-        # Console Backend
-        console_backend_label = QLabel("Console Backend:")
+        # Terminal Backend (setting key stays "console_backend" — internal name unchanged,
+        # same "label reads differently, key/attribute stays" precedent as Console Path ->
+        # Terminal Path in Project Settings)
+        console_backend_label = QLabel("Terminal Backend:")
         console_backend_label.setStyleSheet(label_style)
         self._settings_console_backend = QComboBox()
         self._settings_console_backend.addItem("Jupyter qtconsole (default)", "qtconsole")
@@ -2011,6 +2018,27 @@ class ProjectFlowApp(QMainWindow):
             "bound to 127.0.0.1 only."
         )
         layout.addRow(console_backend_label, self._settings_console_backend)
+
+        # Live "ttyd not found" warning — catches the mismatch right when it's picked,
+        # rather than only discovering it later as an unexplained silent fallback to
+        # qtconsole in the actual Terminal tab (see the matching banner there,
+        # build_main_content()'s console-container qtconsole branch).
+        self._settings_ttyd_missing_label = QLabel(
+            "⚠ 'ttyd' binary not found on PATH — this will silently fall back to qtconsole "
+            "until it's installed."
+        )
+        self._settings_ttyd_missing_label.setWordWrap(True)
+        self._settings_ttyd_missing_label.setStyleSheet(
+            f"color: {self.t('status_warning')}; font-size: 11px; font-weight: bold;"
+        )
+
+        def _update_ttyd_missing_warning():
+            needs_ttyd = self._settings_console_backend.currentData() == "ttyd"
+            self._settings_ttyd_missing_label.setVisible(needs_ttyd and not shutil.which("ttyd"))
+
+        self._settings_console_backend.currentIndexChanged.connect(lambda _: _update_ttyd_missing_warning())
+        _update_ttyd_missing_warning()
+        layout.addRow("", self._settings_ttyd_missing_label)
 
         # File Manager Tabs
         fm_tabs_label = QLabel("File Manager Tabs:")
@@ -4485,6 +4513,21 @@ class ProjectFlowApp(QMainWindow):
         if folder_path:
             line_edit.setText(folder_path)
 
+    def _update_path_mappings_table_height(self):
+        """Fix the path-mappings table's height to its actual row count (header + rows,
+        clamped to a sensible [60, 140] range — beyond that it scrolls instead of growing
+        unbounded). Paired with the Fixed vertical size policy set at construction; must be
+        re-called whenever rowCount() changes (_add_path_mapping_row/_remove_path_mapping_row)
+        so the table never reserves stale blank space the Add/Remove buttons could sit
+        against. See that size-policy comment for why this exists."""
+        if not hasattr(self, '_path_mappings_table'):
+            return
+        table = self._path_mappings_table
+        header_h = table.horizontalHeader().height()
+        row_h = table.verticalHeader().defaultSectionSize()
+        content_h = header_h + table.rowCount() * row_h + 4  # small frame/border allowance
+        table.setFixedHeight(min(max(content_h, 60), 140))
+
     def _add_path_mapping_row(self):
         """Add an empty row to the path mappings table."""
         if not hasattr(self, '_path_mappings_table'):
@@ -4494,6 +4537,7 @@ class ProjectFlowApp(QMainWindow):
         self._path_mappings_table.setItem(row, 0, QTableWidgetItem("~/"))
         self._path_mappings_table.setItem(row, 1, QTableWidgetItem("~/"))
         self._path_mappings_table.editItem(self._path_mappings_table.item(row, 0))
+        self._update_path_mappings_table_height()
 
     def _remove_path_mapping_row(self):
         """Remove the selected row from the path mappings table."""
@@ -4502,6 +4546,7 @@ class ProjectFlowApp(QMainWindow):
         selected = self._path_mappings_table.selectedItems()
         if selected:
             self._path_mappings_table.removeRow(selected[0].row())
+            self._update_path_mappings_table_height()
 
     def _apply_settings(self, dialog, save_project_settings=False):
         """Apply settings without closing the dialog"""
@@ -11016,6 +11061,31 @@ function filterAliases(q) {{
                     self.console_available = True
                 else:
                     self._close_all_terminal_tabs()  # backend switched away from ttyd — don't leak any of them
+
+                    # Explicit user choice ("ttyd", not "auto") but the binary isn't on PATH —
+                    # resolve_console_backend() silently falls back to qtconsole with nothing
+                    # else anywhere indicating why, which read as "the real terminal setting
+                    # just doesn't work." A persistent banner here (not the transient
+                    # status_label, which every unrelated refresh would immediately overwrite)
+                    # stays visible for as long as this tab is open. "auto" deliberately gets
+                    # no banner — silent graceful degradation is exactly what "auto" means.
+                    if self.settings.get("console_backend", "qtconsole") == "ttyd" and not shutil.which("ttyd"):
+                        ttyd_missing_label = QLabel(
+                            "⚠ Real terminal (ttyd) is selected in Settings, but the 'ttyd' "
+                            "binary wasn't found on PATH — showing the Jupyter console below "
+                            "instead. Install ttyd, then reopen this tab (Settings → "
+                            "Applications → Terminal Backend)."
+                        )
+                        ttyd_missing_label.setWordWrap(True)
+                        ttyd_missing_label.setStyleSheet(f"""
+                            background-color: {self.t('bg_warning')};
+                            color: #ffffff;
+                            padding: 8px 12px;
+                            border-radius: 4px;
+                            font-weight: bold;
+                        """)
+                        console_container_layout.addWidget(ttyd_missing_label)
+
                     try:
                         from qtconsole.rich_jupyter_widget import RichJupyterWidget
                         from qtconsole.inprocess import QtInProcessKernelManager
