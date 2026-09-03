@@ -1752,6 +1752,21 @@ class ProjectFlowApp(QMainWindow):
         notes_layout.addWidget(notes_browse)
         layout.addRow(notes_label, notes_layout)
 
+        # Code Editor: extra extensions to route into the internal editor
+        code_ext_label = QLabel("Code Editor Extensions:")
+        code_ext_label.setStyleSheet(label_style)
+        self._settings_code_editor_extensions = QLineEdit()
+        self._settings_code_editor_extensions.setText(self.settings.get("code_editor_extensions", ""))
+        self._settings_code_editor_extensions.setPlaceholderText("e.g. vue,rs,go — extends the built-in js/py/html/css/php/json/txt/nix set")
+        self._settings_code_editor_extensions.setStyleSheet(input_style)
+        self._settings_code_editor_extensions.setToolTip(
+            "Comma-separated file extensions (with or without the leading dot) that should\n"
+            "also open in the built-in code editor. Adds to the built-in set — doesn't replace\n"
+            "it. An extension with no CodeMirror language package still opens fine, just as\n"
+            "plain text with line numbers (same as .txt/.nix today)."
+        )
+        layout.addRow(code_ext_label, self._settings_code_editor_extensions)
+
         # Projects section visibility
         show_section_label = QLabel("Projects Section:")
         show_section_label.setStyleSheet(label_style)
@@ -4599,6 +4614,12 @@ class ProjectFlowApp(QMainWindow):
                 self.settings["notes_folder"] = notes_folder
             elif "notes_folder" in self.settings:
                 del self.settings["notes_folder"]
+
+            code_editor_extensions = self._settings_code_editor_extensions.text().strip()
+            if code_editor_extensions:
+                self.settings["code_editor_extensions"] = code_editor_extensions
+            elif "code_editor_extensions" in self.settings:
+                del self.settings["code_editor_extensions"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
             self.settings["fm_always_tabs"] = self._settings_fm_always_tabs.isChecked()
@@ -16299,7 +16320,7 @@ function filterAliases(q) {{
             # local files open in the editor, only URLs open in the web viewer.
             if ext == '.md':
                 self._open_markdown_file(path)
-            elif ext in self._CODE_ROUTE_EXTENSIONS:
+            elif ext in self._code_route_extensions():
                 self._open_code_file_in_editor(path)
             else:
                 subprocess.Popen(["xdg-open", path], start_new_session=True)
@@ -16329,7 +16350,7 @@ function filterAliases(q) {{
             self._open_markdown_file(path)
         # .html/.htm default into the code editor now (see _CODE_ROUTE_EXTENSIONS) — local
         # files open in the editor, only URLs open in the web viewer.
-        elif ext in self._CODE_ROUTE_EXTENSIONS:
+        elif ext in self._code_route_extensions():
             self._open_code_file_in_editor(path)
         else:
             subprocess.Popen(["xdg-open", path], start_new_session=True)
@@ -17133,6 +17154,23 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     # (plain text/JS-as-JSON/plain text respectively — no CodeMirror language package is
     # vendored for Nix, so .nix just gets basicSetup's plain-text-with-line-numbers handling).
     _CODE_ROUTE_EXTENSIONS = tuple(set(_CODE_EXT_LANGUAGE) | {'.txt', '.nix'})
+
+    def _code_route_extensions(self):
+        """_CODE_ROUTE_EXTENSIONS plus whatever the user's added via the
+        `code_editor_extensions` setting (Settings -> Advanced) — a comma-separated list
+        like "vue,rs,go", letting someone route an unusual format into the editor without a
+        code change. Extends rather than replaces the built-in set, same way custom launch
+        handlers extend (never remove) the built-in ones. An extra extension with no entry
+        in _CODE_EXT_LANGUAGE still opens fine — basicSetup falls back to plain text with
+        line numbers for any unrecognized language, same as .txt/.nix today."""
+        extra = self.settings.get('code_editor_extensions', '')
+        if not extra:
+            return self._CODE_ROUTE_EXTENSIONS
+        extras = {
+            ('.' + e.strip().lstrip('.').lower())
+            for e in extra.split(',') if e.strip()
+        }
+        return tuple(set(self._CODE_ROUTE_EXTENSIONS) | extras)
 
     # Cap on simultaneously-remembered Web tabs (see WebTabState) — oldest tab is closed
     # to make room once reached (_open_web_tab()). Since only one real QWebEngineView is
@@ -18912,7 +18950,7 @@ Project created: {date_str}
                 # (and the explicit firefox/chrome-app case above) open in the web viewer.
                 # Use the "👁 Rendered"/"</> Edit Source" toggle to switch a given file
                 # between the two views.
-                if ext in self._CODE_ROUTE_EXTENSIONS and self._is_local_path(path):
+                if ext in self._code_route_extensions() and self._is_local_path(path):
                     self._open_code_file_in_editor(expanded_path)
                     return
                 if (app == "tail_log" or (ext == ".log" and self._is_local_path(path))) and self.resolve_console_backend() == "ttyd":
