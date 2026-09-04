@@ -1,10 +1,14 @@
 {
+  "default": {
+    "icon": "\u2699\ufe0f",
+    "name": "System Default (xdg-open)"
+  },
   "alias": {
     "icon": "utilities/alias.svg",
     "name": "Shell Alias"
   },
   "run": {
-    "icon": "▶️$_",
+    "icon": "\u25b6\ufe0f$_",
     "name": "Run Script"
   },
   "browser": {

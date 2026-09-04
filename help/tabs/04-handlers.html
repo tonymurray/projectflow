@@ -4,10 +4,12 @@
   Every entry in a project's launcher list uses the format
   <code>["Display Name", "path/arguments", "handler"]</code>. This page shows what each handler expects, and how to create a custom handler.
 </p>
+<p><a href="#example_recipe">Click here for an example of adding your own custom handler</a></p>
 <h2>Illustration</h2>
 <img src="images/launcher_anatomy.png" class="helpImg helpImgLauncher" alt="Illustration showing the launcher">
 
 <p>Button -> ["Display Name", "path/arguments", "handler"] -> Viewer </p>
+
 
 
 
@@ -261,3 +263,157 @@ fi</div><br><br>
 }</div>
   <span class="type-badge type-custom">Custom</span>
 </div>
+
+
+<h2 id="example_recipe">Example - adding a custom handler for Email links</h2>
+
+<h3>Challenge - task</h3>
+<p>It is sometimes time-consuming to find an exact email message related to a problem. It would be useful to be able to add a ProjectFlow launcher to open your email program with the message displayed.</p>
+  
+<h3>Approach</h3>
+<p>Web search shows that both online Gmail and Thunderbird can be configured to point to particular emails based on their unique MessageID</p>
+
+<p>Thunderbird works as-is with instructions below, Gmail requires a custom handler in Settings</p>
+
+<h2>Thunderbird</h2>
+<p>Option 1 - built in support for mid protocol</p>
+<p>Thunderbird has built in support for the Message ID protocol:</p>
+<p>You can imediately test linking to a specific email by:</p>
+<ol>
+  <li>In Thunderbird, select a message, in the message pane: choose 'more' (top-right), 'copy message link' (then close the application) </li>
+  <li>In ProjectFlow, add a new launcher, Enter Title "Test Email", path: [the message link, copied previously: mid:010101xxxx@example.com]], and application 'thunderbird'</li>
+  <li>Save and test that the link opens the email in Thunderbird</li>
+</ol>
+
+<h2>Gmail — worked example of adding your own custom handler</h2>
+<p>Gmail has no <code>mid:</code> protocol registration, but it does support a search operator,
+  <code>rfc822msgid:</code>, that jumps straight to a message by its Message-ID — so the same
+  <code>mid:</code> link you copied from Thunderbird above can drive a second launcher, this time
+  opening the message in Gmail instead. Unlike Thunderbird's built-in <code>mid:</code> support,
+  no application already understands this, so there's no ready-made handler for it — a good excuse
+  to build a <strong>custom handler</strong> from scratch and see how the pieces fit together.</p>
+
+<p>The handler needs to do two small things a built-in handler can't: strip the leading
+  <code>mid:</code> prefix off the launcher's path, and build a Gmail search URL around what's
+  left. A <code>shell</code>-type custom handler can do both in one command.</p>
+
+<p>Open <strong>Settings → Launch Handlers → Add Handler</strong> and fill in the fields exactly
+  as below:</p>
+
+<img src="images/custom_launcher.png" class="helpImg helpImgDefault" alt="Add Handler dialog filled in for the gmail_msgid custom handler">
+<div class="caption">The Add Handler dialog, filled in for gmail_msgid</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Handler Name</span></div>
+  <div class="example-code">gmail_msgid</div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Command</span></div>
+  <div class="description">Type this exactly as shown — plain <code>"</code> characters, not
+    escaped. (The dialog's Command field stores whatever you type as a plain string; escaping is
+    only something a raw <code>launch_handlers_custom.json</code> file needs, not this box.)</div>
+  <div class="example-code">xdg-open "https://mail.google.com/mail/u/0/#search/rfc822msgid:$(printf '%s' '{path}' | sed 's/^mid://')"</div>
+</div>
+
+<h3>Explanation of the code</h3>
+<p>xdg-open: A desktop standard command to open the default application (in this case a web link to Gmail) in your default browser</p>
+<p>The final URL is [Gmail search] + the message ID, with the following modifications:</p>
+<ul>
+  <li>Start with the Gmail search URL: https://mail.google.com/mail/u/0/#search</li>
+  <li>Add the Gmail-specific search string: /rfc822msgid:</li>
+  <li>{path} is the message ID copied from Gmail</li>
+  <li>Ensure the message ID has the mid: part removed (sed 's/^mid://')*</li>
+  <li>Re-add it to the URL</li>
+</ul>
+<p class="helpAside">*<a href="https://en.wikipedia.org/wiki/Sed" target="_blank">Click here</a> for an explanation of the SED command</p>
+
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Type</span></div>
+  <div class="example-code">shell</div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Run in terminal / Keep terminal open</span></div>
+  <div class="description">Leave both <strong>unchecked</strong>. This command just resolves a
+    URL and hands off to <code>xdg-open</code> in the background — there's nothing for a terminal
+    window to show, so checking either just makes one flash open for no reason.</div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Description</span></div>
+  <div class="example-code">Open a Gmail message by its Message-ID (mid: link)</div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Example</span></div>
+  <div class="description">Just the path portion — shown back to you as placeholder text in a
+    launcher's Path field, not a full launcher item.</div>
+  <div class="example-code">mid:010101xxxx@example.com</div>
+</div>
+
+<p>Click OK, then Apply/OK on the Settings dialog. <code>gmail_msgid</code> now shows up in the
+  Application dropdown for any launcher, tagged <span class="type-badge type-custom">Custom</span>
+  in the Launch Handlers list.</p>
+
+<h2>Add an icon</h2>
+<p>To also add an icon for our new custom launcher:</p>
+
+<p>Still in Settings, click the <strong>Icons</strong> tab, then <strong>Add Icon</strong>:</p>
+
+<img src="images/custom_icon.png" class="helpImg helpImgDefault" alt="Add Icon dialog filled in for gmail_msgid">
+<div class="caption">The Add Icon dialog, filled in for gmail_msgid</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">App Name</span></div>
+  <div class="description">Must match the handler name exactly — this is what links the icon to
+    <code>gmail_msgid</code>.</div>
+  <div class="example-code">gmail_msgid</div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Icon</span></div>
+  <div class="description">Any Unicode character(s) — not necessarily a full-color emoji. A good
+    source of plain, symbol-style glyphs is Wikipedia's
+    <a href="https://en.wikipedia.org/wiki/Dingbats_(Unicode_block)">Dingbats Unicode block</a>
+    page — copy one straight out of the table.</div>
+  <div class="example-code">✉</div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="handler-name">Display Name</span></div>
+  <div class="description">Human-readable label shown alongside the icon in the Application
+    dropdown.</div>
+  <div class="example-code">Gmail mail link</div>
+</div>
+
+<p>Click OK, then Apply/OK on the Settings dialog — <code>gmail_msgid</code> now shows its own
+  icon in the Application dropdown instead of plain text.</p>
+
+<h2>Test your new launcher</h2>
+<ol>
+  <li>Open Gmail in your browser and select an email.</li>
+  <li>With the message open, click the ⋮ (three-dot) menu and choose <strong>"Show
+    original"</strong> — second-last option in that menu.</li>
+  <li>On the page that opens, copy the <code>Message-ID</code> value from the raw headers, then
+    close that window — that's all you needed from it.</li>
+  <li>In ProjectFlow, add a new launcher: a Title of your choosing, the Message-ID you just copied
+    as the path (with or without the <code>mid:</code> prefix — <code>gmail_msgid</code>'s
+    <code>sed</code> only strips it if it's there, so either form works), and
+    <code>gmail_msgid</code> as the application.</li>
+</ol>
+
+<img src="images/add_launcher.png" class="helpImg helpImgDefault" alt="Add Launcher dialog filled in with a copied Gmail Message-ID and the gmail_msgid application">
+<div class="caption">Adding the test launcher with the copied Message-ID</div>
+
+<p>Save and test — it should open your default browser at a Gmail search that lands directly on
+  that message.</p>
+
+<p>Notes: this only finds the message if it exists in the Gmail account signed in at
+  <code>/mail/u/0/</code> (the first/primary account slot) — swap the <code>0</code> for another
+  index if you use a different account for this project. It's also a plain shell command built
+  around whatever you paste in, not hardened against unusual characters in a Message-ID — fine for
+  a personal launcher you're pointing at your own links, not something to expose to untrusted
+  input.</p>
+

@@ -1721,7 +1721,7 @@ class ProjectFlowApp(QMainWindow):
         default_app_label.setStyleSheet(label_style)
         self._settings_default_app = QComboBox()
         self._settings_default_app.setEditable(True)
-        app_keys = sorted(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else []
+        app_keys = self._all_launcher_app_names()
         self._settings_default_app.addItems([""] + app_keys)
         current_default_app = self.settings.get("default_app", "")
         idx = self._settings_default_app.findText(current_default_app)
@@ -2384,7 +2384,7 @@ class ProjectFlowApp(QMainWindow):
         # CLAUDE.md's Group-by-Type Launcher View section). Sentinel origin
         # (None, None) marks it as synthetic so the render loop skips wiring
         # edit/delete/move-bucket context menu actions onto it.
-        notes_item = [f"{self.get_project_name()} project notes", self.get_notes_file_path(), "default"]
+        notes_item = [f"{self.get_project_name()} Project Note", self.get_notes_file_path(), "default"]
         buckets['Docs'].insert(0, notes_item)
         self._group_view_origin[id(notes_item)] = (None, None)
 
@@ -3536,8 +3536,9 @@ class ProjectFlowApp(QMainWindow):
         app_combo.setEditable(True)
         app_combo.setStyleSheet(input_style)
 
-        # Populate from icon_preferences
-        app_keys = sorted(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else []
+        # Populate from icon_preferences, unioned with every actually-registered
+        # handler — see _all_launcher_app_names().
+        app_keys = self._all_launcher_app_names()
         app_combo.addItems(app_keys)
 
         if item_data:
@@ -5644,6 +5645,19 @@ StartupNotify=true
 
         # Remove .json extension and clean up
         return os.path.splitext(config_name)[0]
+
+    def _all_launcher_app_names(self):
+        """Every application/handler name that can legally go in a launcher's app
+        field — icon_preferences entries (for icon+display-name) UNIONed with every
+        actually-registered handler (built-in, simple, complex, custom), so a handler
+        with no icon entry yet (e.g. a custom handler just added via Settings →
+        Launch Handlers, before an icon is registered for it) still shows up as a
+        selectable option instead of only being usable by typing its name manually."""
+        names = set(self.APP_INFO.keys()) if hasattr(self, 'APP_INFO') else set()
+        names |= set(BUILTIN_HANDLERS.keys())
+        names |= set(getattr(self, 'launch_handlers', {}).keys())
+        names |= set(getattr(self, 'complex_handlers', {}).keys())
+        return sorted(names)
 
     def load_icon_preferences(self):
         """Load icon preferences from shared icon_preferences.json file"""
@@ -16605,10 +16619,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self._load_muya_shell(session, path, content, extra_css=extra_css, view_state=view_state)
 
     def _notes_paper_css(self):
-        """CSS for the 'paper on page' look — a Typora/Documentary-style paper card floating
+        """CSS for the 'paper on page' look — a Documentary-style paper card floating
         on a tinted page background, with a drop shadow. Used both for the Notes panel and
         the general Muya markdown-file viewer (e.g. clicking a Documentation launcher item).
-        Light mode uses the user's own Documentary Typora theme colors; dark mode uses their
+        Light mode uses a light paper-type theme color; dark mode uses the
         specified dark palette. Paper opacity is higher in Standard layout's narrower
         3-column view (90%) than in Focus layout's wider 2-column one (80%).
 
@@ -16747,7 +16761,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if not self.notes_current_label:
             return
         is_project_note = not self.notes_md_path
-        label_text = f"{self.get_project_name()} project notes" if is_project_note else os.path.basename(self.notes_md_path)
+        label_text = f"{self.get_project_name()} Project Note" if is_project_note else os.path.basename(self.notes_md_path)
         self.notes_current_label.setText(label_text)
         if getattr(self, 'notes_archive_section', None):
             self.notes_archive_section.setVisible(is_project_note)

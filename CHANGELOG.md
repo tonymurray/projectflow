@@ -2,6 +2,16 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-04
+
+### Added
+- **The Application dropdown in the Add/Edit Launcher dialog, and Settings' "Default Launcher" field, now list every registered handler** — built-in, simple, complex, and custom — not just entries in `icon_preferences.json`. Previously several complex handlers (`terminal_cmd`, `ssh_cd_npm`, `rsync_backup_id`, `rsync_backup_id_port`) and any newly-added custom handler were invisible in the dropdown until an icon was also registered for them, usable only by typing the name manually with no indication that was necessary. New `_all_launcher_app_names()` helper unions all four handler sources.
+- **`icon_preferences.json` gained a "System Default (xdg-open)" entry** for the built-in `default` handler, matching `browser`'s existing one.
+- **Help → Handlers: a full worked example of building a custom handler** — walks through creating `gmail_msgid`, a handler that opens a specific Gmail message by its Message-ID (a companion to the existing Thunderbird `mid:` example), including a plain-English explanation of the shell command, registering an icon for it, and end-to-end testing with real screenshots. Help → Introduction gained a short pointer to this section.
+
+### Changed
+- **Help → Launchers** gained a screenshot section; `help/shell.html`'s `h3` headings now use the same color as `h2` for closer visual consistency between heading levels, and gained a `.helpImgDefault` sizing class for narrower inline screenshots (used by the new Handlers walkthrough).
+
 ## 2026-09-03
 
 ### Added
