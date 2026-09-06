@@ -129,6 +129,56 @@ class DraggableColorSwatch(QPushButton):
         super().mouseReleaseEvent(event)
 
 
+class DraggableTabButton(QPushButton):
+    """A tab button that reorders within its own row via drag-and-drop, alongside its
+    normal click-to-switch behavior — same press/move-threshold/QDrag pattern as
+    DraggableColorSwatch above, parameterized by mime_type so the Launcher Tab Bar
+    (Docs/Resources/Files/Apps) and the viewer tab row (Notes/Editor/Terminal/Web/
+    PDF/Image/Time) each get their own drag scope and can never be cross-dropped
+    into each other. Below the 6px drag threshold the button's normal `clicked`
+    signal fires exactly as before — a plain click never starts a drag."""
+    LAUNCHER_TAB_MIME = "application/x-projectflow-launcher-tab"
+    VIEWER_TAB_MIME = "application/x-projectflow-viewer-tab"
+
+    def __init__(self, tab_id, mime_type, app, parent=None):
+        super().__init__(parent)
+        self.tab_id = tab_id
+        self.mime_type = mime_type
+        self.app = app
+        self._drag_start = None
+        self.setAcceptDrops(True)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or not self._drag_start:
+            return
+        if (event.pos() - self._drag_start).manhattanLength() < 6:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(self.mime_type, self.tab_id.encode())
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(self.mime_type):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        dragged = event.mimeData().data(self.mime_type).data().decode()
+        if dragged != self.tab_id:
+            self.app._reorder_tab_button(self.mime_type, dragged, self.tab_id)
+        event.acceptProposedAction()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
+
 class ConfigBarWidget(QWidget):
     """Widget that contains config buttons and handles drop events for reordering"""
 
@@ -416,6 +466,113 @@ class DragHandle(QLabel):
     def mouseReleaseEvent(self, event):
         self.drag_start_pos = None
         super().mouseReleaseEvent(event)
+
+
+class DraggableFolderTree(QTreeWidget):
+    """QTreeWidget used by the folder-browsing panels — drag source and drop target for
+    real filesystem paths. Uses QMimeData.setUrls() (the standard Qt idiom for file
+    drag-and-drop, unlike this file's other Draggable* classes which use plain text or a
+    custom MIME format for internal-only reordering) so dragging a file out of ProjectFlow
+    into a real file manager works for free, and dropping from an external file manager
+    into ProjectFlow works the same way a same-app drag does.
+
+    Takes an explicit `app` reference (same convention as DraggableColorSwatch/
+    CategoryDropZone/FolderBrowserDelegate) rather than relying on self.window(), since
+    these widgets are freshly (re)created on every build_main_content() rebuild. Also takes
+    `side` ("right", the default, for the main Folder viewer, or "left" for the launcher-column
+    Quick File Browser Panel) so a drop onto empty space falls back to THIS widget's own
+    currently-browsed folder rather than always the main viewer's — the two panels can browse
+    independent folders (see _populate_folder_side()), so this distinction is what actually
+    makes a cross-panel drag land in the right place."""
+
+    def __init__(self, app, parent=None, side="right"):
+        super().__init__(parent)
+        self.app = app
+        self.side = side
+
+    def mimeData(self, items):
+        md = QMimeData()
+        urls = [QUrl.fromLocalFile(i.data(0, Qt.ItemDataRole.UserRole))
+                for i in items if i.data(0, Qt.ItemDataRole.UserRole)]
+        md.setUrls(urls)
+        return md
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            super().dropEvent(event)
+            return
+        item = self.itemAt(event.position().toPoint())
+        is_dir_item = bool(item) and item.data(0, Qt.ItemDataRole.UserRole + 1) == "dir"
+        own_path = self.app.launcher_folder_current_path if self.side == "left" else self.app.folder_current_path
+        dest_dir = item.data(0, Qt.ItemDataRole.UserRole) if is_dir_item else own_path
+        # QDropEvent has no globalPosition() (unlike QMouseEvent/QDragMoveEvent) - only the
+        # widget-local position() - confirmed via a real crash (AttributeError) the first time
+        # a drop actually completed. Map it to global manually instead.
+        global_pos = self.mapToGlobal(event.position().toPoint())
+        event.acceptProposedAction()
+        if dest_dir:
+            # Called synchronously, not deferred - see _show_folder_drop_menu()'s own docstring
+            # for why (Wayland popup-grab needs to stay tied to this same input event).
+            self.app._show_folder_drop_menu(urls, dest_dir, global_pos)
+
+
+class DraggableFolderList(QListWidget):
+    """QListWidget (icon-grid view) counterpart to DraggableFolderTree — identical
+    behavior, just reading item data without the tree's column-0 argument."""
+
+    def __init__(self, app, parent=None, side="right"):
+        super().__init__(parent)
+        self.app = app
+        self.side = side
+
+    def mimeData(self, items):
+        md = QMimeData()
+        urls = [QUrl.fromLocalFile(i.data(Qt.ItemDataRole.UserRole))
+                for i in items if i.data(Qt.ItemDataRole.UserRole)]
+        md.setUrls(urls)
+        return md
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            super().dropEvent(event)
+            return
+        item = self.itemAt(event.position().toPoint())
+        is_dir_item = bool(item) and item.data(Qt.ItemDataRole.UserRole + 1) == "dir"
+        own_path = self.app.launcher_folder_current_path if self.side == "left" else self.app.folder_current_path
+        dest_dir = item.data(Qt.ItemDataRole.UserRole) if is_dir_item else own_path
+        # See DraggableFolderTree.dropEvent() - QDropEvent has no globalPosition().
+        global_pos = self.mapToGlobal(event.position().toPoint())
+        event.acceptProposedAction()
+        if dest_dir:
+            # See DraggableFolderTree.dropEvent() / _show_folder_drop_menu() for why this is
+            # called synchronously, not deferred.
+            self.app._show_folder_drop_menu(urls, dest_dir, global_pos)
 
 
 class ViewerResizeHandle(QLabel):
@@ -1170,8 +1327,9 @@ class ProjectFlowApp(QMainWindow):
         self.folder_view_mode = self.settings.get("folder_view_mode", "tree")
 
         # Folder browser filter text (Dolphin-style filter bar) — session-only, shared across
-        # every folder-browsing surface (main viewer + launcher panel) since they always show
-        # the same self.folder_current_path in sync.
+        # both folder-browsing surfaces even though (as of the independent-navigation split
+        # below) they can now browse different folders — it's just a display filter, not
+        # navigation, so sharing it is fine and was an explicit decision, not an oversight.
         self.folder_filter_text = ""
 
         # True when self.folder_current_path was reached via the path-mapping fallback (see
@@ -1179,6 +1337,18 @@ class ProjectFlowApp(QMainWindow):
         # label styling in populate_folder_browser() so it's visually obvious you're looking
         # at a mapped/substitute folder, not the one actually saved in the project.
         self.folder_via_mapping = False
+
+        # Independent navigation state for the launcher-column Quick File Browser Panel
+        # ("left"), mirroring self.folder_current_path/self.folder_via_mapping/
+        # self._folder_raw_entries/self._folder_scan_error (the main Folder viewer, "right").
+        # Split so the two panels can browse different folders at once — previously both
+        # sides shared the single self.folder_current_path, which made a genuine drag-and-drop
+        # move between them meaningless (always the same folder on both sides). See
+        # _populate_folder_side()/docs/plan_folder-panel-drag-drop.md.
+        self.launcher_folder_current_path = None
+        self.launcher_folder_via_mapping = False
+        self._launcher_folder_raw_entries = None
+        self._launcher_folder_scan_error = None
 
         # MIGRATION (temporary): rename archive files to {name}-archive.md format
         self._migrate_archive_filenames()
@@ -1418,6 +1588,8 @@ class ProjectFlowApp(QMainWindow):
                     "swap_launcher_viewer": False,  # Swap launcher and viewer column positions
                     "fm_always_tabs": False,  # Open file manager with home tab + target tab
                     "color_order": [],  # user-ordered list of color hex strings for swatch priority
+                    "launcher_tab_order": [],  # user-ordered list of launcher tab ids (docs/resources/files/apps)
+                    "viewer_tab_order": [],  # user-ordered list of viewer tab ids (notes/code/console/webview/pdf/image/time)
                     "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
                     "show_projects_section": True,  # Show the always-visible Projects section below the columns
                 }
@@ -2681,6 +2853,7 @@ class ProjectFlowApp(QMainWindow):
 
             self.config_folder_path = current_path[0]
             self.folder_current_path = current_path[0]  # keep the Files tab/Folder viewer in sync
+            self.launcher_folder_current_path = current_path[0]  # keep both sides in sync
             if hasattr(self, '_proj_folder_path'):
                 self._proj_folder_path.setText(current_path[0])
 
@@ -3051,6 +3224,7 @@ class ProjectFlowApp(QMainWindow):
         # base folder, so this is an expected side effect, not a surprise one.
         self.config_folder_path = folder_path
         self.folder_current_path = folder_path  # keep the Files tab/Folder viewer in sync
+        self.launcher_folder_current_path = folder_path  # keep both sides in sync
         if hasattr(self, '_proj_folder_path'):
             self._proj_folder_path.setText(folder_path)
 
@@ -3236,20 +3410,23 @@ class ProjectFlowApp(QMainWindow):
         # Default Viewer Tab (launcher tab first, then viewer) for consistency with how
         # the two concepts are named/paired.
         self._proj_default_launcher_tab = QComboBox()
-        # Order matches the launcher tab row (Docs, Resources, Files, Apps).
-        self._proj_default_launcher_tab.addItems(["", "docs", "resources", "files", "apps"])
+        # Items populated in _populate_settings_form() (not here) via _ordered_tab_ids(),
+        # so the list always reflects the live, possibly drag-reordered Launcher Tab Bar
+        # order rather than a fixed order baked in at construction time.
         form_layout.addRow(field_label("Default Launcher Tab:"), self._proj_default_launcher_tab)
 
         # Default Viewer Tab (label only — "Viewer" alone was ambiguous next to "Default
         # Launcher Tab" above; internal attribute/values unchanged)
         self._proj_default_viewer = QComboBox()
-        # Order matches the viewer tab row (Notes, Web, Terminal, PDF, Image, Code, Time);
-        # "help" isn't a tab (opened via the title bar's "❓ Help" button instead), so it's
-        # appended last. Unlike pdf/image, there's no dedicated "Code File" field in this
-        # form yet — pinning a specific file for "code" is done via the viewer's own 📌
-        # (see Code Editor in CLAUDE.md); picking "code" here with no code_file set just
-        # opens the editor empty, same as "notes"/"time" having no resource field either.
-        self._proj_default_viewer.addItems(["", "notes", "webview", "console", "pdf", "image", "code", "time", "help"])
+        # Items populated in _populate_settings_form() (not here) via _ordered_tab_ids(),
+        # so the list always reflects the live, possibly drag-reordered viewer tab row
+        # order rather than a fixed order baked in at construction time. "help" isn't a
+        # tab (opened via the title bar's "❓ Help" button instead), so it's always
+        # appended last regardless of tab order. Unlike pdf/image, there's no dedicated
+        # "Code File" field in this form yet — pinning a specific file for "code" is done
+        # via the viewer's own 📌 (see Code Editor in CLAUDE.md); picking "code" here with
+        # no code_file set just opens the editor empty, same as "notes"/"time" having no
+        # resource field either.
         form_layout.addRow(field_label("Default Viewer Tab:"), self._proj_default_viewer)
 
         # PDF File
@@ -3473,6 +3650,22 @@ class ProjectFlowApp(QMainWindow):
         self._style_project_color_button()
 
         self._proj_use_three_columns.setChecked(self.layout_mode != "focus")
+
+        # Rebuild both dropdowns' item lists from the live (possibly drag-reordered) tab
+        # order every time this form is populated, so they never drift out of sync with
+        # the actual tab rows the way two independently-hardcoded lists used to.
+        launcher_tab_ids = ["docs", "resources", "files", "apps"]
+        self._proj_default_launcher_tab.clear()
+        self._proj_default_launcher_tab.addItems(
+            [""] + self._ordered_tab_ids("launcher_tab_order", launcher_tab_ids, launcher_tab_ids)
+        )
+        viewer_tab_ids = list(self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1])
+        if not (self.settings.get('kimai_url') and self.settings.get('kimai_token')):
+            viewer_tab_ids.remove("time")
+        self._proj_default_viewer.clear()
+        self._proj_default_viewer.addItems(
+            [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_ids, viewer_tab_ids) + ["help"]
+        )
 
         self._proj_default_viewer.setCurrentText(getattr(self, 'config_column2_default', None) or "")
         self._proj_default_launcher_tab.setCurrentText(getattr(self, 'config_launcher_tab_default', None) or "")
@@ -4624,6 +4817,7 @@ class ProjectFlowApp(QMainWindow):
             self.config_folder_path = self._proj_folder_path.text().strip() or None
             if self.config_folder_path:
                 self.folder_current_path = self.config_folder_path  # keep the Files tab/Folder viewer in sync
+                self.launcher_folder_current_path = self.config_folder_path  # keep both sides in sync
             # self.config_terminal/self.config_browser_new_tab are deliberately NOT
             # touched here anymore — no UI sets them going forward (see the removal note
             # in _build_settings_form()), so whatever load_config() read from the JSON
@@ -8730,6 +8924,51 @@ function filterAliases(q) {{
         if self.color_sort_active:
             self.populate_projects()
 
+    # setting_key -> (settings.json key, canonical/default order) for the two reorderable
+    # tab rows — shared by DraggableTabButton's dropEvent(), the tab-row builders, and the
+    # Project Settings dropdowns, so there is exactly one place each row's default order lives.
+    _TAB_ORDER_CONFIG = {
+        DraggableTabButton.LAUNCHER_TAB_MIME: ("launcher_tab_order", ["docs", "resources", "files", "apps"]),
+        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "code", "console", "webview", "pdf", "image", "time"]),
+    }
+
+    def _ordered_tab_ids(self, setting_key, canonical_order, valid_ids):
+        """Return valid_ids arranged per settings[setting_key], backfilling any valid id
+        missing from the stored order (new, or not yet customized) at the position it
+        holds in canonical_order. Mirrors _sorted_colors()'s stored-order-plus-backfill
+        logic above, but for a small fixed known id set rather than an open set of colors."""
+        stored = [t for t in self.settings.get(setting_key, []) if t in valid_ids]
+        for t in canonical_order:
+            if t in valid_ids and t not in stored:
+                stored.append(t)
+        return stored
+
+    def _reorder_tab_button(self, mime_type, moved_id, target_id):
+        """Move moved_id to just before target_id within its own row's order, then save
+        and refresh. Shared by both the Launcher Tab Bar and the viewer tab row via
+        DraggableTabButton.dropEvent() — mirrors _reorder_colors() above."""
+        setting_key, canonical_order = self._TAB_ORDER_CONFIG[mime_type]
+        order = self._ordered_tab_ids(setting_key, canonical_order, canonical_order)
+        if moved_id in order:
+            order.remove(moved_id)
+        idx = order.index(target_id) if target_id in order else len(order)
+        order.insert(idx, moved_id)
+        self.settings[setting_key] = order
+        self.save_settings()
+        self.refresh_projects()
+
+    def _reset_launcher_tab_order(self):
+        """Reset the Launcher Tab Bar (Docs/Resources/Files/Apps) back to its default order."""
+        self.settings["launcher_tab_order"] = []
+        self.save_settings()
+        self.refresh_projects()
+
+    def _reset_viewer_tab_order(self):
+        """Reset the viewer tab row (Notes/Editor/Terminal/Web/PDF/Image/Time) back to its default order."""
+        self.settings["viewer_tab_order"] = []
+        self.save_settings()
+        self.refresh_projects()
+
     def _build_color_cache(self):
         """Scan all known project files and cache their project_color values."""
         cache = {}
@@ -9511,15 +9750,19 @@ function filterAliases(q) {{
         self._group_view_origin = {}
         self._grouped_hidden_item_ids = set()
 
-        # Resolve the folder browser's starting path before either the launcher-column Quick
-        # File Browser Panel or the main Folder viewer consult it — the panel is built first
-        # (see _build_launcher_folder_panel's ordering note), and its own fallback used to
+        # Resolve BOTH sides' folder browser starting path before either the launcher-column
+        # Quick File Browser Panel or the main Folder viewer consult it — the panel is built
+        # first (see _build_launcher_folder_panel's ordering note), and its own fallback used to
         # default straight to "~" whenever folder_current_path had just been reset by
         # switch_to_config(), ignoring config_folder_path entirely and then "sticking" before
         # the main viewer's later init logic ever got a chance to apply the project's own
-        # folder_path.
+        # folder_path. Both sides independently default to the same project folder_path/home on
+        # a fresh project switch — they only diverge once each is navigated separately (see
+        # _populate_folder_side()).
         if not getattr(self, 'folder_current_path', None):
             self.folder_current_path = getattr(self, 'config_folder_path', None) or os.path.expanduser("~")
+        if not getattr(self, 'launcher_folder_current_path', None):
+            self.launcher_folder_current_path = getattr(self, 'config_folder_path', None) or os.path.expanduser("~")
 
         for col_idx, column_categories in enumerate(all_columns):
             # Focus-layout launcher column: active_launcher_tab picks what column_categories
@@ -9691,15 +9934,24 @@ function filterAliases(q) {{
                         launcher_tabs_layout = QHBoxLayout()
                         launcher_tabs_layout.setContentsMargins(0, 0, 0, 0)
                         launcher_tabs_layout.setSpacing(3)
-                        for tab_id, tab_label, tab_tooltip in (
-                            ("docs", "Docs", "Local documentation files (.md/.html/.pdf/.txt)"),
-                            ("resources", "Resources", "Websites and everything else"),
-                            ("files", "Files", "Browse files (opens into the viewer)"),
-                            ("apps", "Apps", "Applications relevant to this project"),
-                        ):
-                            tab_btn = QPushButton(f" {tab_label}")
+                        # Labels/tooltips keyed by id; left-to-right order comes from
+                        # _ordered_tab_ids() (user-customizable via drag, see
+                        # DraggableTabButton below) rather than being fixed here.
+                        launcher_tab_defs = {
+                            "docs": ("Docs", "Local documentation files (.md/.html/.pdf/.txt)"),
+                            "resources": ("Resources", "Websites and everything else"),
+                            "files": ("Files", "Browse files (opens into the viewer)"),
+                            "apps": ("Apps", "Applications relevant to this project"),
+                        }
+                        launcher_tab_ids = self._ordered_tab_ids(
+                            "launcher_tab_order", list(launcher_tab_defs.keys()), list(launcher_tab_defs.keys())
+                        )
+                        for tab_id in launcher_tab_ids:
+                            tab_label, tab_tooltip = launcher_tab_defs[tab_id]
+                            tab_btn = DraggableTabButton(tab_id, DraggableTabButton.LAUNCHER_TAB_MIME, self)
+                            tab_btn.setText(f" {tab_label}")
                             tab_btn.setMinimumHeight(self.d('header_btn_height'))
-                            tab_btn.setToolTip(tab_tooltip)
+                            tab_btn.setToolTip(f"{tab_tooltip}\n(drag to reorder)")
                             tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{tab_id}.png")
                             if os.path.exists(tab_icon_path):
                                 tab_btn.setIcon(QIcon(tab_icon_path))
@@ -9735,6 +9987,16 @@ function filterAliases(q) {{
                         pin_tab_btn.setStyleSheet(launcher_tab_style)
                         pin_tab_btn.clicked.connect(self._set_launcher_tab_as_default)
                         launcher_tabs_layout.addWidget(pin_tab_btn)
+
+                        # Resets the drag-customized order back to default — mirrors the
+                        # Projects section's own "↺ resets pinned order" button.
+                        reset_tab_order_btn = QPushButton("↺")
+                        reset_tab_order_btn.setFixedWidth(22)
+                        reset_tab_order_btn.setMinimumHeight(self.d('header_btn_height'))
+                        reset_tab_order_btn.setToolTip("Reset tab order to default")
+                        reset_tab_order_btn.setStyleSheet(launcher_tab_style)
+                        reset_tab_order_btn.clicked.connect(self._reset_launcher_tab_order)
+                        launcher_tabs_layout.addWidget(reset_tab_order_btn)
 
                         column_layout.addLayout(launcher_tabs_layout)
                         column_layout.addSpacing(3)
@@ -10711,16 +10973,27 @@ function filterAliases(q) {{
                 # actively work in, Web/PDF/Image are things you mostly look at. "Editor"
                 # (not "Edit") to avoid reading like the title-bar "✏️ Edit Project" button
                 # right above this row — column2_mode stays "code" internally either way.
-                tab_buttons = [
-                    ("notes",    "Notes",    "Project notes"),
-                    ("code",     "Editor",   "Code editor"),
-                    ("console",  "Terminal", "Embedded console"),
-                    ("webview",  "Web",      "Web viewer"),
-                    ("pdf",      "PDF",      "PDF viewer"),
-                    ("image",    "Image",    "Image viewer"),
-                ]
+                # Labels/tooltips keyed by mode; left-to-right order comes from
+                # _ordered_tab_ids() (user-customizable via drag, see DraggableTabButton)
+                # rather than being fixed here. "time" only enters valid_ids (and therefore
+                # the visible row) when Kimai is actually configured.
+                viewer_tab_defs = {
+                    "notes":   ("Notes",    "Project notes"),
+                    "code":    ("Editor",   "Code editor"),
+                    "console": ("Terminal", "Embedded console"),
+                    "webview": ("Web",      "Web viewer"),
+                    "pdf":     ("PDF",      "PDF viewer"),
+                    "image":   ("Image",    "Image viewer"),
+                }
+                viewer_tab_valid_ids = list(viewer_tab_defs.keys())
                 if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
-                    tab_buttons.append(("time", "⏱ Time", "Kimai time tracker"))
+                    viewer_tab_defs["time"] = ("⏱ Time", "Kimai time tracker")
+                    viewer_tab_valid_ids.append("time")
+                viewer_tab_canonical_order = self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1]
+                tab_buttons = [
+                    (mode, *viewer_tab_defs[mode])
+                    for mode in self._ordered_tab_ids("viewer_tab_order", viewer_tab_canonical_order, viewer_tab_valid_ids)
+                ]
 
                 # Normal tab button style — bg_green_1 (the darkest stop) at rest.
                 tab_btn_style = f"""
@@ -10795,7 +11068,8 @@ function filterAliases(q) {{
                 self.viewer_tab_buttons = {}
 
                 for mode, label, tooltip in tab_buttons:
-                    btn = QPushButton(label)
+                    btn = DraggableTabButton(mode, DraggableTabButton.VIEWER_TAB_MIME, self)
+                    btn.setText(label)
                     btn.setMinimumHeight(self.d('header_btn_height'))
                     # Expanding + a stretch factor on addWidget (below) makes every tab
                     # button grow to fill the row equally, rather than a fixed width —
@@ -10804,7 +11078,7 @@ function filterAliases(q) {{
                     # minimum keeps things sane if the row is ever squeezed very narrow.
                     btn.setMinimumWidth(60)
                     btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-                    btn.setToolTip(tooltip)
+                    btn.setToolTip(f"{tooltip}\n(drag to reorder)")
 
                     icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{mode}.png")
                     if os.path.exists(icon_path):
@@ -10894,6 +11168,17 @@ function filterAliases(q) {{
                 viewer_pin_btn.setStyleSheet(tab_btn_style)
                 viewer_pin_btn.clicked.connect(self.set_viewer_as_default)
                 header_layout.addWidget(viewer_pin_btn)
+
+                # Resets the drag-customized tab order back to default — mirrors the
+                # Launcher Tab Bar's own "↺" button and the Projects section's "↺ resets
+                # pinned order" button.
+                viewer_reset_order_btn = QPushButton("↺")
+                viewer_reset_order_btn.setFixedWidth(22)
+                viewer_reset_order_btn.setMinimumHeight(self.d('header_btn_height'))
+                viewer_reset_order_btn.setToolTip("Reset tab order to default")
+                viewer_reset_order_btn.setStyleSheet(tab_btn_style)
+                viewer_reset_order_btn.clicked.connect(self._reset_viewer_tab_order)
+                header_layout.addWidget(viewer_reset_order_btn)
 
                 # Immersive mode hides the whole viewer mode-tab row (Notes/Editor/Web/PDF/
                 # etc. tabs, the settings-cog shortcut, and the pin button) — see
@@ -11278,8 +11563,11 @@ function filterAliases(q) {{
                 self.create_folder_toolbar(folder_container_layout)
 
                 # QTreeWidget for file/folder display
-                self.folder_browser = QTreeWidget()
+                self.folder_browser = DraggableFolderTree(self)
                 self.folder_browser.setHeaderHidden(True)
+                self.folder_browser.setDragEnabled(True)
+                self.folder_browser.setAcceptDrops(True)
+                self.folder_browser.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
                 self.folder_browser.setStyleSheet(f"""
                     QTreeWidget {{
                         background-color: {self.t('bg_secondary')};
@@ -11307,7 +11595,14 @@ function filterAliases(q) {{
                 self.folder_browser.customContextMenuRequested.connect(self.folder_browser_context_menu)
 
                 # QListWidget in icon-grid mode — Dolphin-style alternative to the tree above
-                self.folder_icon_view = QListWidget()
+                self.folder_icon_view = DraggableFolderList(self)
+                self.folder_icon_view.setDragEnabled(True)
+                self.folder_icon_view.setAcceptDrops(True)
+                # setDragEnabled+setAcceptDrops alone (without this) leaves IconMode+Movement.Static
+                # unable to ever start a drag - confirmed empirically: the press selects the item,
+                # but the move that should trigger startDrag() instead falls through to a rubber-band
+                # deselect. Explicit DragDrop mode is what actually gates icon-mode drag initiation.
+                self.folder_icon_view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
                 self.folder_icon_view.setViewMode(QListWidget.ViewMode.IconMode)
                 self.folder_icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
                 self.folder_icon_view.setMovement(QListWidget.Movement.Static)
@@ -11352,8 +11647,8 @@ function filterAliases(q) {{
                 fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
                 folder_container_layout.addWidget(
                     self._make_viewer_footer(
-                        f"Open in {fm_name}", "Open in file manager", self.folder_open_external,
-                        extra_buttons=[("+ Add to Project", "Add this folder to the project as a launcher", self._add_current_folder_to_project)]
+                        f"Open in {fm_name}", "Open in file manager", lambda: self.folder_open_external("right"),
+                        extra_buttons=[("+ Add to Project", "Add this folder to the project as a launcher", lambda: self._add_current_folder_to_project("right"))]
                     )
                 )
 
@@ -12131,8 +12426,10 @@ function filterAliases(q) {{
         # Add to recent projects
         self.add_to_recent_projects(config_path)
 
-        # Clear folder navigation so the new project starts at its own default folder
+        # Clear folder navigation (both independently-browsable sides) so the new project
+        # starts at its own default folder
         self.folder_current_path = None
+        self.launcher_folder_current_path = None
 
         # Reset to the new project's own note — an arbitrary note explicitly loaded into
         # the Notes tab for the OLD project has no meaning here (see notes_md_path's
@@ -15584,14 +15881,14 @@ function filterAliases(q) {{
         up_btn = QPushButton("↑")
         up_btn.setStyleSheet(btn_style)
         up_btn.setToolTip("Go up one directory")
-        up_btn.clicked.connect(self.folder_go_up)
+        up_btn.clicked.connect(lambda: self.folder_go_up("right"))
         toolbar_layout.addWidget(up_btn)
 
         # Home button
         home_btn = QPushButton("⌂")
         home_btn.setStyleSheet(btn_style)
         home_btn.setToolTip("Go to home directory")
-        home_btn.clicked.connect(self.folder_go_home)
+        home_btn.clicked.connect(lambda: self.folder_go_home("right"))
         toolbar_layout.addWidget(home_btn)
 
         # Project default folder button — always shown, greyed out (but still clickable)
@@ -15602,7 +15899,7 @@ function filterAliases(q) {{
         if self.config_folder_path:
             project_home_btn.setStyleSheet(btn_style)
             project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
-            project_home_btn.clicked.connect(self.folder_go_project_default)
+            project_home_btn.clicked.connect(lambda: self.folder_go_project_default("right"))
         else:
             project_home_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -15620,14 +15917,14 @@ function filterAliases(q) {{
                 }}
             """)
             project_home_btn.setToolTip("Set current folder as this project's default folder")
-            project_home_btn.clicked.connect(self._pin_current_folder_as_project_default)
+            project_home_btn.clicked.connect(lambda: self._pin_current_folder_as_project_default("right"))
         toolbar_layout.addWidget(project_home_btn)
 
         # Refresh button
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(btn_style)
         refresh_btn.setToolTip("Refresh current directory")
-        refresh_btn.clicked.connect(self.folder_refresh)
+        refresh_btn.clicked.connect(lambda: self.folder_refresh("right"))
         toolbar_layout.addWidget(refresh_btn)
 
         # View mode toggle (tree/details vs Dolphin-style icon grid)
@@ -15693,7 +15990,7 @@ function filterAliases(q) {{
             }}
         """)
         up_btn.setToolTip("Go up one directory")
-        up_btn.clicked.connect(self.folder_go_up)
+        up_btn.clicked.connect(lambda: self.folder_go_up("left"))
         toolbar_layout.addWidget(up_btn)
 
         mini_btn_style = f"""
@@ -15715,7 +16012,7 @@ function filterAliases(q) {{
         home_btn = QPushButton("⌂")
         home_btn.setStyleSheet(mini_btn_style)
         home_btn.setToolTip("Go to home directory")
-        home_btn.clicked.connect(self.folder_go_home)
+        home_btn.clicked.connect(lambda: self.folder_go_home("left"))
         toolbar_layout.addWidget(home_btn)
 
         # Always shown; greyed out (but still clickable) when no folder_path is pinned yet
@@ -15724,7 +16021,7 @@ function filterAliases(q) {{
         if self.config_folder_path:
             project_home_btn.setStyleSheet(mini_btn_style)
             project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
-            project_home_btn.clicked.connect(self.folder_go_project_default)
+            project_home_btn.clicked.connect(lambda: self.folder_go_project_default("left"))
         else:
             project_home_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -15742,13 +16039,13 @@ function filterAliases(q) {{
                 }}
             """)
             project_home_btn.setToolTip("Set current folder as this project's default folder")
-            project_home_btn.clicked.connect(self._pin_current_folder_as_project_default)
+            project_home_btn.clicked.connect(lambda: self._pin_current_folder_as_project_default("left"))
         toolbar_layout.addWidget(project_home_btn)
 
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(mini_btn_style)
         refresh_btn.setToolTip("Refresh current directory")
-        refresh_btn.clicked.connect(self.folder_refresh)
+        refresh_btn.clicked.connect(lambda: self.folder_refresh("left"))
         toolbar_layout.addWidget(refresh_btn)
 
         self.launcher_folder_view_toggle_btn = QPushButton(
@@ -15768,8 +16065,11 @@ function filterAliases(q) {{
 
         column_layout.addWidget(toolbar_widget)
 
-        self.launcher_folder_browser = QTreeWidget()
+        self.launcher_folder_browser = DraggableFolderTree(self, side="left")
         self.launcher_folder_browser.setHeaderHidden(True)
+        self.launcher_folder_browser.setDragEnabled(True)
+        self.launcher_folder_browser.setAcceptDrops(True)
+        self.launcher_folder_browser.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.launcher_folder_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.launcher_folder_browser.setStyleSheet(f"""
             QTreeWidget {{
@@ -15797,7 +16097,12 @@ function filterAliases(q) {{
         self.launcher_folder_browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.launcher_folder_browser.customContextMenuRequested.connect(self.launcher_folder_browser_context_menu)
 
-        self.launcher_folder_icon_view = QListWidget()
+        self.launcher_folder_icon_view = DraggableFolderList(self, side="left")
+        self.launcher_folder_icon_view.setDragEnabled(True)
+        self.launcher_folder_icon_view.setAcceptDrops(True)
+        # See folder_icon_view's own setDragDropMode() call above for why this is required
+        # for IconMode drag-and-drop to actually initiate.
+        self.launcher_folder_icon_view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.launcher_folder_icon_view.setViewMode(QListWidget.ViewMode.IconMode)
         self.launcher_folder_icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.launcher_folder_icon_view.setMovement(QListWidget.Movement.Static)
@@ -15843,15 +16148,16 @@ function filterAliases(q) {{
         fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
         column_layout.addWidget(
             self._make_viewer_footer(
-                f"Open in {fm_name}", "Open current folder in file manager", self.folder_open_external,
-                extra_buttons=[("+ Add to Project", "Add this folder to the project as a launcher", self._add_current_folder_to_project)]
+                f"Open in {fm_name}", "Open current folder in file manager", lambda: self.folder_open_external("left"),
+                extra_buttons=[("+ Add to Project", "Add this folder to the project as a launcher", lambda: self._add_current_folder_to_project("left"))]
             )
         )
 
-        # populate_folder_browser is otherwise only called when the Folder viewer tab is active
-        # (column2_mode == "folder") — this panel must show content regardless of the active tab.
-        start_path = getattr(self, 'folder_current_path', None) or os.path.expanduser("~")
-        self.populate_folder_browser(start_path)
+        # populate_folder_browser (RIGHT side) is otherwise only called when the Folder viewer
+        # tab is active (column2_mode == "folder") — this panel must show content regardless of
+        # the active tab, via its own independent LEFT-side populate_launcher_folder_browser().
+        start_path = getattr(self, 'launcher_folder_current_path', None) or os.path.expanduser("~")
+        self.populate_launcher_folder_browser(start_path)
 
     def _scan_folder_entries(self, path):
         """Scan a directory into a widget-agnostic list of entry dicts.
@@ -16080,58 +16386,93 @@ function filterAliases(q) {{
         grid.addItem(item)
 
     def populate_folder_browser(self, path):
-        """Populate the folder browser (both tree and icon views) with contents of the given path.
+        """Populate the RIGHT-side folder browser (main Folder viewer's tree + icon views)
+        with contents of the given path. See _populate_folder_side() for the shared
+        implementation, and populate_launcher_folder_browser() for the LEFT-side twin."""
+        self._populate_folder_side(path, "right")
+
+    def populate_launcher_folder_browser(self, path):
+        """Populate the LEFT-side folder browser (launcher-column Quick File Browser Panel's
+        tree + icon views) with contents of the given path — independent of
+        populate_folder_browser()'s RIGHT side, so the two panels can browse different
+        folders at once. See _populate_folder_side()."""
+        self._populate_folder_side(path, "left")
+
+    def _populate_folder_side(self, path, side):
+        """Shared implementation behind populate_folder_browser() (side="right", the main
+        Folder viewer) and populate_launcher_folder_browser() (side="left", the launcher-column
+        Quick File Browser Panel). Each side has its own current-path variable, via-mapping
+        flag, scan cache, and pair of target widgets (tree + icon grid), so the two panels can
+        browse independent folders — previously both sides shared one self.folder_current_path,
+        which made cross-panel drag-and-drop meaningless (always the same folder on both sides).
 
         Note: the main Folder-viewer-tab widgets (folder_path_label/folder_browser/
-        folder_icon_view) aren't guaranteed to exist yet — the launcher-column Quick File
-        Browser Panel is built earlier in build_main_content() than they are, and can now call
-        this on the very first-ever build if it starts pre-expanded (persisted per project).
+        folder_icon_view) aren't guaranteed to exist yet when side="left" is called — the
+        launcher-column Quick File Browser Panel is built earlier in build_main_content() than
+        they are, and can now call this on the very first-ever build if it starts pre-expanded
+        (persisted per project).
         """
         path = os.path.expanduser(path)
 
         # If the direct path doesn't exist, try it once through the global path mappings as
         # a fallback (see _resolve_existing_path()) — e.g. a project's default folder saved
         # as ~/Public/key that's only reachable as ~/gtr7/Public/key on this machine.
-        # Read-only: folder_current_path/the path label reflect the resolved path for this
+        # Read-only: the current-path variable/path label reflect the resolved path for this
         # navigation only — nothing is written back to any config, so the original portable
         # folder_path is untouched.
-        self.folder_via_mapping = False
+        via_mapping = False
         if not os.path.exists(path):
             resolved, used_mapping = self._resolve_existing_path(path)
             if used_mapping:
                 path = os.path.expanduser(resolved)
-                self.folder_via_mapping = True
+                via_mapping = True
                 self.set_status(f"Folder not found — opened via path mapping instead: {path}", "info")
 
-        self.folder_current_path = path
+        if side == "left":
+            self.launcher_folder_current_path = path
+            self.launcher_folder_via_mapping = via_mapping
+            path_label = getattr(self, 'launcher_folder_path_label', None)
+        else:
+            self.folder_current_path = path
+            self.folder_via_mapping = via_mapping
+            path_label = getattr(self, 'folder_path_label', None)
 
         # Update path label (shorten home dir to ~)
         display_path = path
         home = os.path.expanduser("~")
         if path.startswith(home):
             display_path = "~" + path[len(home):]
-        if self.folder_via_mapping:
+        if via_mapping:
             display_path = "⇄ " + display_path
-        main_path_label = getattr(self, 'folder_path_label', None)
-        if main_path_label is not None:
-            main_path_label.setText(display_path)
-            self._style_folder_path_label(main_path_label)
-        launcher_path_label = getattr(self, 'launcher_folder_path_label', None)
-        if launcher_path_label is not None:
-            launcher_path_label.setText(display_path)
-            self._style_folder_path_label(launcher_path_label)
+        if path_label is not None:
+            path_label.setText(display_path)
+            self._style_folder_path_label(path_label, via_mapping)
 
-        self._folder_raw_entries, self._folder_scan_error = self._scan_folder_entries(path)
-        self._render_folder_views_from_cache()
+        entries, error = self._scan_folder_entries(path)
+        if side == "left":
+            self._launcher_folder_raw_entries, self._launcher_folder_scan_error = entries, error
+        else:
+            self._folder_raw_entries, self._folder_scan_error = entries, error
+        self._render_folder_view_side(side)
 
-    def _style_folder_path_label(self, label):
+    def _refresh_all_folder_views(self):
+        """Refresh whichever side(s) currently have a browsed path, from disk. Used after an
+        action whose effect could plausibly be visible on either side (New from Template, a
+        Copy to.../Move to.../drag-and-drop operation) and where it's cheaper/safer to just
+        refresh both than to work out exactly which side was actually affected."""
+        if getattr(self, 'folder_current_path', None):
+            self.populate_folder_browser(self.folder_current_path)
+        if getattr(self, 'launcher_folder_current_path', None):
+            self.populate_launcher_folder_browser(self.launcher_folder_current_path)
+
+    def _style_folder_path_label(self, label, via_mapping):
         """Style a folder-browser path label — plain secondary text normally, or a pale-blue
-        badge (background + tooltip) when self.folder_via_mapping is set, so it's visually
-        obvious the folder shown isn't the one actually saved in the project (see
+        badge (background + tooltip) when via_mapping is set, so it's visually obvious the
+        folder shown isn't the one actually saved in the project (see
         _resolve_existing_path()/Settings → Advanced's path mappings table). Hand-picked pale
         blue per theme rather than a themes.py color, same reasoning as the Notes paper theme
         and code-editor syntax colors — a one-off accent, not part of the general palette."""
-        if self.folder_via_mapping:
+        if via_mapping:
             if self.current_theme == "dark":
                 bg, fg = "#1c3a52", "#8ecbff"
             else:
@@ -16149,41 +16490,37 @@ function filterAliases(q) {{
             label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
             label.setToolTip("Current directory")
 
-    def _render_folder_views_from_cache(self):
-        """Render self._folder_raw_entries (filtered by self.folder_filter_text, a Dolphin-style
-        filter bar) into whichever folder-browsing target widgets currently exist. Shared by
-        populate_folder_browser() and the filter bar's textChanged handler so live filtering
-        doesn't need to re-scan disk on every keystroke."""
-        entries = self._folder_raw_entries
-        error = self._folder_scan_error
-        main_tree = getattr(self, 'folder_browser', None)
-        main_icons = getattr(self, 'folder_icon_view', None)
-        launcher_tree = getattr(self, 'launcher_folder_browser', None)
-        launcher_icons = getattr(self, 'launcher_folder_icon_view', None)
+    def _render_folder_view_side(self, side):
+        """Render one side's cached scan (filtered by self.folder_filter_text, a Dolphin-style
+        filter bar shared by both sides — see its own init comment for why sharing it is fine)
+        into that side's target widgets only. Shared by _populate_folder_side() and the filter
+        bar's textChanged handler so live filtering doesn't need to re-scan disk per keystroke."""
+        if side == "left":
+            entries = self._launcher_folder_raw_entries
+            error = self._launcher_folder_scan_error
+            tree = getattr(self, 'launcher_folder_browser', None)
+            icons = getattr(self, 'launcher_folder_icon_view', None)
+        else:
+            entries = self._folder_raw_entries
+            error = self._folder_scan_error
+            tree = getattr(self, 'folder_browser', None)
+            icons = getattr(self, 'folder_icon_view', None)
+
         if error is not None:
-            if main_tree is not None:
-                main_tree.clear()
-                main_tree.addTopLevelItem(QTreeWidgetItem([error]))
-            if main_icons is not None:
-                self._render_folder_error_into_icon_view(main_icons, error)
-            if launcher_tree is not None:
-                launcher_tree.clear()
-                launcher_tree.addTopLevelItem(QTreeWidgetItem([error]))
-            if launcher_icons is not None:
-                self._render_folder_error_into_icon_view(launcher_icons, error)
+            if tree is not None:
+                tree.clear()
+                tree.addTopLevelItem(QTreeWidgetItem([error]))
+            if icons is not None:
+                self._render_folder_error_into_icon_view(icons, error)
             return
 
         filter_text = (self.folder_filter_text or "").strip().lower()
         entries = [e for e in entries if filter_text in e['display_name'].lower()] if filter_text else entries
 
-        if main_tree is not None:
-            self._render_folder_tree(entries)
-        if main_icons is not None:
-            self._render_folder_icons(entries)
-        if launcher_tree is not None:
-            self._render_folder_tree(entries, target=launcher_tree)
-        if launcher_icons is not None:
-            self._render_folder_icons(entries, target=launcher_icons)
+        if tree is not None:
+            self._render_folder_tree(entries, target=tree)
+        if icons is not None:
+            self._render_folder_icons(entries, target=icons)
 
     def _build_folder_filter_bar(self, parent_layout):
         """Build a Dolphin-style filter bar: a text box that live-filters the current folder's
@@ -16221,49 +16558,61 @@ function filterAliases(q) {{
                 inp.setText(text)
                 inp.blockSignals(False)
         if getattr(self, '_folder_raw_entries', None) is not None:
-            self._render_folder_views_from_cache()
+            self._render_folder_view_side("right")
+        if getattr(self, '_launcher_folder_raw_entries', None) is not None:
+            self._render_folder_view_side("left")
 
-    def folder_go_up(self):
-        """Navigate to parent directory"""
-        parent = os.path.dirname(self.folder_current_path)
-        if parent and parent != self.folder_current_path:
-            self.populate_folder_browser(parent)
+    def folder_go_up(self, side="right"):
+        """Navigate to parent directory. side="right" (main Folder viewer, the default used by
+        that toolbar's own Up button) or "left" (launcher-panel Up button, wired explicitly)."""
+        current = self.launcher_folder_current_path if side == "left" else self.folder_current_path
+        parent = os.path.dirname(current)
+        populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
+        if parent and parent != current:
+            populate(parent)
 
-    def folder_go_home(self):
-        """Navigate to home directory"""
-        self.populate_folder_browser(os.path.expanduser("~"))
+    def folder_go_home(self, side="right"):
+        """Navigate to home directory. side as in folder_go_up()."""
+        populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
+        populate(os.path.expanduser("~"))
 
-    def folder_go_project_default(self):
-        """Navigate to this project's own configured folder_path."""
+    def folder_go_project_default(self, side="right"):
+        """Navigate to this project's own configured folder_path. side as in folder_go_up()."""
         if self.config_folder_path:
-            self.populate_folder_browser(self.config_folder_path)
+            populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
+            populate(self.config_folder_path)
 
-    def _pin_current_folder_as_project_default(self):
+    def _pin_current_folder_as_project_default(self, side="right"):
         """Pin the currently browsed folder as this project's default folder_path — the
         action behind the always-visible "⌂⌂ project folder" button while it's greyed out
         (no folder_path set yet). Mirrors the pin pattern used for viewers/launcher tabs
         (set_viewer_as_default()/_set_launcher_tab_as_default()). refresh_projects() rebuilds
-        both folder toolbars so the button switches to its active style/behavior immediately."""
-        if not getattr(self, 'current_config_file', None) or not getattr(self, 'folder_current_path', None):
+        both folder toolbars so the button switches to its active style/behavior immediately.
+        side as in folder_go_up() — pins whichever side's currently-browsed folder was clicked."""
+        current_path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
+        if not getattr(self, 'current_config_file', None) or not current_path:
             return
         try:
             config_data = {}
             if os.path.exists(self.current_config_file):
                 with open(self.current_config_file, 'r') as f:
                     config_data = json.load(f)
-            config_data['folder_path'] = self.folder_current_path
+            config_data['folder_path'] = current_path
             with open(self.current_config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
-            self.config_folder_path = self.folder_current_path
-            QMessageBox.information(self, "Set Default", f"Set \"{self.folder_current_path}\" as this project's default folder.")
+            self.config_folder_path = current_path
+            QMessageBox.information(self, "Set Default", f"Set \"{current_path}\" as this project's default folder.")
             self.refresh_projects()
         except Exception as e:
             print(f"Error pinning project folder: {e}")
             QMessageBox.warning(self, "Error", f"Failed to set default folder: {e}")
 
-    def folder_refresh(self):
-        """Refresh current directory listing"""
-        self.populate_folder_browser(self.folder_current_path)
+    def folder_refresh(self, side="right"):
+        """Refresh current directory listing. side as in folder_go_up()."""
+        if side == "left":
+            self.populate_launcher_folder_browser(self.launcher_folder_current_path)
+        else:
+            self.populate_folder_browser(self.folder_current_path)
 
     def _scaled_icon(self, icon):
         """Force an icon down to a genuine single 64x64 pixmap.
@@ -16587,7 +16936,7 @@ function filterAliases(q) {{
             if os.path.exists(projectflow_path):
                 self.switch_to_config(projectflow_path)
             else:
-                self.populate_folder_browser(path)
+                self.populate_launcher_folder_browser(path)
         else:
             self._open_path_in_best_viewer(path)
 
@@ -16602,7 +16951,7 @@ function filterAliases(q) {{
         """Handle right-click in the launcher-column quick file-browser panel"""
         item = self.launcher_folder_browser.itemAt(position)
         if not item:
-            self._build_folder_background_context_menu(self.folder_current_path).exec(
+            self._build_folder_background_context_menu(self.launcher_folder_current_path).exec(
                 self.launcher_folder_browser.mapToGlobal(position))
             return
         path = item.data(0, Qt.ItemDataRole.UserRole)
@@ -16623,7 +16972,7 @@ function filterAliases(q) {{
         """Handle right-click in the launcher-column mini panel's icon-grid view"""
         item = self.launcher_folder_icon_view.itemAt(position)
         if not item:
-            self._build_folder_background_context_menu(self.folder_current_path).exec(
+            self._build_folder_background_context_menu(self.launcher_folder_current_path).exec(
                 self.launcher_folder_icon_view.mapToGlobal(position))
             return
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -17917,7 +18266,123 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             open_in_viewer_action = menu.addAction("Open in Right-Panel Viewer")
             open_in_viewer_action.triggered.connect(lambda checked, p=path: self.preview_in_folder_browser(p))
 
+        # Copy to.../Move to... (folder-picker dialog) — available for both files and
+        # folders, unlike "Add to Documentation..." above which is files-only.
+        menu.addSeparator()
+        copy_to_action = menu.addAction("Copy to...")
+        copy_to_action.triggered.connect(lambda checked, p=path: self._browse_copy_or_move(p, "copy"))
+        move_to_action = menu.addAction("Move to...")
+        move_to_action.triggered.connect(lambda checked, p=path: self._browse_copy_or_move(p, "move"))
+
         return menu
+
+    def _copy_or_move_path(self, src_path, dest_dir, action):
+        """Copy or move src_path into dest_dir (action: 'copy' or 'move'). Shared by the
+        Copy to.../Move to... context-menu actions and the drag-and-drop drop menu.
+        Returns True on success, False on a handled failure/cancellation (never raises)."""
+        src_path = os.path.expanduser(src_path)
+        dest_dir = os.path.expanduser(dest_dir)
+        name = os.path.basename(src_path.rstrip('/'))
+        dest_path = os.path.join(dest_dir, name)
+
+        if os.path.abspath(dest_dir) == os.path.abspath(os.path.dirname(src_path)):
+            self.set_status(f'"{name}" is already in that folder', "info")
+            return False
+
+        if os.path.isdir(src_path):
+            common = os.path.commonpath([os.path.abspath(dest_dir), os.path.abspath(src_path)])
+            if common == os.path.abspath(src_path):
+                self.set_status(f"Can't {action} a folder into itself or a subfolder of itself", "error")
+                return False
+
+        if os.path.exists(dest_path):
+            reply = QMessageBox.question(
+                self, "Item Already Exists",
+                f'"{name}" already exists in the destination. Overwrite?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+            try:
+                if os.path.isdir(dest_path):
+                    shutil.rmtree(dest_path)
+                else:
+                    os.remove(dest_path)
+            except OSError as e:
+                self.set_status(f"Could not remove existing item: {e}", "error")
+                return False
+
+        try:
+            if action == "copy":
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dest_path)
+                else:
+                    shutil.copy2(src_path, dest_path)
+            else:
+                shutil.move(src_path, dest_path)
+        except (OSError, shutil.Error) as e:
+            self.set_status(f"{action.capitalize()} failed: {e}", "error")
+            return False
+
+        verb = "Copied" if action == "copy" else "Moved"
+        self.set_status(f'{verb} "{name}" to {dest_dir}', "success")
+        return True
+
+    def _browse_copy_or_move(self, src_path, action):
+        """Copy to.../Move to... handler: prompt for a destination folder, then delegate
+        to _copy_or_move_path(). Starts the picker at the source item's own containing folder
+        (rather than "whichever panel triggered this," which is ambiguous now that the two
+        folder-browsing panels can browse independently) — also just a better default regardless."""
+        start_dir = os.path.dirname(os.path.expanduser(src_path)) or os.path.expanduser("~")
+        title = "Select Destination Folder to Copy To" if action == "copy" else "Select Destination Folder to Move To"
+        dest_dir = QFileDialog.getExistingDirectory(self, title, start_dir)
+        if not dest_dir:
+            return
+        if self._copy_or_move_path(src_path, dest_dir, action):
+            self._refresh_all_folder_views()
+
+    def _show_folder_drop_menu(self, urls, dest_dir, global_pos):
+        """Dolphin-style Copy Here / Move Here / Cancel popup for a filesystem drag-and-drop
+        drop, landing in dest_dir. Shared by all four folder-browsing widgets' dropEvent.
+
+        Uses menu.popup() (non-blocking, action wired via the triggered signal) rather than
+        menu.exec() (which blocks in its own nested event loop) and is called SYNCHRONOUSLY
+        from dropEvent(), not deferred. Both choices are deliberate, found via live testing
+        on Wayland after two earlier attempts each failed a different way:
+          1. menu.exec() called synchronously from inside dropEvent(), while the drag source's
+             own QDrag.exec() nested loop was still unwinding - crashed the app.
+          2. menu.exec() deferred a tick via QTimer.singleShot(0, ...) to dodge that - the app
+             no longer crashed immediately, but the menu never appeared and it crashed anyway;
+             most likely Wayland's xdg_popup grab requires a still-valid input serial from the
+             triggering event, which a deferred call has already lost by the next event-loop tick.
+        menu.popup() shows without blocking (no second nested loop to collide with the drag's
+        own), so it can be called synchronously and keep the same input-event serial the drop
+        itself just used - satisfying both constraints at once. The menu is parented to self
+        (QMenu(self)), so Qt's own parent-child ownership keeps it alive after this method
+        returns despite popup() not blocking - no explicit reference needs to be stashed."""
+        src_paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+        src_paths = [p for p in src_paths
+                     if os.path.abspath(os.path.dirname(p)) != os.path.abspath(dest_dir)]
+        if not src_paths:
+            return  # dropped onto its own containing folder - silent no-op
+
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy Here")
+        move_action = menu.addAction("Move Here")
+        menu.addSeparator()
+        menu.addAction("Cancel")
+
+        def on_triggered(chosen):
+            if chosen not in (copy_action, move_action):
+                return
+            action = "copy" if chosen == copy_action else "move"
+            for src in src_paths:
+                self._copy_or_move_path(src, dest_dir, action)
+            self._refresh_all_folder_views()
+
+        menu.triggered.connect(on_triggered)
+        menu.popup(global_pos)
 
     def _get_templates_folder(self):
         """Resolve the freedesktop Templates folder (XDG_TEMPLATES_DIR) — the same folder
@@ -18023,7 +18488,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         except (OSError, shutil.Error) as e:
             QMessageBox.warning(self, "Error", f"Failed to create from template: {e}")
             return
-        self.folder_refresh()
+        # target_dir could belong to either side's background context menu — refresh whichever
+        # side(s) are actually browsing something rather than tracking which one fired this.
+        self._refresh_all_folder_views()
 
     def folder_browser_context_menu(self, position):
         """Handle right-click context menu in the tree-view folder browser"""
@@ -18282,11 +18749,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         stem = os.path.splitext(os.path.basename(path))[0]
         self._add_viewer_item_to_project(self._titleize_stem(stem), path, "default")
 
-    def _add_current_folder_to_project(self):
-        """"Add to Project" trigger for the Folder viewer's footer (and the launcher
-        column's Quick File Browser Panel footer, which shares the same folder_current_path)
-        — see _add_viewer_item_to_project()."""
-        path = getattr(self, 'folder_current_path', None)
+    def _add_current_folder_to_project(self, side="right"):
+        """"Add to Project" trigger for the Folder viewer's footer (side="right") and the
+        launcher column's Quick File Browser Panel footer (side="left", wired explicitly since
+        the two panels now browse independently) — see _add_viewer_item_to_project()."""
+        path = getattr(self, 'launcher_folder_current_path' if side == "left" else 'folder_current_path', None)
         if not path:
             QMessageBox.information(self, "Add to Project", "No folder to add.")
             return
@@ -18464,10 +18931,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if project_path == self.current_config_file:
             self.refresh_projects()
 
-    def folder_open_external(self):
-        """Open current folder in file manager"""
+    def folder_open_external(self, side="right"):
+        """Open current folder in file manager. side="right" (main Folder viewer, default) or
+        "left" (launcher panel, wired explicitly since the two panels browse independently)."""
+        path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
         file_manager = self.get_configured_file_manager()
-        subprocess.Popen([file_manager, self.folder_current_path], start_new_session=True)
+        subprocess.Popen([file_manager, path], start_new_session=True)
 
     def open_project_folder_external(self):
         """Open this project's default folder (config_folder_path, not necessarily where any
@@ -18531,8 +19000,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # Create projectflow.md notes file
         self.create_project_notes_file(folder_path)
 
-        # Refresh the folder browser to show updated state
-        self.populate_folder_browser(self.folder_current_path)
+        # Refresh whichever side(s) are browsing something — this can be triggered from either
+        # side's context menu, so (like _create_from_template()) refresh both rather than guess.
+        self._refresh_all_folder_views()
 
         # Ask if user wants to open the project
         reply = QMessageBox.question(
