@@ -16,6 +16,7 @@
 </head>
 <body>
 <div id="editor"></div>
+<input type="file" id="pf-image-file-input" accept="image/*" style="display:none">
 
 <script src="./lib/assets-shim.js"></script>
 <script src="./lib/umd/index.js"></script>
@@ -28,6 +29,32 @@
   M.Muya.use(M.CodeBlockLanguageSelector);
   M.Muya.use(M.ImageToolBar);
   M.Muya.use(M.ImageResizeBar);
+  // "Choose Image" (Select tab) has no OS path to hand back once a file is
+  // picked - QtWebEngine's file input, like any browser, never exposes the
+  // real filesystem path of a selected file. So instead of a path, this reads
+  // the chosen file's bytes and resolves with a base64 data: URL, the exact
+  // same embedding ImageEditTool already falls back to for a pasted
+  // clipboard image (see pasteImage.ts) - no Python round-trip needed.
+  M.Muya.use(M.ImageEditTool, {
+    imagePathPicker: function () {
+      return new Promise(function (resolve) {
+        var input = document.getElementById('pf-image-file-input');
+        if (!input) { resolve(''); return; }
+        input.value = '';
+        var onChange = function () {
+          input.removeEventListener('change', onChange);
+          var file = input.files && input.files[0];
+          if (!file) { resolve(''); return; }
+          var reader = new FileReader();
+          reader.onload = function (e) { resolve(e.target.result); };
+          reader.onerror = function () { resolve(''); };
+          reader.readAsDataURL(file);
+        };
+        input.addEventListener('change', onChange);
+        input.click();
+      });
+    }
+  });
   M.Muya.use(M.LinkTools, {
     jumpClick: function (linkInfo) {
       var href = linkInfo && linkInfo.href;

@@ -2,6 +2,18 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-06
+
+### Added
+- **Image insertion in the Notes/Markdown editor**: registered Muya's `ImageEditTool` plugin (previously missing, so selecting text and pressing Ctrl+Shift+I — or the picture icon in the floating selection toolbar — inserted a blank, unfillable image placeholder). The "Embed link" tab lets you paste an image URL or local path; the "Select" tab's "Choose Image" button now opens a real native file picker and embeds the chosen image as a base64 `data:` URL (the same embedding already used for pasted clipboard images — no filesystem path is available from a browser file input, so this was the correct fix rather than a workaround).
+- **Immersive view for Zen mode (`Ctrl+F11`)**: on top of the existing launcher/notepad column collapse, Zen mode now hides essentially all remaining chrome — every title-bar button except the project title, the footer, the Projects section, the viewer mode-tab row, and every per-viewer toolbar/tab-strip/footer — leaving just the project title and the raw active viewer content. A small "✕ Exit Immersive" button appears top-right as the way back, in addition to `Ctrl+F11` itself.
+- **Icon-only "Files" viewer button**, sitting between Time and the Settings cog, gives direct access to the main Folder viewer (`column2_mode == "folder"`) — previously only reachable indirectly (a `dolphin`/`file_manager` launcher click, "Add to Project" flows, or as an internal fallback). Kept icon-only rather than a full text tab so it doesn't crowd the row of real content-type tabs.
+- **"Open in Right-Panel Viewer"** right-click action on folders in the launcher-column Quick File Browser Panel, sending that folder to the Folder viewer on the right.
+
+### Fixed
+- **Ctrl+S no longer gets hijacked by the Edit Project/Save toggle.** Pressing Ctrl+S while editing a note or a file in the code editor now saves that document directly; the project-settings save/toggle only fires when no document is open for editing, and even then only *saves* an already-in-progress edit session — it no longer silently *enters* edit mode the way it used to.
+- **Folder-browser hover color**: hovering a folder item's blue icon used to make it visually disappear, because the hover background (`bg_button_hover`) was the exact same blue (`#3498db`) as the hand-drawn folder icon in light theme. Added a dedicated neutral-grey `bg_list_hover` theme key for the folder tree/icon-grid views specifically (main Folder viewer + the launcher panel's copy), leaving the general button-hover blue untouched everywhere else.
+
 ## 2026-09-04
 
 ### Added

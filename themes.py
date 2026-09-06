@@ -55,6 +55,21 @@ THEMES = {
         "bg_button_hover": "#3498db",
         "bg_group": "#ffffff",
 
+        # Neutral grey hover for the folder-browser tree/icon-grid views specifically
+        # (main Folder viewer + the Focus-layout launcher panel's own copy) — NOT the
+        # general bg_button_hover, which is this theme's own #3498db, the exact same blue
+        # as the hand-drawn folder icon (_blue_folder_icon()). Hovering a folder item used
+        # to make its icon visually vanish into the identical-color hover background — a
+        # real reported bug, not just a close call. Picked as a mid-grey (Dolphin itself
+        # uses a near-white ~#f2f2f2, but this app's list background is already
+        # bg_secondary #f5f5f5, so a hover that light gave almost no visible contrast here)
+        # — reuses the same grey as bg_config/bg_config_hover's family rather than
+        # inventing an unrelated shade. Item text color is deliberately left unset on
+        # hover (no matching fg_list_hover) so it just keeps whatever the item's own
+        # fg_primary already is — only the background changes, matching Dolphin's own
+        # hover behavior.
+        "bg_list_hover": "#e0e0e0",
+
         # Category/accent colors
         "bg_category": "#3498db",
         "bg_category_hover": "#2980b9",
@@ -159,6 +174,13 @@ THEMES = {
         "bg_button": "#283136",
         "bg_button_hover": "#394459",
         "bg_group": "#2C373E",
+
+        # Neutral grey hover for the folder-browser tree/icon-grid views — see the light
+        # theme's own comment on this key for why it exists separately from
+        # bg_button_hover. Dark theme's blue accents aren't as close a match to the folder
+        # icon's #3498db as light theme's identical bg_button_hover was, but kept as a
+        # dedicated neutral grey anyway for consistency between themes.
+        "bg_list_hover": "#39424a",
 
         # Category/accent colors
         "bg_category": "#283136",

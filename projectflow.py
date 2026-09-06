@@ -1302,12 +1302,16 @@ class ProjectFlowApp(QMainWindow):
             self.set_status("Fullscreen — press F11 or Esc to exit", "info")
 
     def _apply_zen_mode(self):
-        """Collapse the launcher/notepad columns so column2_widget fills the splitter.
-        Idempotent — safe to call after every rebuild, since launcher_widget/
-        notepad_column_widget/columns_splitter are recreated fresh by every
-        build_main_content() call and don't retain this collapsed state on their own (see
-        init_ui()'s reapplication call, mirroring how _enter_focus_layout() is similarly
-        re-invoked after every rebuild for the same reason).
+        """Collapse the launcher/notepad columns so column2_widget fills the splitter, AND
+        hide every other piece of app chrome (title bar buttons, footer, Projects section,
+        the viewer mode-tab row, and every per-viewer toolbar/tab-strip/footer) for a truly
+        immersive view — content only, plus the project title and the exit_zen_btn this
+        leaves behind as the one way back. Idempotent — safe to call after every rebuild,
+        since launcher_widget/notepad_column_widget/columns_splitter/_immersive_hide_widgets
+        are recreated fresh by every build_main_content() call and don't retain this
+        collapsed/hidden state on their own (see init_ui()'s reapplication call, mirroring
+        how _enter_focus_layout() is similarly re-invoked after every rebuild for the same
+        reason).
 
         setMinimumWidth(0) alone (the mechanism _enter_focus_layout() uses for the empty-in-
         Focus-layout notepad_column_widget) is NOT enough here: Qt's splitter sizing falls
@@ -1316,7 +1320,10 @@ class ProjectFlowApp(QMainWindow):
         on launcher_widget (which always has real buttons) left it stuck around 300+px instead
         of 0. setMaximumWidth(0) has no such content-based fallback (there's no
         "maximumSizeHint" — the explicit maximum always wins), so it's what actually forces
-        the collapse for widgets with real content."""
+        the collapse for widgets with real content. The extra widgets in
+        _immersive_hide_widgets don't need this trick — they're plain QVBoxLayout siblings
+        outside the splitter, not splitter children, so a plain .hide() lets the surrounding
+        layout reflow on its own."""
         if not hasattr(self, 'columns_splitter') or not hasattr(self, 'launcher_widget'):
             return
         self.launcher_widget.setMinimumWidth(0)
@@ -1329,6 +1336,17 @@ class ProjectFlowApp(QMainWindow):
             sum(self.columns_splitter.sizes()) or 1000
         )
         self.columns_splitter.setSizes(sizes)
+
+        for w in getattr(self, '_immersive_hide_widgets', []):
+            try:
+                w.hide()
+            except RuntimeError:
+                pass
+        if hasattr(self, 'exit_zen_btn'):
+            try:
+                self.exit_zen_btn.show()
+            except RuntimeError:
+                pass
 
     def toggle_zen_mode(self):
         """Ctrl+F11 toggle. Orthogonal to toggle_fullscreen()/window chrome — this only
@@ -1345,6 +1363,16 @@ class ProjectFlowApp(QMainWindow):
                 self.notepad_column_widget.setMinimumWidth(150)
                 self.notepad_column_widget.setMaximumWidth(QWIDGETSIZE_MAX)
             self.columns_splitter.setSizes(getattr(self, '_pre_zen_sizes', None) or [1, 1, 1])
+            for w in getattr(self, '_immersive_hide_widgets', []):
+                try:
+                    w.show()
+                except RuntimeError:
+                    pass
+            if hasattr(self, 'exit_zen_btn'):
+                try:
+                    self.exit_zen_btn.hide()
+                except RuntimeError:
+                    pass
             self.set_status("")
         else:
             self._pre_zen_sizes = self.columns_splitter.sizes()
@@ -3482,6 +3510,14 @@ class ProjectFlowApp(QMainWindow):
         hint_label = QLabel("💾 Save (top right) to save changes")
         hint_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         toolbar.addWidget(hint_label)
+
+        # Immersive mode hides this toolbar too, same as every other viewer's (see
+        # _apply_zen_mode()) — it's a bare QHBoxLayout, not a widget, so its children are
+        # collected individually.
+        for i in range(toolbar.count()):
+            w = toolbar.itemAt(i).widget()
+            if w is not None:
+                self._immersive_hide_widgets.append(w)
 
         parent_layout.addLayout(toolbar)
 
@@ -7543,6 +7579,12 @@ function filterAliases(q) {{
         self.main_scroll.setWidget(scroll_content_widget)
         main_layout.addWidget(self.main_scroll)  # Put the scroll area into the main window
 
+        # Reset the immersive-mode hide list before rebuilding — create_title_bar()/
+        # build_main_content() below repopulate it from scratch every rebuild (see
+        # _apply_zen_mode()'s docstring for why: these widgets are recreated fresh
+        # each time and don't retain hidden state on their own).
+        self._immersive_hide_widgets = []
+
         # Add title bar with project name and status
         self.create_title_bar(scroll_layout)
 
@@ -7678,6 +7720,25 @@ function filterAliases(q) {{
         self.edit_project_btn.setStyleSheet(_topright_btn_style)
         self.edit_project_btn.clicked.connect(self.toggle_edit_mode)
         title_bar.addWidget(self.edit_project_btn)
+
+        # Immersive mode ("truly immersive" Ctrl+F11, see _apply_zen_mode()) hides every
+        # title-bar widget except the project title itself — collected here rather than
+        # named individually so a future title-bar addition is covered automatically.
+        for i in range(title_bar.count()):
+            w = title_bar.itemAt(i).widget()
+            if w is not None and w is not self.title_search:
+                self._immersive_hide_widgets.append(w)
+
+        # Exit-immersive button — deliberately NOT in the hide list above (it's the one
+        # way back once everything else disappears). Sits rightmost in the title bar,
+        # hidden unless immersive mode is currently active (see _apply_zen_mode()/
+        # toggle_zen_mode()).
+        self.exit_zen_btn = QPushButton("✕ Exit Immersive")
+        self.exit_zen_btn.setToolTip("Exit immersive view (Ctrl+F11)")
+        self.exit_zen_btn.setStyleSheet(_topright_btn_style)
+        self.exit_zen_btn.clicked.connect(self.toggle_zen_mode)
+        self.exit_zen_btn.setVisible(self._zen_mode)
+        title_bar.addWidget(self.exit_zen_btn)
 
         parent_layout.addLayout(title_bar)
 
@@ -8076,8 +8137,17 @@ function filterAliases(q) {{
         parent_layout.addLayout(header_row)
         self._update_color_strip()
 
+        # Immersive mode (see _apply_zen_mode()) hides the whole Projects section —
+        # collected by widget rather than named individually so this stays correct if the
+        # header row's contents change later.
+        for i in range(header_row.count()):
+            w = header_row.itemAt(i).widget()
+            if w is not None:
+                self._immersive_hide_widgets.append(w)
+
         # Container for project buttons (content changes based on mode)
         self.projects_container = QWidget()
+        self._immersive_hide_widgets.append(self.projects_container)
         projects_container_layout = QVBoxLayout(self.projects_container)
         projects_container_layout.setContentsMargins(0, 10, 0, 0)
         projects_container_layout.setSpacing(5)
@@ -10774,6 +10844,26 @@ function filterAliases(q) {{
                 # not in the mode_info loop above) purely so update_viewer_tab_styling() —
                 # called by switch_to_viewer_mode() on every mode switch, without a full
                 # rebuild — keeps its active/resting style in sync like the real tabs.
+                # Files (folder browser) — icon-only, sitting between Time and the Settings
+                # cog rather than as a full text-labeled tab among Notes/Editor/Web/PDF/etc.
+                # (user feedback: as a full tab it read as "an extra thing" crowding a row
+                # that's otherwise all real content types). Still fully a real mode — same
+                # switch_to_viewer_mode()/set_viewer_as_default() support as every other tab,
+                # just de-emphasized visually, mirroring settings_tab_btn's own icon-only
+                # treatment right next to it.
+                folder_tab_btn = QPushButton()
+                folder_tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", "folder.png")
+                if os.path.exists(folder_tab_icon_path):
+                    folder_tab_btn.setIcon(QIcon(folder_tab_icon_path))
+                    folder_tab_btn.setIconSize(QSize(16, 16))
+                folder_tab_btn.setFixedWidth(28)
+                folder_tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                folder_tab_btn.setToolTip("Files (folder browser)")
+                folder_tab_btn.setStyleSheet(active_tab_style if self.column2_mode == "folder" else tab_btn_style)
+                folder_tab_btn.clicked.connect(lambda: self.switch_to_viewer_mode("folder"))
+                header_layout.addWidget(folder_tab_btn)
+                self.viewer_tab_buttons['folder'] = folder_tab_btn
+
                 settings_tab_btn = QPushButton()
                 settings_tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", "settings.png")
                 if os.path.exists(settings_tab_icon_path):
@@ -10804,6 +10894,14 @@ function filterAliases(q) {{
                 viewer_pin_btn.setStyleSheet(tab_btn_style)
                 viewer_pin_btn.clicked.connect(self.set_viewer_as_default)
                 header_layout.addWidget(viewer_pin_btn)
+
+                # Immersive mode hides the whole viewer mode-tab row (Notes/Editor/Web/PDF/
+                # etc. tabs, the settings-cog shortcut, and the pin button) — see
+                # _apply_zen_mode().
+                for i in range(header_layout.count()):
+                    w = header_layout.itemAt(i).widget()
+                    if w is not None:
+                        self._immersive_hide_widgets.append(w)
 
                 self.column2_layout.addLayout(header_layout)
 
@@ -11194,8 +11292,7 @@ function filterAliases(q) {{
                         padding: 4px 8px;
                     }}
                     QTreeWidget::item:hover {{
-                        background-color: {self.t('bg_button_hover')};
-                        color: {self.t('fg_on_dark')};
+                        background-color: {self.t('bg_list_hover')};
                     }}
                     QTreeWidget::item:selected {{
                         background-color: {self.t('bg_category')};
@@ -11233,8 +11330,7 @@ function filterAliases(q) {{
                         border-radius: 3px;
                     }}
                     QListWidget::item:hover {{
-                        background-color: {self.t('bg_button_hover')};
-                        color: {self.t('fg_on_dark')};
+                        background-color: {self.t('bg_list_hover')};
                     }}
                     QListWidget::item:selected {{
                         background-color: {self.t('bg_category')};
@@ -11460,6 +11556,7 @@ function filterAliases(q) {{
         archive_section_layout.setContentsMargins(0, 0, 0, 0)
         archive_section_layout.setSpacing(0)
         self.notes_archive_section = archive_section
+        self._immersive_hide_widgets.append(self.notes_archive_section)
 
         # Add archive buttons at the bottom right
         archive_bar = QHBoxLayout()
@@ -11623,6 +11720,7 @@ function filterAliases(q) {{
             spacer = QWidget()
             spacer.setFixedHeight(20)
             parent_layout.addWidget(spacer)
+            self._immersive_hide_widgets.append(spacer)
 
             # Create unified projects section
             self.create_projects_section(parent_layout)
@@ -11715,6 +11813,8 @@ function filterAliases(q) {{
         footer_layout.addWidget(settings_btn)
 
         parent_layout.addWidget(footer_widget)
+        # Immersive mode hides the whole footer as one unit (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(footer_widget)
 
     def open_config_in_new_window(self, config_path):
         """Launch a new instance of ProjectFlow with the specified config"""
@@ -12917,14 +13017,30 @@ function filterAliases(q) {{
             self.status_label.setText("✓ Project settings saved")
 
     def _on_global_ctrl_s(self):
-        """Global Ctrl+S handler. Historically bound directly to toggle_edit_mode — now
-        saves the code editor first when it's the active viewer, since Ctrl+S reads as
-        "save" there far more than as "toggle launcher edit mode". Falls through to the
-        original behavior otherwise, unchanged."""
+        """Global Ctrl+S handler. Historically bound directly to toggle_edit_mode — Ctrl+S
+        reads as "save this document" far more than "toggle launcher edit mode" whenever a
+        document is actually open for editing, so that always takes priority: the code
+        editor, the Notes panel (Focus layout), or an arbitrary markdown file open in the
+        general Web viewer (Standard layout) — all three autosave on a timer already, but
+        Ctrl+S should still force an immediate save rather than doing nothing.
+
+        Only falls through to the project-settings save/toggle when none of those apply,
+        and even then only SAVES (exits edit mode) if a project edit session is already in
+        progress — it deliberately no longer ENTERS edit mode. Ctrl+S used to hijack
+        editing a note/code file that had no pinned default and silently pop open the
+        Settings viewer instead, which matched neither "save this" nor "save the project"
+        (there's nothing to save yet if edit mode was never entered)."""
         if self.column2_mode == "code" and self._code_session.editing:
             self._code_editor_save(self._code_session)
             return
-        self.toggle_edit_mode()
+        if self.column2_mode == "notes" and getattr(self, '_notes_muya_session', None) and self._notes_muya_session.editing:
+            self._muya_save(self._notes_muya_session)
+            return
+        if self.column2_mode == "webview" and getattr(self, '_muya_session', None) and self._muya_session.editing:
+            self._muya_save(self._muya_session)
+            return
+        if self.edit_mode:
+            self._save_project_and_exit_edit_mode()
 
     def _toggle_group_by_type(self):
         """Toggle the dynamic Group-by-Type launcher view (display-only, see _build_grouped_categories)."""
@@ -13392,6 +13508,8 @@ function filterAliases(q) {{
         toolbar_layout.addStretch()
 
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
 
     def _build_pdf_footer_page_nav(self):
         """Small prev/page/next controls duplicating the toolbar's paging buttons,
@@ -13539,6 +13657,7 @@ function filterAliases(q) {{
         clears and repopulates the same layout reference afterward for in-place updates
         (opening/closing/switching a tab) without a full UI rebuild."""
         self.pdf_tab_strip_widget = QWidget()
+        self._immersive_hide_widgets.append(self.pdf_tab_strip_widget)
         self.pdf_tab_strip_layout = QHBoxLayout(self.pdf_tab_strip_widget)
         self.pdf_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
         self.pdf_tab_strip_layout.setSpacing(2)
@@ -13949,6 +14068,10 @@ function filterAliases(q) {{
         btn.setToolTip(tooltip)
         btn.clicked.connect(callback)
         layout.addWidget(btn)
+        # Immersive mode hides every viewer footer strip built through here — a single
+        # choke point covers all of PDF/Web/Image/Code/Console/Folder/Notes at once (see
+        # _apply_zen_mode()).
+        self._immersive_hide_widgets.append(footer)
         return footer
 
     def open_webview_in_external_browser(self):
@@ -14267,6 +14390,8 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(self.html_source_btn)
 
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
         self._update_md_edit_buttons()
 
     def webview_back(self):
@@ -14440,6 +14565,7 @@ function filterAliases(q) {{
     def _build_web_tab_strip(self, parent_layout):
         """Build the row of Web tab buttons — mirrors _build_pdf_tab_strip()."""
         self.web_tab_strip_widget = QWidget()
+        self._immersive_hide_widgets.append(self.web_tab_strip_widget)
         self.web_tab_strip_layout = QHBoxLayout(self.web_tab_strip_widget)
         self.web_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
         self.web_tab_strip_layout.setSpacing(2)
@@ -14651,6 +14777,8 @@ function filterAliases(q) {{
 
         toolbar_layout.addStretch()
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
 
     def open_image_in_external_viewer(self):
         """Open the current image in an external viewer (gwenview)"""
@@ -14734,6 +14862,8 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(self.code_save_btn)
 
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
 
     def create_help_toolbar(self, parent_layout):
         """Create a toolbar for the help viewer"""
@@ -14771,6 +14901,8 @@ function filterAliases(q) {{
 
         toolbar_layout.addStretch()
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
 
     def create_console_toolbar(self, parent_layout):
         """Create a toolbar for the console"""
@@ -14867,6 +14999,8 @@ function filterAliases(q) {{
                 toolbar_layout.addWidget(overflow_btn)
 
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
 
     def console_open_directory(self):
         """Open a directory picker and navigate the console to it. For ttyd, this retargets
@@ -15151,6 +15285,7 @@ function filterAliases(q) {{
         close button each) — sits between the toolbar and the console webview. Mirrors
         _build_pdf_tab_strip() exactly."""
         self.terminal_tab_strip_widget = QWidget()
+        self._immersive_hide_widgets.append(self.terminal_tab_strip_widget)
         self.terminal_tab_strip_layout = QHBoxLayout(self.terminal_tab_strip_widget)
         self.terminal_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
         self.terminal_tab_strip_layout.setSpacing(2)
@@ -15525,6 +15660,8 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(default_btn)
 
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
 
     def _build_launcher_folder_panel(self, column_layout):
         """Build the compact file-browser panel embedded in the Focus-layout launcher column.
@@ -15646,8 +15783,7 @@ function filterAliases(q) {{
                 padding: 4px 8px;
             }}
             QTreeWidget::item:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
+                background-color: {self.t('bg_list_hover')};
             }}
             QTreeWidget::item:selected {{
                 background-color: {self.t('bg_category')};
@@ -15685,8 +15821,7 @@ function filterAliases(q) {{
                 border-radius: 3px;
             }}
             QListWidget::item:hover {{
-                background-color: {self.t('bg_button_hover')};
-                color: {self.t('fg_on_dark')};
+                background-color: {self.t('bg_list_hover')};
             }}
             QListWidget::item:selected {{
                 background-color: {self.t('bg_category')};
@@ -16474,7 +16609,8 @@ function filterAliases(q) {{
         item_type = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if not path:
             return
-        self._build_folder_context_menu(path, item_type).exec(self.launcher_folder_browser.mapToGlobal(position))
+        self._build_folder_context_menu(path, item_type, allow_open_in_viewer=True).exec(
+            self.launcher_folder_browser.mapToGlobal(position))
 
     def on_launcher_folder_icon_item_clicked(self, item):
         """Handle single-click in the launcher-column mini panel's icon-grid view"""
@@ -16494,7 +16630,8 @@ function filterAliases(q) {{
         item_type = item.data(Qt.ItemDataRole.UserRole + 1)
         if not path:
             return
-        self._build_folder_context_menu(path, item_type).exec(self.launcher_folder_icon_view.mapToGlobal(position))
+        self._build_folder_context_menu(path, item_type, allow_open_in_viewer=True).exec(
+            self.launcher_folder_icon_view.mapToGlobal(position))
 
     def _open_file_in_webview(self, path):
         """Open a local HTML file in the built-in webview panel — always opens as a new tab
@@ -16742,6 +16879,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         toolbar_layout.addWidget(self.notes_save_btn)
 
         parent_layout.addWidget(toolbar_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(toolbar_widget)
         self._build_notes_tab_strip(parent_layout)
         self._update_notes_toolbar()
 
@@ -17008,6 +17147,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """Build the row of Notes tab buttons — mirrors _build_pdf_tab_strip(). Focus
         layout only (called from create_notes_toolbar(), itself Focus-layout-gated)."""
         self.notes_tab_strip_widget = QWidget()
+        self._immersive_hide_widgets.append(self.notes_tab_strip_widget)
         self.notes_tab_strip_layout = QHBoxLayout(self.notes_tab_strip_widget)
         self.notes_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
         self.notes_tab_strip_layout.setSpacing(2)
@@ -17617,6 +17757,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     def _build_code_tab_strip(self, parent_layout):
         """Build the row of Editor tab buttons — mirrors _build_pdf_tab_strip()."""
         self.code_tab_strip_widget = QWidget()
+        self._immersive_hide_widgets.append(self.code_tab_strip_widget)
         self.code_tab_strip_layout = QHBoxLayout(self.code_tab_strip_widget)
         self.code_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
         self.code_tab_strip_layout.setSpacing(2)
@@ -17712,8 +17853,17 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         editor = self.get_configured_editor()
         subprocess.Popen([editor, path], start_new_session=True)
 
-    def _build_folder_context_menu(self, path, item_type):
-        """Build the right-click menu for a folder-browser entry — shared by the tree and icon views."""
+    def _build_folder_context_menu(self, path, item_type, allow_open_in_viewer=False):
+        """Build the right-click menu for a folder-browser entry — shared by the tree and icon views.
+
+        `allow_open_in_viewer`: adds an "Open in Right-Panel Viewer" action for directories,
+        sending the folder to the main Folder viewer (preview_in_folder_browser()) on the
+        right — a way to browse the left-hand Quick File Browser Panel while pulling a
+        specific folder up into the wider right-panel view. Only passed True by the
+        launcher-panel's own two context-menu call sites (launcher_folder_browser_context_menu/
+        launcher_folder_icon_view_context_menu) — the main Folder viewer's own two call sites
+        leave this at its default False, since offering "open in right panel" there would
+        just re-navigate the panel you're already looking at to itself."""
         menu = QMenu(self)
 
         # Add to Project action
@@ -17762,6 +17912,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             terminal_action = menu.addAction("Open in Terminal")
             terminal_action.triggered.connect(lambda: subprocess.Popen(
                 self._get_terminal_workdir_command(path), start_new_session=True))
+
+        if item_type == "dir" and allow_open_in_viewer:
+            open_in_viewer_action = menu.addAction("Open in Right-Panel Viewer")
+            open_in_viewer_action.triggered.connect(lambda checked, p=path: self.preview_in_folder_browser(p))
 
         return menu
 
@@ -18867,6 +19021,7 @@ Project created: {date_str}
     def _build_image_tab_strip(self, parent_layout):
         """Build the row of Image tab buttons — mirrors _build_pdf_tab_strip()."""
         self.image_tab_strip_widget = QWidget()
+        self._immersive_hide_widgets.append(self.image_tab_strip_widget)
         self.image_tab_strip_layout = QHBoxLayout(self.image_tab_strip_widget)
         self.image_tab_strip_layout.setContentsMargins(0, 0, 0, 4)
         self.image_tab_strip_layout.setSpacing(2)
