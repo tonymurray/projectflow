@@ -16951,7 +16951,8 @@ function filterAliases(q) {{
         """Handle right-click in the launcher-column quick file-browser panel"""
         item = self.launcher_folder_browser.itemAt(position)
         if not item:
-            self._build_folder_background_context_menu(self.launcher_folder_current_path).exec(
+            self._build_folder_background_context_menu(
+                self.launcher_folder_current_path, allow_open_in_viewer=True).exec(
                 self.launcher_folder_browser.mapToGlobal(position))
             return
         path = item.data(0, Qt.ItemDataRole.UserRole)
@@ -16972,7 +16973,8 @@ function filterAliases(q) {{
         """Handle right-click in the launcher-column mini panel's icon-grid view"""
         item = self.launcher_folder_icon_view.itemAt(position)
         if not item:
-            self._build_folder_background_context_menu(self.launcher_folder_current_path).exec(
+            self._build_folder_background_context_menu(
+                self.launcher_folder_current_path, allow_open_in_viewer=True).exec(
                 self.launcher_folder_icon_view.mapToGlobal(position))
             return
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -18256,6 +18258,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 viewer_action = menu.addAction("🌐 Open in Web Viewer")
                 viewer_action.triggered.connect(lambda: self._open_file_in_webview(path))
 
+        # Add Baloo Tag (files and directories, only when the integration is enabled)
+        if self.settings.get('enable_baloo_tags', False):
+            tag_action = menu.addAction("🏷️ Add Baloo Tag...")
+            tag_action.triggered.connect(lambda checked, p=path: self._prompt_add_baloo_tag(p))
+
         # Open in Terminal (for directories only)
         if item_type == "dir":
             terminal_action = menu.addAction("Open in Terminal")
@@ -18266,9 +18273,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             open_in_viewer_action = menu.addAction("Open in Right-Panel Viewer")
             open_in_viewer_action.triggered.connect(lambda checked, p=path: self.preview_in_folder_browser(p))
 
-        # Copy to.../Move to... (folder-picker dialog) — available for both files and
-        # folders, unlike "Add to Documentation..." above which is files-only.
+        # Rename, Copy to.../Move to... (folder-picker dialog) — available for both files
+        # and folders, unlike "Add to Documentation..." above which is files-only.
         menu.addSeparator()
+        rename_action = menu.addAction("✏️ Rename...")
+        rename_action.triggered.connect(lambda checked, p=path: self._rename_folder_item(p))
         copy_to_action = menu.addAction("Copy to...")
         copy_to_action.triggered.connect(lambda checked, p=path: self._browse_copy_or_move(p, "copy"))
         move_to_action = menu.addAction("Move to...")
@@ -18341,6 +18350,56 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return
         if self._copy_or_move_path(src_path, dest_dir, action):
             self._refresh_all_folder_views()
+
+    def _rename_folder_item(self, path):
+        """Rename a file/folder in place, prompting for a new name. Refuses on collision
+        (no silent overwrite) rather than prompting to replace — unlike Copy to/Move to,
+        an unwanted rename-over is harder to notice/undo since the original name is gone."""
+        path = os.path.expanduser(path)
+        old_name = os.path.basename(path.rstrip('/'))
+        from PyQt6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=old_name)
+        if not ok or not new_name or new_name == old_name:
+            return
+        new_path = os.path.join(os.path.dirname(path), new_name)
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Rename", f'"{new_name}" already exists in this folder.')
+            return
+        try:
+            os.rename(path, new_path)
+        except OSError as e:
+            self.set_status(f"Rename failed: {e}", "error")
+            return
+        self.set_status(f'Renamed "{old_name}" to "{new_name}"', "success")
+        self._refresh_all_folder_views()
+
+    def _prompt_add_baloo_tag(self, path):
+        """Prompt for a tag name and apply it to a single file/folder via the existing
+        _baloo_tag_append() xattr helper. Pre-fills the current project's own derived tag
+        name as a convenience (the most likely tag for something inside this project) but
+        the field is freely editable — unlike _tag_current_project_files_baloo()'s bulk
+        sweep, this targets one arbitrary path with an arbitrary tag."""
+        if not shutil.which('setfattr'):
+            self.set_status("'setfattr' not found — cannot add Baloo tags (needs the 'attr' package)", "error")
+            return
+        path = os.path.expanduser(path)
+        from PyQt6.QtWidgets import QInputDialog
+        tag_name, ok = QInputDialog.getText(
+            self, "Add Baloo Tag", "Tag name:", text=self.get_tag_name_for_config()
+        )
+        tag_name = tag_name.strip()
+        if not ok or not tag_name:
+            return
+        if self._baloo_tag_append(path, tag_name):
+            balooctl = shutil.which('balooctl6') or shutil.which('balooctl')
+            if balooctl:
+                try:
+                    subprocess.run([balooctl, 'index', path], capture_output=True, timeout=15)
+                except Exception:
+                    pass
+            self.set_status(f'Tagged "{os.path.basename(path)}" with \'{tag_name}\'', "success")
+        else:
+            self.set_status(f'Failed to tag "{os.path.basename(path)}"', "error")
 
     def _show_folder_drop_menu(self, urls, dest_dir, global_pos):
         """Dolphin-style Copy Here / Move Here / Cancel popup for a filesystem drag-and-drop
@@ -18444,11 +18503,26 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 entries.append({'label': name, 'source_path': full_path, 'kind': 'file'})
         return entries
 
-    def _build_folder_background_context_menu(self, target_dir):
+    def _build_folder_background_context_menu(self, target_dir, allow_open_in_viewer=False):
         """Right-click menu for empty space in a folder-browser view (no item under the
-        cursor) — currently just "New from Template", shared by all four folder-browsing
-        view widgets (main tree/icons, launcher-panel tree/icons)."""
+        cursor) — "New from Template", plus an optional "Open This Folder in Right-Panel
+        Viewer" action, shared by all four folder-browsing view widgets (main tree/icons,
+        launcher-panel tree/icons).
+
+        `allow_open_in_viewer`: mirrors _build_folder_context_menu()'s own parameter of the
+        same name — only passed True by the launcher-panel's two background-menu call sites
+        (launcher_folder_browser_context_menu/launcher_folder_icon_view_context_menu), so a
+        folder containing only files (nothing to right-click for the existing per-item
+        version of this action) can still be sent to the right-panel Folder viewer. The main
+        Folder viewer's own two call sites leave this at its default False, since offering
+        "open in right panel" there would just re-navigate the panel you're already looking
+        at to itself."""
         menu = QMenu(self)
+        if allow_open_in_viewer:
+            open_in_viewer_action = menu.addAction("Open This Folder in Right-Panel Viewer")
+            open_in_viewer_action.triggered.connect(
+                lambda checked, p=target_dir: self.preview_in_folder_browser(p))
+            menu.addSeparator()
         entries = self._get_template_entries()
         template_menu = menu.addMenu("New from Template")
         if not entries:

@@ -2,6 +2,13 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-07
+
+### Added
+- **Rename** right-click action on files/folders in every folder-browsing panel (tree and icon-grid, both sides) — prompts for a new name, refuses on a name collision rather than overwriting.
+- **Add Baloo Tag** right-click action on files/folders (shown only when the Baloo Tags integration is enabled in Settings) — prompts for a tag name, pre-filled with the current project's own derived tag, and applies it via the existing xattr-tagging mechanism.
+- **"Open This Folder in Right-Panel Viewer"** on the left Quick File Browser Panel's empty-space right-click menu, for folders that contain only files (nothing to right-click for the existing per-item version of this action) — sends the currently-browsed folder itself to the right-hand Folder viewer.
+
 ## 2026-09-06
 
 ### Added
