@@ -7,6 +7,9 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 ### Added
 - **Local automated backup**: a new "Backup" section in Settings lets you point at a backup directory and enable a once-per-day automatic zip backup of your project configs, notes, and app settings, taken at startup and skipped if that day's backup already exists. A "Backup Now" button creates an additional timestamped snapshot on demand in a `snapshots/` subfolder. Added after a Nextcloud sync issue briefly caused real project data loss — an unreachable backup directory always surfaces a visible warning (throttled to once per day for the automatic check) rather than failing silently, since a backup feature that fails quietly would defeat its own purpose.
 
+### Fixed
+- **Active viewer resetting on unrelated actions**: editing the project's notes (or any other viewer tab), then clicking something completely unrelated like the footer's "▲/▸ Projects" toggle, could silently snap the viewer back to the project's pinned default (or plain "Web") — because the active-viewer-tab state had no protection against the app's frequent incidental UI refreshes, unlike similar state (the code editor session, launcher tab defaults) that had already been fixed this way. Two independent causes, both fixed: the reload logic that re-applies the pinned default now only runs on a genuine project switch, and restoring a remembered Web tab's content during a rebuild no longer forces the viewer into Web mode as a side effect. The active viewer now stays put through any refresh that isn't an actual project switch.
+
 ## 2026-09-07
 
 ### Added

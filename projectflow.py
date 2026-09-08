@@ -7077,6 +7077,15 @@ function filterAliases(q) {{
     def load_notes(self):
         """Load notes from markdown file, PDF state and webview state from JSON config"""
         self.notes_data = {}
+        # Guards column2_mode (which viewer tab is active) from being reset on every
+        # incidental refresh_projects() call (~45 call sites — most are unrelated UI
+        # actions, e.g. toggling the Projects section footer button) — only a genuine
+        # project switch should reset to "pdf", restore the last-saved mode, or reapply
+        # the project's pinned default viewer. Mirrors the existing _code_session_loaded_for
+        # gate a few lines below (added for the identical reason), tracked independently
+        # per this codebase's convention of one sentinel per piece of guarded state.
+        _column2_mode_is_project_switch = self.current_config_file != getattr(self, '_column2_mode_loaded_for', None)
+        self._column2_mode_loaded_for = self.current_config_file
         # Rebuilt fresh from disk on every call, like pdf_tabs/image_tabs/web_tabs — cheap
         # here since a NotesTabState holds no attached resource, just a path. Deliberately
         # separate from self.notes_md_path (NOT reset here — see that variable's own
@@ -7114,7 +7123,8 @@ function filterAliases(q) {{
         self.webview_url = None
         self.webview_md_path = None
         self.webview_url_bar = None
-        self.column2_mode = "pdf"  # "pdf", "webview", or "image"
+        if _column2_mode_is_project_switch:
+            self.column2_mode = "pdf"  # "pdf", "webview", or "image"
         # Initialize image state variables. self.image_tabs is the source of truth for the
         # multi-tab Image viewer (see ImageTabState, mirrors the PDF viewer's PdfTabState);
         # image_path/image_pixmap/image_zoom remain proxies mirroring whichever tab is
@@ -7203,7 +7213,8 @@ function filterAliases(q) {{
                 # other local file -> html_file, else a plain url).
                 if "webview_state" in config_data:
                     webview_state = config_data["webview_state"]
-                    self.column2_mode = webview_state.get("mode", "pdf")
+                    if _column2_mode_is_project_switch:
+                        self.column2_mode = webview_state.get("mode", "pdf")
                     if "web_tabs" in config_data:
                         for tab_data in config_data["web_tabs"]:
                             self.web_tabs.append(WebTabState(tab_data.get("kind", "url"), tab_data.get("value")))
@@ -7289,8 +7300,13 @@ function filterAliases(q) {{
             else:
                 self.console_path = getattr(self, 'config_folder_path', None)
 
-            # Use config-specified column2 default mode if set
-            if hasattr(self, 'config_column2_default') and self.config_column2_default:
+            # Use config-specified column2 default mode if set — only on an actual
+            # project switch (see _column2_mode_is_project_switch above), never on an
+            # incidental refresh of the same project, otherwise clicking any of
+            # refresh_projects()'s ~45 unrelated trigger points (e.g. the footer's
+            # Projects-section toggle) while on a different tab would silently snap the
+            # active viewer back to this pinned default mid-edit.
+            if _column2_mode_is_project_switch and hasattr(self, 'config_column2_default') and self.config_column2_default:
                 # "examples" was merged into "help" (now a combined README + Examples tabbed
                 # page, accessed via the footer rather than the viewer tab row) — translate
                 # old configs that still have this saved rather than silently ignoring them.
@@ -11976,9 +11992,16 @@ function filterAliases(q) {{
                 # pattern as the PDF/Image tabs restore. _activate_web_tab() (not
                 # _open_web_tab()/_open_markdown_in_webview()) is used here deliberately: it
                 # just navigates to an existing tab, it doesn't create a new one.
+                # switch_mode=False: this is a content-sync on rebuild, not a user asking to
+                # view this tab — without it, ANY rebuild (including ones with nothing to do
+                # with the Web viewer, e.g. toggling the Projects section footer button)
+                # unconditionally forced column2_mode to "webview" whenever web_tabs was
+                # non-empty, regardless of which tab the user was actually looking at. PDF/
+                # Image tab restoration never had this problem since neither ever touches
+                # column2_mode in the first place (see _activate_pdf_tab()/_activate_image_tab()).
                 if self.web_tabs:
                     _restore_index = self.web_active_index if 0 <= self.web_active_index < len(self.web_tabs) else 0
-                    self._activate_web_tab(_restore_index)
+                    self._activate_web_tab(_restore_index, switch_mode=False)
 
                 # Load every remembered Image tab's pixmap (reopened every rebuild, same
                 # reasoning as the PDF tabs restore above) and activate whichever was active.
@@ -14931,16 +14954,23 @@ function filterAliases(q) {{
         parsed = urllib.parse.urlparse(tab.value)
         return parsed.netloc or tab.value
 
-    def _activate_web_tab(self, index):
+    def _activate_web_tab(self, index, switch_mode=True):
         """Make self.web_tabs[index] the active tab. Flushes any unsaved markdown content
         in the CURRENTLY displayed tab first (see _muya_flush_before_switch()) — without
         this, switching away from a markdown tab faster than the ~1.2s autosave poll
         silently dropped the last few seconds of edits, since the target tab's content
         below replaces the page outright (a no-op for URL/HTML tabs, which aren't editing
-        anything)."""
-        self._muya_flush_before_switch(self._muya_session, lambda: self._do_activate_web_tab(index))
+        anything).
 
-    def _do_activate_web_tab(self, index):
+        `switch_mode=False` is for build_main_content()'s rebuild-restore call only — it
+        should sync the shared webview's content to the last-active tab without forcing
+        column2_mode to "webview", matching _do_activate_notes_tab()'s own documented
+        reasoning for never touching column2_mode from a restore path. Every interactive
+        call site (tab-strip clicks, opening/navigating a tab) keeps the default True,
+        since actually switching to view that tab is exactly the point there."""
+        self._muya_flush_before_switch(self._muya_session, lambda: self._do_activate_web_tab(index, switch_mode))
+
+    def _do_activate_web_tab(self, index, switch_mode=True):
         """The actual tab switch, once any previous markdown tab's content has been safely
         flushed: navigates the one shared self.webview to the target tab (markdown files go
         through the existing Muya bridge; URLs/local HTML get a plain setUrl()) and
@@ -14957,7 +14987,7 @@ function filterAliases(q) {{
         index = min(index, len(self.web_tabs) - 1)
         self.web_active_index = index
         tab = self.web_tabs[index]
-        if self.column2_mode != "webview":
+        if switch_mode and self.column2_mode != "webview":
             self.switch_to_viewer_mode("webview")
         if tab.kind == "markdown":
             self._open_markdown_in_muya_editor(tab.value)
