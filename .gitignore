@@ -24,6 +24,15 @@ docs/
 course/
 ErrorCrash.txt
 
+# Rejected/unfinished icon design drafts — one-off exploration files that never made it
+# into the actual icon-development.html timeline (see docs/icon-development.md for what
+# each one was). Not deleted since they're occasionally referenced when discussing icon
+# design, but not meant to clutter the tracked assets/ directory.
+assets/icon-version29-aug.svg
+assets/icon_Alt.svg
+assets/icon_Alt2.svg
+assets/project-flow-var.svg
+
 # Scratch clone of the marktext monorepo (reference only, used to build assets/muya/)
 marktext-develop/
 

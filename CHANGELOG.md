@@ -2,6 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-08
+
+### Added
+- **Local automated backup**: a new "Backup" section in Settings lets you point at a backup directory and enable a once-per-day automatic zip backup of your project configs, notes, and app settings, taken at startup and skipped if that day's backup already exists. A "Backup Now" button creates an additional timestamped snapshot on demand in a `snapshots/` subfolder. Added after a Nextcloud sync issue briefly caused real project data loss — an unreachable backup directory always surfaces a visible warning (throttled to once per day for the automatic check) rather than failing silently, since a backup feature that fails quietly would defeat its own purpose.
+
 ## 2026-09-07
 
 ### Added

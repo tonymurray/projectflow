@@ -30,6 +30,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import datetime
+import zipfile
 import csv as _csv
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -1388,6 +1389,10 @@ class ProjectFlowApp(QMainWindow):
         self.load_launch_handlers()
         self.init_ui()
 
+        # Daily backup check — must come after init_ui(), since it reports via
+        # set_status() which needs self.status_label (built inside init_ui()).
+        self._run_daily_backup_if_needed()
+
     def resizeEvent(self, event):
         """Handle window resize"""
         super().resizeEvent(event)
@@ -1951,6 +1956,49 @@ class ProjectFlowApp(QMainWindow):
         notes_layout.addWidget(self._settings_notes_folder)
         notes_layout.addWidget(notes_browse)
         layout.addRow(notes_label, notes_layout)
+
+        # Backup
+        section_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px; padding-top: 8px;"
+        backup_section = QLabel("Backup")
+        backup_section.setStyleSheet(section_style)
+        layout.addRow(backup_section)
+
+        backup_label = QLabel("Backup Directory:")
+        backup_label.setStyleSheet(label_style)
+        backup_layout = QHBoxLayout()
+        self._settings_backup_dir = QLineEdit()
+        self._settings_backup_dir.setText(self.settings.get("backup_directory", ""))
+        self._settings_backup_dir.setPlaceholderText("Path to backup folder (leave empty to disable)")
+        self._settings_backup_dir.setStyleSheet(input_style)
+        backup_browse = QPushButton("Browse...")
+        backup_browse.clicked.connect(lambda: self._browse_folder(self._settings_backup_dir))
+        backup_layout.addWidget(self._settings_backup_dir)
+        backup_layout.addWidget(backup_browse)
+        layout.addRow(backup_label, backup_layout)
+
+        self._settings_daily_backup = QCheckBox("Daily backup (on first app launch each day)")
+        self._settings_daily_backup.setChecked(self.settings.get("daily_backup_enabled", False))
+        layout.addRow(QLabel(""), self._settings_daily_backup)
+
+        daily_backup_hint = QLabel(
+            "Zips your project configs, notes, and app settings into the backup folder,\n"
+            "dated (e.g. backup-2026-09-08.zip). Runs once per day at startup, skipped if\n"
+            "today's backup already exists. Consider deleting older backups from time to time."
+        )
+        daily_backup_hint.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
+        layout.addRow(QLabel(""), daily_backup_hint)
+
+        backup_now_btn = QPushButton("Backup Now")
+        backup_now_btn.setStyleSheet(action_btn_style)
+        backup_now_btn.setToolTip("Create an additional timestamped snapshot immediately")
+        backup_now_btn.clicked.connect(self._on_backup_now_clicked)
+        self._settings_backup_size_label = QLabel(self._get_backup_folder_size_text())
+        self._settings_backup_size_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
+        backup_now_layout = QHBoxLayout()
+        backup_now_layout.addWidget(backup_now_btn)
+        backup_now_layout.addWidget(self._settings_backup_size_label)
+        backup_now_layout.addStretch()
+        layout.addRow(QLabel(""), backup_now_layout)
 
         # Code Editor: extra extensions to route into the internal editor
         code_ext_label = QLabel("Code Editor Extensions:")
@@ -4891,6 +4939,13 @@ class ProjectFlowApp(QMainWindow):
             elif "notes_folder" in self.settings:
                 del self.settings["notes_folder"]
 
+            backup_dir = self._settings_backup_dir.text().strip()
+            if backup_dir:
+                self.settings["backup_directory"] = backup_dir
+            elif "backup_directory" in self.settings:
+                del self.settings["backup_directory"]
+            self.settings["daily_backup_enabled"] = self._settings_daily_backup.isChecked()
+
             code_editor_extensions = self._settings_code_editor_extensions.text().strip()
             if code_editor_extensions:
                 self.settings["code_editor_extensions"] = code_editor_extensions
@@ -6216,6 +6271,164 @@ StartupNotify=true
         # Use configured folder, or default to 'notes' subdirectory
         folder = self.settings.get("notes_folder", os.path.join(self.script_dir, "notes"))
         return os.path.expanduser(folder)
+
+    def get_projects_directory(self):
+        """Get the folder where project config JSON files are stored"""
+        return os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+
+    # ------------------------------------------------------------------
+    # Backup
+    # ------------------------------------------------------------------
+
+    def _perform_backup(self, zip_path):
+        """Create a zip backup of the projects dir, notes dir, and app settings file
+        at zip_path. Returns (success, message) — never raises, so callers can decide
+        how loudly to surface a failure (status bar vs. modal dialog)."""
+        try:
+            os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                sources = [
+                    ("configs", self.get_projects_directory()),
+                    ("notes", self.get_notes_folder()),
+                ]
+                for arc_prefix, src_dir in sources:
+                    if not os.path.isdir(src_dir):
+                        continue
+                    for root, _dirs, files in os.walk(src_dir):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            rel = os.path.join(arc_prefix, os.path.relpath(full, src_dir))
+                            zf.write(full, rel)
+                if os.path.isfile(self.settings_file):
+                    zf.write(self.settings_file, os.path.basename(self.settings_file))
+            return True, f"Backup created: {os.path.basename(zip_path)}"
+        except Exception as e:
+            if os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except OSError:
+                    pass
+            return False, f"Backup failed: {e}"
+
+    def _get_backup_folder_size_text(self):
+        """Human-readable summary of the *saved* backup folder's contents, for
+        display when the Settings tab is first built. Computed on demand, not
+        live, matching this tab's existing no-live-recompute convention."""
+        backup_dir = self.settings.get("backup_directory", "").strip()
+        if not backup_dir:
+            return "Backup folder: not set"
+        return self._backup_folder_size_text_for(os.path.expanduser(backup_dir))
+
+    def _backup_folder_size_text_for(self, backup_dir):
+        """Same summary as _get_backup_folder_size_text(), but for an arbitrary
+        already-resolved directory — used to refresh the label right after Backup
+        Now, which should reflect the directory just written to even if the field
+        hasn't been Applied/saved to settings yet."""
+        if not os.path.isdir(backup_dir):
+            return "Backup folder: unreachable"
+        total_bytes = 0
+        file_count = 0
+        for root, _dirs, files in os.walk(backup_dir):
+            for fname in files:
+                try:
+                    total_bytes += os.path.getsize(os.path.join(root, fname))
+                    file_count += 1
+                except OSError:
+                    pass
+        size_mb = total_bytes / (1024 * 1024)
+        if size_mb >= 1024:
+            size_text = f"{size_mb / 1024:.2f} GB"
+        else:
+            size_text = f"{size_mb:.1f} MB"
+        return f"Backup folder: {file_count} files, {size_text}"
+
+    def _warn_backup_dir_unreachable(self, backup_dir):
+        """Surface an unreachable backup directory loudly (once per day, so a
+        persistently-unmounted drive doesn't spam a modal on every startup) rather
+        than silently skipping — the whole point of this feature is not repeating
+        the silent-sync-failure data-loss scenario that motivated it."""
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        if self.settings.get("backup_last_warned_unreachable") != today:
+            QMessageBox.warning(
+                self, "Backup Directory Unreachable",
+                f"The configured backup folder is not accessible:\n\n{backup_dir}\n\n"
+                "Today's automatic backup was skipped. Check that the drive is "
+                "connected/mounted (this warning will only be shown once today)."
+            )
+            self.settings["backup_last_warned_unreachable"] = today
+            self.save_settings()
+        else:
+            self.set_status(f"Backup skipped — directory unreachable: {backup_dir}", "warning")
+
+    def _run_daily_backup_if_needed(self):
+        """Called once at startup (after init_ui, since it relies on set_status()).
+        Skips entirely if the feature is off or no directory is configured; skips
+        silently if today's backup already exists."""
+        if not self.settings.get("daily_backup_enabled", False):
+            return
+        backup_dir = self.settings.get("backup_directory", "").strip()
+        if not backup_dir:
+            return
+        backup_dir = os.path.expanduser(backup_dir)
+
+        if not os.path.isdir(backup_dir):
+            # Not yet created (e.g. a freshly-typed path) is not the same as
+            # unreachable (e.g. an unmounted drive) — try to create it first,
+            # matching Backup Now's behavior, and only warn if that itself fails.
+            try:
+                os.makedirs(backup_dir, exist_ok=True)
+            except OSError:
+                self._warn_backup_dir_unreachable(backup_dir)
+                return
+
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        zip_path = os.path.join(backup_dir, f"backup-{today}.zip")
+        if os.path.exists(zip_path):
+            return  # already backed up today
+
+        success, message = self._perform_backup(zip_path)
+        self.set_status(message, "success" if success else "error")
+
+    def _on_backup_now_clicked(self):
+        """Settings dialog 'Backup Now' button — a deliberate, synchronous,
+        user-initiated snapshot into <backup_dir>/snapshots/, always reported via a
+        modal (unlike the throttled daily-backup warning, since the user is looking
+        right at the dialog waiting for a result)."""
+        backup_dir = self._settings_backup_dir.text().strip()
+        if not backup_dir:
+            QMessageBox.warning(self, "Backup Now", "Set a backup directory first.")
+            return
+        backup_dir = os.path.expanduser(backup_dir)
+        snapshots_dir = os.path.join(backup_dir, "snapshots")
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            if not os.path.isdir(backup_dir):
+                try:
+                    os.makedirs(backup_dir, exist_ok=True)
+                except Exception:
+                    QApplication.restoreOverrideCursor()
+                    QMessageBox.warning(self, "Backup Now",
+                        f"Backup folder is not accessible:\n\n{backup_dir}")
+                    return
+            stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            zip_path = os.path.join(snapshots_dir, f"snapshot-{stamp}.zip")
+            # Two clicks within the same second would otherwise collide and silently
+            # overwrite the first snapshot (zipfile 'w' mode truncates) — disambiguate.
+            suffix = 2
+            while os.path.exists(zip_path):
+                zip_path = os.path.join(snapshots_dir, f"snapshot-{stamp}_{suffix}.zip")
+                suffix += 1
+            success, message = self._perform_backup(zip_path)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if success:
+            self._settings_backup_size_label.setText(self._backup_folder_size_text_for(backup_dir))
+            QMessageBox.information(self, "Backup Now", message)
+        else:
+            QMessageBox.warning(self, "Backup Now", message)
 
     # ------------------------------------------------------------------
     # Shell alias helpers
