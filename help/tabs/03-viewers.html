@@ -7,8 +7,12 @@
 <p>A row of tabs across the top of the viewer column switches between:</p>
 <ul>
   <li><strong>Notes</strong> — Markdown notes can be viewed and edited here. Click and/or hover over text to edit and select formats. A project-specific note is always available.</li>
-  <li><strong>Editor</strong> — a built-in text and code editor (CodeMirror) for JS/Python/HTML/CSS/PHP/JSON and more, with find
-    &amp; replace (Ctrl+F), syntax highlighting, go to line (Ctrl+G). Saves only on an explicit Save/Ctrl+S.</li>
+  <li><strong>Editor</strong> — a built-in text and code editor for JS/Python/HTML/CSS/PHP/JSON and more, with find
+    &amp; replace (Ctrl+F), syntax highlighting, go to line (Ctrl+G). Saves only on an explicit Save/Ctrl+S.
+    Two selectable engines (Settings → Applications → <strong>Code Editor Backend</strong>): <strong>CodeMirror</strong>
+    (the default) or <strong>Monaco</strong> — the same open-source editor component used by VS Code, which additionally
+    offers in-file autocomplete, hover info, and signature help for JavaScript/TypeScript, plus syntax validation for
+    CSS/JSON. Both engines support the exact same keyboard shortcuts below.</li>
   <li><strong>Terminal</strong> — a real embedded terminal (when the <code>ttyd</code> backend is available) or a
     Python/IPython console as a fallback.</li>
   <li><strong>Web</strong> — a full web browser view, also used to render local HTML and markdown files.</li>
@@ -33,26 +37,60 @@
 </table>
 <p class="lede">Headings, lists, quotes, code blocks and the like currently only work by typing the markdown syntax directly (e.g. <code># </code>, <code>- </code>, <code>&gt; </code>) — dedicated shortcuts for these may follow later.</p>
 <h2>Editor shortcuts</h2>
-
+<p class="lede">These shortcuts work the same whether the Editor is set to CodeMirror or Monaco, with one
+  exception noted below — Monaco additionally has its own large set of built-in shortcuts, in a separate
+  table further down.</p>
 <table>
   <thead>
     <tr><th>Shortcut</th><th>Action</th></tr>
   </thead>
   <tbody>
     <tr><td class="viewer"><code>Ctrl+S</code></td><td>Save the file</td></tr>
-    <tr><td class="viewer"><code>Ctrl+F</code></td><td>Find &amp; replace</td></tr>
+    <tr><td class="viewer"><code>Ctrl+F</code></td><td>Find &amp; replace (in Monaco, Find and Replace are two separate
+      shortcuts — see <code>Ctrl+H</code> in the Monaco-only table below)</td></tr>
     <tr><td class="viewer"><code>F3</code> / <code>Shift+F3</code></td><td>Find next / previous</td></tr>
     <tr><td class="viewer"><code>Ctrl+G</code></td><td>Go to line</td></tr>
     <tr><td class="viewer"><code>Ctrl+Shift+L</code></td><td>Select all matches of the current selection</td></tr>
     <tr><td class="viewer"><code>Ctrl+D</code></td><td>Copy current line down</td></tr>
-    <tr><td class="viewer"><code>Ctrl+K</code></td><td>Cut current line</td></tr>
+    <tr><td class="viewer"><code>Ctrl+K</code></td><td>Cut current line. Monaco has no built-in equivalent of this —
+      it's implemented the same way for both engines: copy the line to the clipboard, then remove it.</td></tr>
     <tr><td class="viewer"><code>Shift+Ctrl+K</code></td><td>Delete current line (no clipboard)</td></tr>
     <tr><td class="viewer"><code>Ctrl+Shift+[</code> / <code>]</code></td><td>Fold / unfold current block</td></tr>
-    <tr><td class="viewer"><code>Ctrl+Alt+[</code> / <code>]</code></td><td>Fold / unfold all</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Alt+[</code> / <code>]</code></td><td>Fold / unfold all <em>(CodeMirror only —
+      Monaco has no default shortcut for fold/unfold-<strong>all</strong>, only per-block via the row above)</em></td></tr>
     <tr><td class="viewer"><code>Ctrl+Z</code> / <code>Ctrl+Y</code></td><td>Undo / redo</td></tr>
     <tr><td class="viewer"><code>Ctrl+Space</code></td><td>Autocomplete</td></tr>
   </tbody>
 </table>
+
+<h3>Monaco-only shortcuts</h3>
+<p class="lede">On top of the table above, Monaco brings its own large set of built-in editing shortcuts —
+  the same engine used in VS Code. These have no CodeMirror equivalent.</p>
+<table>
+  <thead>
+    <tr><th>Shortcut</th><th>Action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="viewer"><code>Ctrl+H</code></td><td>Replace (Find is <code>Ctrl+F</code>, separately)</td></tr>
+    <tr><td class="viewer"><code>Ctrl+/</code></td><td>Toggle line comment</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+A</code></td><td>Toggle block comment</td></tr>
+    <tr><td class="viewer"><code>Alt+↑</code> / <code>Alt+↓</code></td><td>Move current line up / down</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+Alt+↑</code> / <code>↓</code></td><td>Copy current line up / down (down is also on plain <code>Ctrl+D</code>, see above)</td></tr>
+    <tr><td class="viewer"><code>Ctrl+]</code> / <code>Ctrl+[</code></td><td>Indent / outdent line</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Enter</code> / <code>Ctrl+Shift+Enter</code></td><td>Insert line below / above</td></tr>
+    <tr><td class="viewer"><code>Ctrl+L</code></td><td>Expand selection to the full line</td></tr>
+    <tr><td class="viewer"><code>Shift+Alt+↑</code> / <code>↓</code></td><td>Add cursor above / below (multi-cursor editing)</td></tr>
+    <tr><td class="viewer"><code>Shift+Alt+I</code></td><td>Add a cursor at the end of every selected line</td></tr>
+    <tr><td class="viewer"><code>Shift+Alt+→</code> / <code>←</code></td><td>Expand / shrink selection</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Shift+\</code></td><td>Jump to the matching bracket</td></tr>
+    <tr><td class="viewer"><code>Alt+F8</code> / <code>Shift+Alt+F8</code></td><td>Go to next / previous problem — only produces
+      anything for CSS/JSON, since JavaScript/TypeScript error-checking is deliberately left off (see the
+      Technologies reference below for why)</td></tr>
+    <tr><td class="viewer"><code>F1</code></td><td>Command palette — Monaco's own full list of every available action</td></tr>
+  </tbody>
+</table>
+<p class="lede">This list is curated, not exhaustive — press <code>F1</code> for Monaco's own complete, searchable
+  command palette if you're looking for something not listed here.</p>
 <h2>Multiple tabs per viewer</h2>
 <p>
   Notes, Editor, Terminal, Web, PDF, and Image all support several open items at once as their own
@@ -105,9 +143,13 @@
       </tr>
       <tr>
         <td class="viewer">Editor</td>
-        <td><a href="https://codemirror.net/" target="_blank" rel="noopener">CodeMirror 6</a> — a mature, widely used
-          code-editing engine (the same family powers many web-based code editors), with built-in support for
-          JavaScript, Python, HTML, CSS, and PHP.</td>
+        <td>Two selectable engines, switchable in Settings → Applications:
+          <a href="https://codemirror.net/" target="_blank" rel="noopener">CodeMirror 6</a> (the default) — a mature,
+          widely used code-editing engine (the same family powers many web-based code editors) — or
+          <a href="https://microsoft.github.io/monaco-editor/" target="_blank" rel="noopener">Monaco Editor</a>, the
+          open-source editor component that powers VS Code itself. Both support JavaScript, Python, HTML, CSS, PHP,
+          and JSON; Monaco additionally provides in-file autocomplete, hover info, and signature help for
+          JavaScript, plus syntax validation for CSS/JSON.</td>
       </tr>
       <tr>
         <td class="viewer">Web</td>
@@ -152,12 +194,12 @@
 
 <h2>Notes</h2>
 <ul>
-  <li><strong>Muya and CodeMirror are the two "real editors"</strong> in the app — genuine, full-featured editing
+  <li><strong>Muya, CodeMirror, and Monaco are the "real editors"</strong> in the app — genuine, full-featured editing
     engines running inside an embedded browser view, not simplified custom-built text boxes.</li>
   <li><strong>PDF and Image are the only viewers with no browser engine at all</strong> — just images rendered into
     ordinary display widgets. That lighter weight is also why each one can comfortably have several documents open in
     tabs at once, at almost no extra cost.</li>
   <li><strong>Web, Notes, and Editor each share a single embedded browser view</strong>, no matter how many tabs are
     open — switching tabs reuses that same view rather than opening a new one each time, which keeps things fast and
-    light on memory.</li>
+    light on memory. This holds regardless of which Editor engine (CodeMirror or Monaco) is selected.</li>
 </ul>

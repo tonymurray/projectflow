@@ -2,6 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-09
+
+### Added
+- **Monaco Editor backend for the Code Editor**: a new "Code Editor Backend" dropdown in Settings → Applications lets you switch the internal Editor tab from CodeMirror 6 (still the default) to Monaco — the open-source editor component that powers VS Code. Adds in-file JS/TS hover, autocomplete, and signature help, plus CSS/JSON syntax validation, on top of the same syntax highlighting/folding/bracket-matching/multi-tab feature set CodeMirror already provides; the four custom keyboard shortcuts (Ctrl+G goto-line, Ctrl+D copy-line-down, Ctrl+K cut-line, Ctrl+S save) work identically in both. JS/TS semantic error-checking is deliberately left off, since each Editor tab is a standalone file with no project context to validate against. Vendored fully offline (no network dependency at runtime) under `assets/monaco/`; falls back to CodeMirror automatically if the assets aren't present.
+
 ## 2026-09-08
 
 ### Added

@@ -1,0 +1,219 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: __PF_BG__;
+    color: __PF_FG__;
+  }
+  #editor { height: 100%; }
+  __PF_EXTRA_CSS__
+</style>
+</head>
+<body>
+<div id="editor"></div>
+
+<script src="./vs/loader.js"></script>
+<script>
+(function () {
+  var editor = null;
+  var currentModel = null;
+  var dirty = false;
+  var syntaxColors = __PF_SYNTAX_JSON__;
+  var isDark = __PF_IS_DARK__;
+
+  // langMap is keyed by the short language string Python passes in (see
+  // _code_editor_language_for() in projectflow.py) rather than by file extension —
+  // mirrors the CodeMirror shell's own langMap, keeping this shell generic/dumb
+  // about extensions.
+  var langMap = {
+    js: "javascript",
+    py: "python",
+    html: "html",
+    css: "css",
+    php: "php",
+  };
+
+  require.config({ paths: { vs: "vs" } });
+
+  require(["vs/editor/editor.main"], function () {
+    // Middle-path scope (confirmed after a live spike proved Monaco's default
+    // worker fallback -- blob-URL workers, no MonacoEnvironment.getWorkerUrl
+    // needed -- works cleanly under a file:// page in this QtWebEngine build):
+    // disable only JS/TS semantic ERROR-SQUIGGLE validation, since each Code
+    // Editor tab is a standalone file with no project/node_modules/tsconfig
+    // context -- full semantic validation would produce noisy, incorrect
+    // "Cannot find module/name" errors on anything importing something
+    // external. Hover/autocomplete/signature-help are separate APIs, NOT
+    // gated by these flags, so they stay on "for free". CSS/JSON validation
+    // is left at Monaco's default (on) -- no project-context dependency, so
+    // no false-positive risk, just catches genuinely invalid syntax.
+    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      noSyntaxValidation: true,
+    });
+
+    monaco.editor.defineTheme("pf-theme", {
+      base: isDark ? "vs-dark" : "vs",
+      inherit: true,
+      rules: [
+        { token: "keyword", foreground: syntaxColors.keyword.replace("#", "") },
+        { token: "string", foreground: syntaxColors.string.replace("#", "") },
+        { token: "comment", foreground: syntaxColors.comment.replace("#", ""), fontStyle: "italic" },
+      ],
+      colors: {
+        "editor.background": "__PF_BG__",
+        "editor.foreground": "__PF_FG__",
+        "editorLineNumber.foreground": "__PF_FG_SECONDARY__",
+        "editor.lineHighlightBackground": "__PF_ACTIVE_LINE__",
+        "editor.selectionBackground": "__PF_SELECTION__",
+        "editorGutter.background": "__PF_GUTTER_BG__",
+      },
+    });
+
+    editor = monaco.editor.create(document.getElementById("editor"), {
+      value: "",
+      language: "plaintext",
+      theme: "pf-theme",
+      automaticLayout: true,
+      wordWrap: "off",
+      fontFamily: '"DejaVu Sans Mono", "Monospace", monospace',
+      fontSize: 13,
+    });
+
+    editor.onDidChangeModelContent(function () {
+      dirty = true;
+    });
+
+    // Custom bindings that intentionally override Monaco's own defaults for the
+    // same key -- editor.addCommand() reliably takes precedence over a built-in
+    // action's own keybinding for the same chord on a standalone instance. See
+    // CLAUDE.md's Code Editor section for the full list and the conflicts each
+    // one deliberately gives up (mirrors the CodeMirror shell's own Prec.highest
+    // block and its documented tradeoffs):
+    //  - Mod-s: swallows the browser's native "Save Page As" inside the webview
+    //    -- actual saving is a Python-side action, no JS->Python push channel.
+    //  - Mod-g: goto line, implemented explicitly rather than relying on
+    //    Monaco's assumed standalone default (gotoLine's default chord isn't
+    //    guaranteed across versions) -- deterministic, matches the CM6 shell's
+    //    own explicit Mod-g binding.
+    //  - Mod-d: copy current line down. Deliberately shadows Monaco's own
+    //    default Ctrl+D ("add selection to next find match", VS Code's
+    //    multi-cursor shortcut), which loses its keybinding entirely here --
+    //    the same confirmed tradeoff already made for CM6.
+    //  - Mod-k: cut the current line (nano-style). Monaco has no built-in
+    //    "clipboardCutAction" in this version, and a genuine trusted
+    //    execCommand('cut') was confirmed (via live testing with real Qt key
+    //    events, not JS-dispatched synthetic ones) to succeed at the DOM level
+    //    without syncing the deletion back into Monaco's own document model --
+    //    unlike CM6's @codemirror/view, which has a built-in native "cut"
+    //    event handler for exactly this. So this copies the line + trailing
+    //    newline to the clipboard explicitly, then deletes the range via
+    //    executeEdits() (the correct, undo-history-safe way to make a
+    //    programmatic edit) instead of relying on native cut-to-model sync.
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {});
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyG, function () {
+      editor.trigger("", "editor.action.gotoLine", null);
+    });
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD, function () {
+      editor.trigger("", "editor.action.copyLinesDownAction", null);
+    });
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, cutCurrentLine);
+
+    function cutCurrentLine() {
+      var model = editor.getModel();
+      if (!model) return;
+      var pos = editor.getPosition();
+      var lineNumber = pos.lineNumber;
+      var lineCount = model.getLineCount();
+      var startCol = 1;
+      var endLineNumber = lineNumber;
+      var endCol = model.getLineMaxColumn(lineNumber);
+      if (lineNumber < lineCount) {
+        endLineNumber = lineNumber + 1;
+        endCol = 1;
+      }
+      var range = new monaco.Range(lineNumber, startCol, endLineNumber, endCol);
+      var text = model.getValueInRange(range);
+
+      function doDelete() {
+        editor.executeEdits("cutLine", [{ range: range, text: "", forceMoveMarkers: true }]);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(doDelete, function () {
+          editor.setSelection(range);
+          document.execCommand("copy");
+          doDelete();
+        });
+      } else {
+        editor.setSelection(range);
+        document.execCommand("copy");
+        doDelete();
+      }
+    }
+
+    window.__monacoReady = true;
+    if (window.__monacoOnReady) window.__monacoOnReady();
+  });
+
+  function doInit(content, language, wrapEnabled, viewState) {
+    var monacoLang = langMap[language] || "plaintext";
+    if (currentModel) currentModel.dispose();
+    currentModel = monaco.editor.createModel(content || "", monacoLang);
+    editor.setModel(currentModel);
+    editor.updateOptions({ wordWrap: wrapEnabled ? "on" : "off" });
+    dirty = false;
+
+    // Restore cursor/scroll from before this tab was last switched away from --
+    // a fresh model always starts unselected at the top, which otherwise
+    // silently drops the caret on every tab switch. Monaco's own
+    // saveViewState()/restoreViewState() round-trips as an opaque object, so
+    // (unlike CM6's manual {anchor, head, scrollTop}) no field-level clamping
+    // is needed here -- Monaco handles a stale/out-of-range state internally.
+    if (viewState) {
+      try { editor.restoreViewState(viewState); } catch (e) {}
+    }
+  }
+
+  // __initCodeEditor may be called before the AMD boot above has finished
+  // (e.g. build_main_content() restoring a tab immediately after the shell's
+  // loadFinished fires) -- queue it until editor.main's require() callback runs.
+  window.__initCodeEditor = function (content, language, wrapEnabled, viewState) {
+    if (window.__monacoReady) {
+      doInit(content, language, wrapEnabled, viewState);
+    } else {
+      window.__monacoOnReady = function () {
+        doInit(content, language, wrapEnabled, viewState);
+      };
+    }
+  };
+
+  window.__getCodeEditorViewState = function () {
+    return editor ? editor.saveViewState() : null;
+  };
+
+  window.__setCodeEditorWrap = function (enabled) {
+    if (editor) editor.updateOptions({ wordWrap: enabled ? "on" : "off" });
+  };
+
+  window.__getCodeEditorContent = function () {
+    return currentModel ? currentModel.getValue() : "";
+  };
+
+  window.__codeEditorIsDirty = function () {
+    return !!dirty;
+  };
+
+  window.__codeEditorClearDirty = function () {
+    dirty = false;
+  };
+})();
+</script>
+</body>
+</html>

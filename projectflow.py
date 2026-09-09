@@ -2288,6 +2288,43 @@ class ProjectFlowApp(QMainWindow):
         _update_ttyd_missing_warning()
         layout.addRow("", self._settings_ttyd_missing_label)
 
+        # Code Editor Backend (setting key stays "code_editor_backend") — same
+        # dropdown/live-warning shape as Terminal Backend above, just swapping the
+        # "binary on PATH" check for "vendored assets present on disk".
+        code_backend_label = QLabel("Code Editor Backend:")
+        code_backend_label.setStyleSheet(label_style)
+        self._settings_code_editor_backend = QComboBox()
+        self._settings_code_editor_backend.addItem("CodeMirror 6 (default)", "codemirror")
+        self._settings_code_editor_backend.addItem("Monaco (VS Code's editor component)", "monaco")
+        self._settings_code_editor_backend.addItem("Auto (Monaco if installed, else CodeMirror)", "auto")
+        current_code_backend = self.settings.get("code_editor_backend", "codemirror")
+        idx = self._settings_code_editor_backend.findData(current_code_backend)
+        self._settings_code_editor_backend.setCurrentIndex(idx if idx >= 0 else 0)
+        self._settings_code_editor_backend.setStyleSheet(input_style)
+        self._settings_code_editor_backend.setToolTip(
+            "CodeMirror 6 is the lightweight default. Monaco is VS Code's own editor —\n"
+            "adds in-file JS/TS hover, autocomplete, and signature help, plus CSS/JSON\n"
+            "syntax validation. Requires the vendored assets/monaco/vs/ folder."
+        )
+        layout.addRow(code_backend_label, self._settings_code_editor_backend)
+
+        self._settings_monaco_missing_label = QLabel(
+            "⚠ Monaco assets not found under assets/monaco/vs/ — this will silently "
+            "fall back to CodeMirror until they're vendored."
+        )
+        self._settings_monaco_missing_label.setWordWrap(True)
+        self._settings_monaco_missing_label.setStyleSheet(
+            f"color: {self.t('status_warning')}; font-size: 11px; font-weight: bold;"
+        )
+
+        def _update_monaco_missing_warning():
+            needs_monaco = self._settings_code_editor_backend.currentData() == "monaco"
+            self._settings_monaco_missing_label.setVisible(needs_monaco and not self._monaco_assets_available())
+
+        self._settings_code_editor_backend.currentIndexChanged.connect(lambda _: _update_monaco_missing_warning())
+        _update_monaco_missing_warning()
+        layout.addRow("", self._settings_monaco_missing_label)
+
         # File Manager Tabs
         fm_tabs_label = QLabel("File Manager Tabs:")
         fm_tabs_label.setStyleSheet(label_style)
@@ -4933,6 +4970,12 @@ class ProjectFlowApp(QMainWindow):
             elif "console_backend" in self.settings:
                 del self.settings["console_backend"]  # qtconsole is the implicit default
 
+            code_editor_backend = self._settings_code_editor_backend.currentData()
+            if code_editor_backend and code_editor_backend != "codemirror":
+                self.settings["code_editor_backend"] = code_editor_backend
+            elif "code_editor_backend" in self.settings:
+                del self.settings["code_editor_backend"]  # codemirror is the implicit default
+
             notes_folder = self._settings_notes_folder.text().strip()
             if notes_folder:
                 self.settings["notes_folder"] = notes_folder
@@ -7548,6 +7591,24 @@ function filterAliases(q) {{
             return "ttyd" if shutil.which("ttyd") else "qtconsole"
         if backend == "ttyd" and not shutil.which("ttyd"):
             return "qtconsole"
+        return backend
+
+    def _monaco_assets_available(self):
+        """Whether the vendored Monaco assets (assets/monaco/vs/) are present on disk."""
+        return os.path.isdir(os.path.join(self.script_dir, "assets", "monaco", "vs"))
+
+    def resolve_code_editor_backend(self):
+        """Resolve the "code_editor_backend" setting to an actual backend to use:
+        "codemirror" (default — no behavior change for existing users) or "monaco"
+        (VS Code's open-source editor component, vendored under assets/monaco/).
+        "auto" uses monaco only if the vendored assets are present, else falls back
+        to codemirror — mirrors resolve_console_backend()'s "auto"/explicit-with-
+        missing-dependency fallback shape."""
+        backend = self.settings.get("code_editor_backend", "codemirror")
+        if backend == "auto":
+            return "monaco" if self._monaco_assets_available() else "codemirror"
+        if backend == "monaco" and not self._monaco_assets_available():
+            return "codemirror"
         return backend
 
     def _get_terminal_command(self, shell_cmd, hold=False, interactive=False):
@@ -18014,17 +18075,22 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         return {"keyword": "#cf222e", "string": "#0a3069", "comment": "#6e7781"}
 
     def _load_code_editor_shell(self, session, path, content, language, initial_dirty=False, view_state=None):
-        """Load the CodeMirror 6 editor shell into session.webview with the given content.
+        """Load the code editor shell (CodeMirror 6 or Monaco, per resolve_code_editor_backend())
+        into session.webview with the given content. This is the ONLY function in the whole
+        file that needs to know two backends exist — CodeEditorSession/CodeTabState, the
+        dirty-poll timer, and _code_editor_save() all only ever call the six shared
+        window.__* bridge functions both shells implement identically, so picking which
+        shell HTML/asset directory to load is the entire backend-selection surface.
         initial_dirty is stashed onto session.pending_dirty and applied once loading
         actually finishes (see _on_code_editor_webview_load_finished()) — used when
-        restoring an Editor tab whose cached content differs from disk (CodeMirror's own
+        restoring an Editor tab whose cached content differs from disk (the editor's own
         dirty tracking would otherwise read false, since nothing's changed since THIS init).
-        view_state, if given, is a {"anchor": N, "head": N, "scrollTop": N} dict captured by
-        __getCodeEditorViewState() before this tab was last switched away from — see
-        _activate_code_tab()."""
+        view_state, if given, is an opaque dict captured by __getCodeEditorViewState() before
+        this tab was last switched away from — see _activate_code_tab()."""
         if not session.webview:
             return
-        editor_dir = os.path.join(self.script_dir, "assets", "codemirror")
+        backend = self.resolve_code_editor_backend()
+        editor_dir = os.path.join(self.script_dir, "assets", "monaco" if backend == "monaco" else "codemirror")
         editor_html = os.path.join(editor_dir, "editor.html")
         if not os.path.exists(editor_html):
             self.status_label.setText("✗ Code editor assets not found")
