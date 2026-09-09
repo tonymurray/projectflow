@@ -469,6 +469,78 @@ class DragHandle(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class CategoryDragHandle(QLabel):
+    """A visible ⠿ drag handle for reordering whole CATEGORIES (not items within one) in
+    edit mode — same look/mechanism as DragHandle above, just a different mime prefix
+    ("category|" instead of "item|") so CategoryHeaderDropZone below can tell the two
+    apart. Category-level reordering is edit-mode only (this handle only ever appears on
+    the edit-mode category header row), unlike item-level dragging which also works in
+    view mode via DraggableItemButton — the edit-mode header is the one place every
+    category's header widget has a single, consistent shape to attach a handle to (the
+    view-mode header is sometimes a plain QLabel, sometimes a clickable "Open All" button,
+    depending on open_all_categories)."""
+
+    def __init__(self, category_name, parent=None):
+        super().__init__("⠿", parent)
+        self.category_name = category_name
+        self.drag_start_pos = None
+        self.setFixedWidth(18)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("Drag to reorder categories")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or not self.drag_start_pos:
+            return
+        if (event.pos() - self.drag_start_pos).manhattanLength() < 10:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(f"category|{self.category_name}")
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def mouseReleaseEvent(self, event):
+        self.drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
+
+class CategoryHeaderDropZone(QWidget):
+    """Wraps an edit-mode category header row (the QLineEdit rename field + 🗑 delete
+    button) and accepts a drop from another category's CategoryDragHandle, reordering
+    self.app.COLUMN_1 via self.app._reorder_category(). Deliberately separate from
+    CategoryDropZone above (which wraps a category's ITEMS and handles "item|"-prefixed
+    drops) rather than extending it, since the two mime prefixes ("item|" vs "category|")
+    represent different drag scopes (an item moving between/within categories vs. a whole
+    category changing position) that should never be confused for one another."""
+
+    def __init__(self, app, category_name, parent=None):
+        super().__init__(parent)
+        self.app = app
+        self.category_name = category_name
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text().startswith("category|"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        data = event.mimeData().text()
+        if not data.startswith("category|"):
+            return
+        moved_name = data.split("|", 1)[1]
+        if moved_name != self.category_name:
+            self.app._reorder_category(moved_name, self.category_name)
+        event.acceptProposedAction()
+
+
 class DraggableFolderTree(QTreeWidget):
     """QTreeWidget used by the folder-browsing panels — drag source and drop target for
     real filesystem paths. Uses QMimeData.setUrls() (the standard Qt idiom for file
@@ -1318,6 +1390,16 @@ class ProjectFlowApp(QMainWindow):
         # Documentation), see _toggle_open_all_for_category()/open_all_in_group(). A plain
         # set of category names, loaded fresh in load_config().
         self.open_all_categories = set()
+
+        # Docs/Resources bucket membership — off by default for every category (the
+        # "Documentation" category itself is always in Docs via a hardcoded special case in
+        # _build_grouped_categories() and never needs to be in this set). Reversible: a
+        # category flagged here keeps its own name/items intact, it's just pooled into the
+        # Docs bucket for display instead of Resources — unlike moving items INTO the
+        # Documentation category (which physically relocates/merges them). See
+        # _toggle_docs_bucket_for_category(). A plain set of category names, loaded fresh
+        # in load_config().
+        self.docs_categories = set()
 
         # Focus-layout launcher column tab: "files" (Quick File Browser Panel) / "docs" /
         # "resources" / "apps" (per-project curated app grid, see _build_apps_tab_items).
@@ -2645,10 +2727,15 @@ class ProjectFlowApp(QMainWindow):
         real_category_buckets = []
         for cat_dict in self.COLUMN_1:
             for category_name, items in cat_dict.items():
-                if category_name in ("Documentation", "Docs"):
-                    # The real Documentation category — filed here IS the classification,
-                    # no heuristic, no hiding; true origin lets these render fully
-                    # editable (see docstring above).
+                # "Documentation" is always in the Docs bucket (a hardcoded special case —
+                # filed here IS the classification, no heuristic, no hiding). Any OTHER
+                # category flagged into self.docs_categories (see
+                # _toggle_docs_bucket_for_category()) is pooled here too, but reversibly —
+                # unlike Documentation, its own name/identity isn't special-cased anywhere
+                # else, so removing the flag later puts it straight back in Resources with
+                # nothing to undo. Either way, true origin lets these render fully editable
+                # (see docstring above) — this is purely a DISPLAY bucket, not a data move.
+                if category_name in ("Documentation", "Docs") or category_name in self.docs_categories:
                     for idx, item in enumerate(items):
                         buckets['Docs'].append(item)
                         self._group_view_origin[id(item)] = (category_name, idx)
@@ -3400,6 +3487,15 @@ class ProjectFlowApp(QMainWindow):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(12)
 
+        # Dirty tracking so both Save buttons can show an "(unsaved changes)" indicator —
+        # added because saving no longer switches away from the Settings viewer (see
+        # _save_project_and_exit_edit_mode()), so without this, a change made AFTER a save
+        # (with edit_mode already back to False) had no visible sign it still needed
+        # saving. Every _proj_* field's change signal is wired to _mark_settings_form_dirty()
+        # at the end of this method; _populate_settings_form()/_save_project_and_exit_edit_mode()
+        # reset it back to False. See _update_settings_save_buttons().
+        self._settings_form_dirty = False
+
         # Plain field labels collected here so _style_settings_form() can restyle them all
         # identically in one pass; the two Desktop-Menu-Entry section labels have their own
         # distinct bold/secondary styles and are restyled by name instead (see below).
@@ -3436,12 +3532,14 @@ class ProjectFlowApp(QMainWindow):
             if chosen.isValid():
                 self._proj_color_value = chosen.name()
                 self._style_project_color_button()
+                self._mark_settings_form_dirty()
         self._proj_color_btn.clicked.connect(_pick_project_color)
         color_row.addWidget(self._proj_color_btn)
         self._proj_color_clear_btn = QPushButton("Clear")
         def _clear_proj_color():
             self._proj_color_value = ""
             self._style_project_color_button()
+            self._mark_settings_form_dirty()
         self._proj_color_clear_btn.clicked.connect(_clear_proj_color)
         color_row.addWidget(self._proj_color_clear_btn)
         color_row.addStretch()
@@ -3630,9 +3728,68 @@ class ProjectFlowApp(QMainWindow):
 
         main_layout.addLayout(integrations_layout)
 
+        # Bottom Save button — a second entry point to the exact same
+        # _save_project_and_exit_edit_mode() the title-bar "💾 Save" button calls, added
+        # because the top button isn't always in view once the form is long enough to
+        # scroll (Kimai/Baloo/Desktop Menu Entry rows push well past a typical viewport).
+        # This form previously asserted there was exactly one Save button in the app (see
+        # create_settings_toolbar()'s hint label) after an earlier toolbar-level duplicate
+        # was removed for reading as two competing actions — a bottom-of-form button is a
+        # different situation (visibility on a long form, not a redundant nearby control),
+        # so it's reintroduced here rather than left removed.
+        bottom_save_row = QHBoxLayout()
+        bottom_save_row.addStretch()
+        self._settings_bottom_save_btn = QPushButton("💾 Save")
+        self._settings_bottom_save_btn.clicked.connect(self._save_project_and_exit_edit_mode)
+        bottom_save_row.addWidget(self._settings_bottom_save_btn)
+        bottom_save_row.addStretch()
+        main_layout.addSpacing(12)
+        main_layout.addLayout(bottom_save_row)
+
         main_layout.addStretch()  # Push form to top
 
+        # Wire every project-settings field's change signal to the dirty tracker (see the
+        # docstring note near self._settings_form_dirty above). One block at the end rather
+        # than scattered next to each field's own construction, mirroring
+        # _style_settings_form()'s own "one pass over named widgets" convention. Combo boxes
+        # (_proj_default_viewer/_proj_default_launcher_tab) get their items cleared and
+        # re-added on every _populate_settings_form() call, which fires currentTextChanged
+        # too — harmless, since _populate_settings_form() explicitly resets dirty back to
+        # False as its own last step, after this would-be-spurious firing.
+        for line_edit in (
+            self._proj_project_name, self._proj_pdf_file, self._proj_webview_url,
+            self._proj_image_file, self._proj_console_path, self._proj_folder_path,
+            self._proj_kimai_project_id,
+        ):
+            line_edit.textChanged.connect(self._mark_settings_form_dirty)
+        self._proj_use_three_columns.toggled.connect(self._mark_settings_form_dirty)
+        self._proj_default_viewer.currentTextChanged.connect(self._mark_settings_form_dirty)
+        self._proj_default_launcher_tab.currentTextChanged.connect(self._mark_settings_form_dirty)
+
         self._style_settings_form()
+
+    def _mark_settings_form_dirty(self, *args):
+        """Wired to every project-settings field's change signal (see the end of
+        _build_settings_form()). *args absorbs whatever the connected signal passes
+        (str for textChanged, bool for toggled, etc.) — only that a change happened
+        matters, not the value itself."""
+        self._settings_form_dirty = True
+        self._update_settings_save_buttons()
+
+    def _update_settings_save_buttons(self):
+        """Refresh both Save buttons' labels to reflect self._settings_form_dirty — called
+        whenever a project-settings field changes, and after populate/save resets it back
+        to clean. Mirrors the Code Editor's own dirty-driven Save button label
+        (_update_code_editor_buttons()), just event-driven via native Qt signals here
+        instead of polled, since there's no JS bridge involved in a plain Qt form. Guards
+        each widget's existence since this can run before either button has been built yet
+        (e.g. a stray signal during __init__'s own widget construction)."""
+        dirty = getattr(self, '_settings_form_dirty', False)
+        suffix = " (unsaved changes)" if dirty else ""
+        if hasattr(self, '_settings_bottom_save_btn'):
+            self._settings_bottom_save_btn.setText(f"💾 Save{suffix}")
+        if hasattr(self, 'edit_project_btn') and self.edit_mode:
+            self.edit_project_btn.setText(f"  💾 Save{suffix}")
 
     def _style_settings_form(self):
         """Re-apply theme-derived stylesheets to the persistent settings form's widgets.
@@ -3685,6 +3842,20 @@ class ProjectFlowApp(QMainWindow):
             self._proj_baloo_tag_btn,
         ):
             btn.setStyleSheet(btn_style)
+
+        self._settings_bottom_save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.t('bg_success')};
+                color: {self.t('fg_on_dark')};
+                border: none;
+                border-radius: 4px;
+                padding: 8px 24px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_success_hover')};
+            }}
+        """)
 
         self._proj_use_three_columns.setStyleSheet(label_style)
         self._style_project_color_button()
@@ -3772,20 +3943,30 @@ class ProjectFlowApp(QMainWindow):
         self._integrations_layout.setRowVisible(self._proj_baloo_tag_btn, baloo_enabled)
         self._integrations_layout.setRowVisible(self._proj_baloo_desc, baloo_enabled)
 
+        # Populating the form above fires several of the same change signals a real edit
+        # would (setText/setCurrentText on the combo boxes in particular) — reset dirty
+        # back to clean as the last step, since none of that reflects an actual unsaved
+        # change from the user.
+        self._settings_form_dirty = False
+        self._update_settings_save_buttons()
+
     def create_settings_toolbar(self, parent_layout):
         """Toolbar for the Settings viewer (column2_mode == "settings") — rebuilt fresh
         every build_main_content() call like every other viewer's toolbar (only
         self.settings_form itself, added below this toolbar, is the persistent part).
         No Save button here — there used to be one, but it duplicated the title-bar
-        "💾 Save" button (both called the same _save_project_and_exit_edit_mode()), which
-        read as two separate save actions. The title-bar button is now the only Save."""
+        "💾 Save" button right next to it (both called the same
+        _save_project_and_exit_edit_mode()), which read as two competing actions. A second
+        Save button was later reintroduced, but at the BOTTOM of the (persistent)
+        settings_form instead — a different situation, since the top button can scroll out
+        of view on a long form, which isn't a "duplicate right next to it" problem."""
         toolbar = QHBoxLayout()
         title_label = QLabel(f"Project Settings — {self.get_project_name()}")
         title_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
         toolbar.addWidget(title_label)
         toolbar.addStretch()
 
-        hint_label = QLabel("💾 Save (top right) to save changes")
+        hint_label = QLabel("💾 Save (top-right, or at the bottom of the form) to save changes")
         hint_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px;")
         toolbar.addWidget(hint_label)
 
@@ -5328,6 +5509,17 @@ class ProjectFlowApp(QMainWindow):
         btn.setStyleSheet(self.get_item_button_style(clicked=True))
         self.open_in_app(path, app)
 
+    def _edit_mode_launcher_click_hint(self):
+        """Wired to launcher buttons instead of on_item_clicked() while self.edit_mode is
+        True — clicking a launcher used to still open/launch it during editing, which read
+        as confusing (you're trying to edit, not launch). No open_in_app()-level guard is
+        used for this since that would teach a generic launch method about UI mode; instead
+        the click is simply never wired to on_item_clicked() in the first place while
+        editing, matching this file's existing convention for edit-mode restrictions (see
+        the category header's edit-mode QLineEdit swap, which also just never wires up the
+        "Open All" click at all rather than disabling it)."""
+        self.set_status("Exit edit mode (💾 Save) to open items", "warning")
+
     def set_status(self, message, status_type="success"):
         """Set status label with themed color"""
         color_map = {
@@ -5570,6 +5762,51 @@ StartupNotify=true
             self.open_all_categories.add(new_name)
             self._persist_open_all_categories()
 
+    def _persist_docs_categories(self):
+        """Write self.docs_categories to the active project's own config file — plain
+        read-modify-write, mirrors _persist_open_all_categories() exactly (a parallel
+        per-project list, not part of the columns/items structure). Omits the key when
+        empty so a project that never uses this stays clean."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            if self.docs_categories:
+                config_data['docs_categories'] = sorted(self.docs_categories)
+            else:
+                config_data.pop('docs_categories', None)
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving docs_categories: {e}")
+
+    def _toggle_docs_bucket_for_category(self, category_name):
+        """Flip whether `category_name` is pooled into the Docs bucket (vs. its normal
+        Resources placement) in the Group-by-Type/Docs-Resources split view — reversible,
+        the category keeps its own name/items either way (see self.docs_categories'
+        docstring in __init__ for how this differs from physically moving items into the
+        Documentation category). Reached via the category header's right-click menu
+        (_show_category_context_menu); not offered for the Documentation category itself,
+        which is always in Docs via a separate hardcoded special case."""
+        if category_name in self.docs_categories:
+            self.docs_categories.discard(category_name)
+        else:
+            self.docs_categories.add(category_name)
+        self._persist_docs_categories()
+        self.refresh_projects()
+
+    def _sync_docs_categories_rename(self, old_name, new_name):
+        """Keep docs_categories in sync when a category is renamed — called from every
+        active rename path alongside _sync_open_all_category_rename(). A no-op unless the
+        renamed category was actually flagged into the Docs bucket."""
+        if old_name in self.docs_categories:
+            self.docs_categories.discard(old_name)
+            self.docs_categories.add(new_name)
+            self._persist_docs_categories()
+
     def _save_active_launcher_tab_to_config(self):
         """Persist the active Focus-layout launcher tab (Files/Docs/Resources/Apps) into
         the active project's own config file, so it's remembered next time this project is
@@ -5791,6 +6028,9 @@ StartupNotify=true
                 # loaded fresh every call, not gated on is_project_switch, since it's
                 # always sourced straight from disk and toggling it saves immediately.
                 self.open_all_categories = set(config_data.get('open_all_categories', []))
+                # Docs/Resources bucket membership (see _toggle_docs_bucket_for_category()) —
+                # same load convention as open_all_categories above.
+                self.docs_categories = set(config_data.get('docs_categories', []))
                 # Load linked Kimai project ID and name
                 self.config_kimai_project_id = config_data.get('kimai_project_id', None)
                 self.config_kimai_project_name = config_data.get('kimai_project_name', None)
@@ -8194,7 +8434,13 @@ function filterAliases(q) {{
         help_btn.clicked.connect(lambda: self.switch_to_viewer_mode("help"))
         title_bar.addWidget(help_btn)
 
-        self.edit_project_btn = QPushButton("  💾 Save" if _in_edit else "  Edit Project")
+        # Read _settings_form_dirty directly here (not just via _update_settings_save_buttons())
+        # since this button is rebuilt fresh on every build_main_content() call, including
+        # ones triggered by something unrelated while a change was already pending — the
+        # freshly-constructed label needs to be correct on its own, not rely on having been
+        # in memory for a signal that already fired against the previous button instance.
+        _dirty_suffix = " (unsaved changes)" if _in_edit and getattr(self, '_settings_form_dirty', False) else ""
+        self.edit_project_btn = QPushButton(f"  💾 Save{_dirty_suffix}" if _in_edit else "  Edit Project")
         if not _in_edit:
             self.edit_project_btn.setIcon(self._edit_icon())
             self.edit_project_btn.setIconSize(QSize(16, 16))
@@ -9245,6 +9491,24 @@ function filterAliases(q) {{
         order.insert(idx, moved_id)
         self.settings[setting_key] = order
         self.save_settings()
+        self.refresh_projects()
+
+    def _reorder_category(self, moved_name, target_name):
+        """Move the category named moved_name to just before target_name in self.COLUMN_1,
+        then save and refresh — mirrors _reorder_colors()/_reorder_tab_button() above, but
+        operates directly on self.COLUMN_1 (a list of single-key {category_name: [items]}
+        dicts where list POSITION is the persisted category order — see
+        save_config_to_json(), which just serializes self.COLUMN_1 verbatim) rather than a
+        settings.json list of plain ids. Wired from CategoryHeaderDropZone.dropEvent()."""
+        names = [list(cd.keys())[0] for cd in self.COLUMN_1 if cd]
+        if moved_name not in names or target_name not in names or moved_name == target_name:
+            return
+        moved_idx = names.index(moved_name)
+        moved_cd = self.COLUMN_1.pop(moved_idx)
+        names.pop(moved_idx)
+        target_idx = names.index(target_name)
+        self.COLUMN_1.insert(target_idx, moved_cd)
+        self.save_config_to_json()
         self.refresh_projects()
 
     def _reset_launcher_tab_order(self):
@@ -10368,11 +10632,16 @@ function filterAliases(q) {{
                     # header could act on the wrong (or a nonexistent) category name. The "+
                     # Add Launcher" button below resolves the real name itself instead.
                     if self.edit_mode and category_name not in ("AI", "Docs"):
-                        # EDIT MODE: Show category name editor with delete button
-                        category_header = QWidget()
+                        # EDIT MODE: Show category name editor with delete button. Also a
+                        # CategoryHeaderDropZone (not a plain QWidget) so dragging another
+                        # category's CategoryDragHandle onto this header reorders categories.
+                        category_header = CategoryHeaderDropZone(self, category_name)
                         category_header_layout = QHBoxLayout(category_header)
                         category_header_layout.setContentsMargins(0, 0, 0, 0)
                         category_header_layout.setSpacing(5)
+
+                        category_drag_handle = CategoryDragHandle(category_name)
+                        category_header_layout.addWidget(category_drag_handle)
 
                         category_name_edit = QLineEdit(category_name)
                         category_name_edit.setMinimumHeight(30)
@@ -10617,9 +10886,12 @@ function filterAliases(q) {{
                             if svg_icon_path:
                                 btn.setIcon(QIcon(svg_icon_path))
                                 btn.setIconSize(QSize(16, 16))
-                            btn.clicked.connect(
-                                lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
-                            )
+                            if self.edit_mode:
+                                btn.clicked.connect(self._edit_mode_launcher_click_hint)
+                            else:
+                                btn.clicked.connect(
+                                    lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
+                                )
                             tooltip = f"[{app}] {path}"
                             if is_ai_via_mapping:
                                 tooltip += "\n⇄ Project folder not found directly — showing via path mapping (Settings → Advanced)"
@@ -13574,10 +13846,9 @@ function filterAliases(q) {{
         """Toggle edit mode. Turning it ON also opens the Settings viewer directly (see
         switch_to_viewer_mode()) — editing launchers and editing project settings are one
         continuous edit session now, with a single entry point (there's no more separate
-        "Project Details" button). Turning it OFF (the "💾 Save" button — the ONLY Save
-        button; the Settings viewer used to have its own too, but that duplicated this one
-        and was removed) commits the Settings viewer's pending fields — see
-        _save_project_and_exit_edit_mode()."""
+        "Project Details" button). Turning it OFF (the title-bar "💾 Save" button, or the
+        second Save button at the bottom of the Settings form — both call the same
+        _save_project_and_exit_edit_mode()) commits the Settings viewer's pending fields."""
         if self.edit_mode:
             self._save_project_and_exit_edit_mode()
         else:
@@ -13601,12 +13872,15 @@ function filterAliases(q) {{
             self.toggle_edit_mode()
 
     def _save_project_and_exit_edit_mode(self):
-        """Save action for the title-bar Edit Project/Save toggle (the only Save button —
-        see toggle_edit_mode()). Combines committing the Settings form's pending fields
-        with exiting edit mode, since editing launchers and editing project settings are
-        now one continuous edit session reached through a single entry point."""
+        """Save action shared by the title-bar Edit Project/Save toggle and the Settings
+        form's own bottom Save button (see toggle_edit_mode()). Combines committing the
+        Settings form's pending fields with exiting edit mode, since editing launchers and
+        editing project settings are now one continuous edit session reached through a
+        single entry point."""
         self.edit_mode = False
         self._apply_settings(None, save_project_settings=True)
+        self._settings_form_dirty = False
+        self._update_settings_save_buttons()
         if hasattr(self, 'status_label'):
             self.status_label.setText("✓ Project settings saved")
 
@@ -13760,12 +14034,24 @@ function filterAliases(q) {{
         open_all_enabled = category_name in self.open_all_categories
         toggle_label = '⚡  Disable "Open All"' if open_all_enabled else '⚡  Enable "Open All"'
         toggle_action = menu.addAction(toggle_label)
+
+        # Not offered for the Documentation category itself — it's always in the Docs
+        # bucket via a hardcoded special case in _build_grouped_categories(), so a toggle
+        # here would have no visible effect either way.
+        bucket_action = None
+        if category_name not in ("Documentation", "Docs"):
+            in_docs_bucket = category_name in self.docs_categories
+            bucket_label = "📂  Move to Resources" if in_docs_bucket else "📄  Move to Docs"
+            bucket_action = menu.addAction(bucket_label)
+
         rename_action = menu.addAction("✏️  Rename")
         delete_action = menu.addAction("🗑  Delete")
 
         action = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if action == toggle_action:
             self._toggle_open_all_for_category(category_name)
+        elif bucket_action is not None and action == bucket_action:
+            self._toggle_docs_bucket_for_category(category_name)
         elif action == rename_action:
             from PyQt6.QtWidgets import QInputDialog
             new_name, ok = QInputDialog.getText(
@@ -13778,6 +14064,7 @@ function filterAliases(q) {{
                         cat_dict[new_name] = cat_dict.pop(category_name)
                         break
                 self._sync_open_all_category_rename(category_name, new_name)
+                self._sync_docs_categories_rename(category_name, new_name)
                 self.save_config_to_json()
                 self.refresh_projects()
         elif action == delete_action:
@@ -13795,7 +14082,9 @@ function filterAliases(q) {{
         handle.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 14px;")
         row.addWidget(handle)
 
-        # Launcher button — same icon/style as view mode, still clickable
+        # Launcher button — same icon/style as view mode, but does NOT open the item while
+        # editing (see _edit_mode_launcher_click_hint()) — it's still draggable for
+        # reordering/moving between categories, that's unaffected.
         app_icon = ""
         svg_icon_path = None
         if self._icon_key_for_app(app, path) in self.APP_INFO:
@@ -13813,7 +14102,7 @@ function filterAliases(q) {{
         if svg_icon_path:
             btn.setIcon(QIcon(svg_icon_path))
             btn.setIconSize(QSize(16, 16))
-        btn.clicked.connect(lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a))
+        btn.clicked.connect(self._edit_mode_launcher_click_hint)
         btn.setToolTip(f"[{app}] {path}")
         self._wire_launcher_context_menu(btn, col_idx, category_name, item_idx)
         row.addWidget(btn, 1)
@@ -13935,6 +14224,7 @@ function filterAliases(q) {{
                 break
 
         self._sync_open_all_category_rename(old_name, new_name)
+        self._sync_docs_categories_rename(old_name, new_name)
         self.save_config_to_json()
 
     def rename_category(self, col_idx, old_name, new_name):
@@ -13972,6 +14262,10 @@ function filterAliases(q) {{
             if category_name in self.open_all_categories:
                 self.open_all_categories.discard(category_name)
                 self._persist_open_all_categories()
+
+            if category_name in self.docs_categories:
+                self.docs_categories.discard(category_name)
+                self._persist_docs_categories()
 
             self.save_config_to_json()
             self.refresh_projects()

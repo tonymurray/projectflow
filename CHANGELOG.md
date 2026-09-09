@@ -6,6 +6,11 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 
 ### Added
 - **Monaco Editor backend for the Code Editor**: a new "Code Editor Backend" dropdown in Settings → Applications lets you switch the internal Editor tab from CodeMirror 6 (still the default) to Monaco — the open-source editor component that powers VS Code. Adds in-file JS/TS hover, autocomplete, and signature help, plus CSS/JSON syntax validation, on top of the same syntax highlighting/folding/bracket-matching/multi-tab feature set CodeMirror already provides; the four custom keyboard shortcuts (Ctrl+G goto-line, Ctrl+D copy-line-down, Ctrl+K cut-line, Ctrl+S save) work identically in both. JS/TS semantic error-checking is deliberately left off, since each Editor tab is a standalone file with no project context to validate against. Vendored fully offline (no network dependency at runtime) under `assets/monaco/`; falls back to CodeMirror automatically if the assets aren't present.
+- **Drag-to-reorder whole categories**, and a reversible **"Move to Docs"/"Move to Resources"** toggle for a whole category (right-click the category header, edit mode for reordering). Moving to Docs is non-destructive — the category keeps its own name and items, it's just pooled into the Docs bucket for display; toggling it back puts it straight back in Resources.
+- A second **Save button at the bottom of the Project Settings form**, since the title-bar one can scroll out of view on a long form. Both buttons save identically, and both now show an "(unsaved changes)" indicator whenever a field has changed since the last save or project load — since saving no longer navigates away from the form, this makes it obvious when a further edit needs saving again.
+
+### Changed
+- Launcher items no longer open when clicked while editing a project — a status-bar hint suggests exiting edit mode instead. Dragging to reorder/move items is unaffected.
 
 ## 2026-09-08
 
