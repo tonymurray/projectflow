@@ -1,0 +1,189 @@
+/* Open Color v1.9.1 — MIT License — https://yeun.github.io/open-color/ */
+
+/* Base */
+:root {
+  --WHITE: #ffffff;
+  --BLACK: #000000;
+}
+
+/* Gray */
+:root {
+  --GRAY0: #f8f9fa;
+  --GRAY1: #f1f3f5;
+  --GRAY2: #e9ecef;
+  --GRAY3: #dee2e6;
+  --GRAY4: #ced4da;
+  --GRAY5: #adb5bd;
+  --GRAY6: #868e96;
+  --GRAY7: #495057;
+  --GRAY8: #343a40;
+  --GRAY9: #212529;
+}
+
+/* Red */
+:root {
+  --RED0: #fff5f5;
+  --RED1: #ffe3e3;
+  --RED2: #ffc9c9;
+  --RED3: #ffa8a8;
+  --RED4: #ff8787;
+  --RED5: #ff6b6b;
+  --RED6: #fa5252;
+  --RED7: #f03e3e;
+  --RED8: #e03131;
+  --RED9: #c92a2a;
+}
+
+/* Pink */
+:root {
+  --PINK0: #fff0f6;
+  --PINK1: #ffdeeb;
+  --PINK2: #fcc2d7;
+  --PINK3: #faa2c1;
+  --PINK4: #f783ac;
+  --PINK5: #f06595;
+  --PINK6: #e64980;
+  --PINK7: #d6336c;
+  --PINK8: #c2255c;
+  --PINK9: #a61e4d;
+}
+
+/* Grape */
+:root {
+  --GRAPE0: #f8f0fc;
+  --GRAPE1: #f3d9fa;
+  --GRAPE2: #eebefa;
+  --GRAPE3: #e599f7;
+  --GRAPE4: #da77f2;
+  --GRAPE5: #cc5de8;
+  --GRAPE6: #be4bdb;
+  --GRAPE7: #ae3ec9;
+  --GRAPE8: #9c36b5;
+  --GRAPE9: #862e9c;
+}
+
+/* Violet */
+:root {
+  --VIOLET0: #f3f0ff;
+  --VIOLET1: #e5dbff;
+  --VIOLET2: #d0bfff;
+  --VIOLET3: #b197fc;
+  --VIOLET4: #9775fa;
+  --VIOLET5: #845ef7;
+  --VIOLET6: #7950f2;
+  --VIOLET7: #7048e8;
+  --VIOLET8: #6741d9;
+  --VIOLET9: #5f3dc4;
+}
+
+/* Indigo */
+:root {
+  --INDIGO0: #edf2ff;
+  --INDIGO1: #dbe4ff;
+  --INDIGO2: #bac8ff;
+  --INDIGO3: #91a7ff;
+  --INDIGO4: #748ffc;
+  --INDIGO5: #5c7cfa;
+  --INDIGO6: #4c6ef5;
+  --INDIGO7: #4263eb;
+  --INDIGO8: #3b5bdb;
+  --INDIGO9: #364fc7;
+}
+
+/* Blue */
+:root {
+  --BLUE0: #e7f5ff;
+  --BLUE1: #d0ebff;
+  --BLUE2: #a5d8ff;
+  --BLUE3: #74c0fc;
+  --BLUE4: #4dabf7;
+  --BLUE5: #339af0;
+  --BLUE6: #228be6;
+  --BLUE7: #1c7ed6;
+  --BLUE8: #1971c2;
+  --BLUE9: #1864ab;
+}
+
+/* Cyan */
+:root {
+  --CYAN0: #e3fafc;
+  --CYAN1: #c5f6fa;
+  --CYAN2: #99e9f2;
+  --CYAN3: #66d9e8;
+  --CYAN4: #3bc9db;
+  --CYAN5: #22b8cf;
+  --CYAN6: #15aabf;
+  --CYAN7: #1098ad;
+  --CYAN8: #0c8599;
+  --CYAN9: #0b7285;
+}
+
+/* Teal */
+:root {
+  --TEAL0: #e6fcf5;
+  --TEAL1: #c3fae8;
+  --TEAL2: #96f2d7;
+  --TEAL3: #63e6be;
+  --TEAL4: #38d9a9;
+  --TEAL5: #20c997;
+  --TEAL6: #12b886;
+  --TEAL7: #0ca678;
+  --TEAL8: #099268;
+  --TEAL9: #087f5b;
+}
+
+/* Green */
+:root {
+  --GREEN0: #ebfbee;
+  --GREEN1: #d3f9d8;
+  --GREEN2: #b2f2bb;
+  --GREEN3: #8ce99a;
+  --GREEN4: #69db7c;
+  --GREEN5: #51cf66;
+  --GREEN6: #40c057;
+  --GREEN7: #37b24d;
+  --GREEN8: #2f9e44;
+  --GREEN9: #2b8a3e;
+}
+
+/* Lime */
+:root {
+  --LIME0: #f4fce3;
+  --LIME1: #e9fac8;
+  --LIME2: #d8f5a2;
+  --LIME3: #c0eb75;
+  --LIME4: #a9e34b;
+  --LIME5: #94d82d;
+  --LIME6: #82c91e;
+  --LIME7: #74b816;
+  --LIME8: #66a80f;
+  --LIME9: #5c940d;
+}
+
+/* Yellow */
+:root {
+  --YELLOW0: #fff9db;
+  --YELLOW1: #fff3bf;
+  --YELLOW2: #ffec99;
+  --YELLOW3: #ffe066;
+  --YELLOW4: #ffd43b;
+  --YELLOW5: #fcc419;
+  --YELLOW6: #fab005;
+  --YELLOW7: #f59f00;
+  --YELLOW8: #f08c00;
+  --YELLOW9: #e67700;
+}
+
+/* Orange */
+:root {
+  --ORANGE0: #fff4e6;
+  --ORANGE1: #ffe8cc;
+  --ORANGE2: #ffd8a8;
+  --ORANGE3: #ffc078;
+  --ORANGE4: #ffa94d;
+  --ORANGE5: #ff922b;
+  --ORANGE6: #fd7e14;
+  --ORANGE7: #f76707;
+  --ORANGE8: #e8590c;
+  --ORANGE9: #d9480f;
+}

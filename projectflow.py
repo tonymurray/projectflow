@@ -1846,7 +1846,8 @@ class ProjectFlowApp(QMainWindow):
         """Show global application settings dialog.
 
         Args:
-            initial_tab: Index of tab to show (0=Settings, 1=Icons, 2=Launch Handlers)
+            initial_tab: Index of tab to show (0=Settings, 1=Themes, 2=Applications,
+                3=Integrations, 4=Icons, 5=Launch Handlers)
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("ProjectFlow Settings")
@@ -1860,12 +1861,14 @@ class ProjectFlowApp(QMainWindow):
 
         # Global settings tabs
         settings_tab = self._create_settings_tab()
+        themes_tab = self._create_themes_tab()
         applications_tab = self._create_applications_tab()
         integrations_tab = self._create_integrations_tab()
         icons_tab = self._create_icons_tab()
         handlers_tab = self._create_handlers_tab()
 
         tabs.addTab(settings_tab, "Settings")
+        tabs.addTab(themes_tab, "Themes")
         tabs.addTab(applications_tab, "Applications")
         tabs.addTab(integrations_tab, "Integrations")
         tabs.addTab(icons_tab, "Icons")
@@ -1892,7 +1895,9 @@ class ProjectFlowApp(QMainWindow):
         dialog.exec()
 
     def _create_settings_tab(self):
-        """Create the main Settings tab (theme, startup, launcher defaults, notes, projects layout)"""
+        """Create the main Settings tab (startup, launcher defaults, notes, projects layout,
+        path mappings). Theme and Muya heading colors live in the separate Themes tab
+        (_create_themes_tab()) instead."""
         widget = QWidget()
         layout = QFormLayout(widget)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -1954,15 +1959,6 @@ class ProjectFlowApp(QMainWindow):
         layout.addRow(actions_label, actions_layout)
 
         layout.addRow(QLabel(""))
-
-        # Theme
-        theme_label = QLabel("Theme:")
-        theme_label.setStyleSheet(label_style)
-        self._settings_theme_combo = QComboBox()
-        self._settings_theme_combo.addItems(["system", "light", "dark"])
-        self._settings_theme_combo.setCurrentText(self.settings.get("theme", "system"))
-        self._settings_theme_combo.setStyleSheet(input_style)
-        layout.addRow(theme_label, self._settings_theme_combo)
 
         # Startup
         startup_label = QLabel("Startup:")
@@ -2217,6 +2213,73 @@ class ProjectFlowApp(QMainWindow):
 
         layout.addRow(mappings_label, mappings_outer)
 
+        return widget
+
+    def _create_themes_tab(self):
+        """Create the Themes tab: the app-wide light/dark/system theme, and the Muya
+        Notes/Markdown editor's heading-color customization. Split out from the main
+        Settings tab into its own tab once heading colors were added, since both are
+        genuinely "appearance" settings distinct from startup behavior/paths/notes-folder
+        location etc. The theme dropdown here is a secondary way to change it — the footer
+        🌙/☀️ button remains the fast, one-click way to toggle light/dark day-to-day."""
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        input_style = f"""
+            QLineEdit, QComboBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+            QLineEdit:focus, QComboBox:focus {{
+                border-color: {self.t('bg_category')};
+            }}
+        """
+        label_style = f"color: {self.t('fg_primary')}; font-size: 13px;"
+
+        # Theme
+        theme_label = QLabel("Theme:")
+        theme_label.setStyleSheet(label_style)
+        self._settings_theme_combo = QComboBox()
+        self._settings_theme_combo.addItems(["system", "light", "dark"])
+        self._settings_theme_combo.setCurrentText(self.settings.get("theme", "system"))
+        self._settings_theme_combo.setStyleSheet(input_style)
+        layout.addRow(theme_label, self._settings_theme_combo)
+
+        theme_hint = QLabel("The footer 🌙/☀️ button is the quicker way to toggle this day-to-day.")
+        theme_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        layout.addRow("", theme_hint)
+
+        layout.addRow(QLabel(""))
+
+        # Muya Heading Colors — one hue dropdown per heading level (H2-H6; H1 stays plain
+        # ink, not configurable, matching the common documentation convention of a neutral
+        # title). The shade (darkest for light theme, a lighter one for dark theme) is
+        # always derived automatically in _notes_paper_css() — the user only picks the hue,
+        # never the shade, so every choice is guaranteed readable in both themes. See
+        # MUYA_HEADING_LEVELS/MUYA_HEADING_HUES/MUYA_HEADING_DEFAULTS near _notes_paper_css().
+        heading_colors_label = QLabel("Muya Heading Colors:")
+        heading_colors_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
+        layout.addRow(heading_colors_label)
+
+        saved_heading_hues = self.settings.get('muya_heading_colors', self.MUYA_HEADING_DEFAULTS)
+        self._settings_muya_heading_combos = {}
+        for level in self.MUYA_HEADING_LEVELS:
+            level_label = QLabel(f"  {level.upper()}:")
+            level_label.setStyleSheet(label_style)
+            combo = QComboBox()
+            combo.addItems(self.MUYA_HEADING_HUES)
+            combo.setCurrentText(saved_heading_hues.get(level, self.MUYA_HEADING_DEFAULTS.get(level, "None")))
+            combo.setStyleSheet(input_style)
+            self._settings_muya_heading_combos[level] = combo
+            layout.addRow(level_label, combo)
+
+        layout.addRow(QLabel(""))
         return widget
 
     def _create_applications_tab(self):
@@ -5102,6 +5165,13 @@ class ProjectFlowApp(QMainWindow):
             new_theme = self._settings_theme_combo.currentText()
             old_theme = self.settings.get("theme", "system")
             self.settings["theme"] = new_theme
+
+            # Save Muya heading colors (hue per level; shade is derived automatically per
+            # theme in _notes_paper_css(), never stored here)
+            self.settings["muya_heading_colors"] = {
+                level: combo.currentText()
+                for level, combo in self._settings_muya_heading_combos.items()
+            }
 
             # Save startup mode
             _mode_text = self._settings_startup_mode.currentText()
@@ -17704,6 +17774,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return
         self._load_muya_shell(session, path, content, extra_css=extra_css, view_state=view_state)
 
+    # Muya heading-color customization (Settings → Settings tab) — the levels this applies
+    # to, the selectable hues (a fixed list matching assets/open-color.css's own category
+    # comments, "None" prepended as the opt-out choice), and the shipped defaults (matching
+    # what this feature originally shipped with hardcoded, before it became configurable).
+    # Shared between _create_settings_tab() (builds the dropdowns) and _notes_paper_css()
+    # (reads the resulting setting) so there's exactly one place each list/default lives.
+    MUYA_HEADING_LEVELS = ["h2", "h3", "h4", "h5", "h6"]
+    MUYA_HEADING_HUES = [
+        "None", "Gray", "Red", "Pink", "Grape", "Violet", "Indigo",
+        "Blue", "Cyan", "Teal", "Green", "Lime", "Yellow", "Orange",
+    ]
+    MUYA_HEADING_DEFAULTS = {"h2": "Green", "h3": "Red", "h4": "Blue", "h5": "Grape", "h6": "Gray"}
+
     def _notes_paper_css(self):
         """CSS for the 'paper on page' look — a Documentary-style paper card floating
         on a tinted page background, with a drop shadow. Used both for the Notes panel and
@@ -17720,7 +17803,26 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         headings, blockquotes...). Left unset, dark theme rendered dark-grey text on the dark
         paper background — barely legible. Light mode's real ink color (`#263241`) has the
         same override problem, but Muya's own light-theme defaults happen to still read fine
-        against the light paper, so light mode is left alone here rather than fixed too."""
+        against the light paper, so light mode is left alone here rather than fixed too.
+
+        H2-H6 also get their own accent color (H1 stays neutral/uncolored, matching the
+        common documentation convention of leaving the title plain and color-coding only
+        sub-section headings) sourced from the Open Color palette
+        (assets/open-color.css, linked into assets/muya/editor.html's <head> — confirmed via
+        source-level tracing of the vendored Muya bundle that headings render as genuine
+        semantic <h1>-<h6> tags with only one shared class per heading STYLE
+        (mu-atx-heading/mu-setext-heading), not one class per LEVEL, so selecting by tag name
+        under #editor is required and correctly beats .mu-container's single-class rule on
+        specificity alone (#editor h2 is (1,0,1) vs .mu-container's (0,1,0) — no !important
+        needed). Which HUE each level uses is user-selectable (Settings → Settings tab →
+        Muya Heading Colors, self.settings['muya_heading_colors'], a dict of level -> hue
+        name or "None" to opt that level out entirely, defaulting to MUYA_HEADING_DEFAULTS)
+        — but the SHADE is always derived here from the current theme, not user-chosen:
+        light mode uses each hue's darkest (9) swatch per the user's own original
+        suggestion, dark mode uses the lighter (4) swatch of the same hue, since shade 9
+        has too little contrast against the dark paper background. Deriving the shade
+        automatically means a chosen hue is guaranteed to work in both themes without the
+        user having to separately pick (or get wrong) a light-safe and a dark-safe shade."""
         alpha = 0.80 if self.layout_mode == "focus" else 0.90
         if self.current_theme == "dark":
             page_bg = "#141414"
@@ -17749,6 +17851,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                     --link-color: #6EA8FE;
                 }
             """
+            heading_shade = 4  # lighter shade for adequate contrast against the dark paper
         else:
             # Matches the Help viewer's light palette (bg_help/bg_example_card/fg_primary in
             # themes.py) — a user preference (prefers Help's light look over the original
@@ -17759,6 +17862,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             shadow = "0 18px 46px rgba(57, 67, 84, 0.12)"
             border = "1px solid rgba(255, 255, 255, 0.42)"
             muya_root_vars = ""
+            heading_shade = 9  # darkest shade, per the user's own original suggestion
+        # User-selectable per level (Settings → Settings tab → Muya Heading Colors), hue
+        # only — the shade is always derived from the theme above, so a chosen hue is
+        # guaranteed a sensible contrast in both light and dark without the user having to
+        # pick (or get wrong) a specific shade themselves. "None" opts a level out entirely,
+        # leaving it on the plain inherited ink color, same as H1's own permanent treatment.
+        heading_hues = self.settings.get('muya_heading_colors', self.MUYA_HEADING_DEFAULTS)
+        heading_rules = []
+        for level in self.MUYA_HEADING_LEVELS:
+            hue = heading_hues.get(level, self.MUYA_HEADING_DEFAULTS.get(level, "None"))
+            if hue != "None":
+                heading_rules.append(f"#editor {level} {{ color: var(--{hue.upper()}{heading_shade}); }}")
+        heading_css = "\n".join(heading_rules)
         return f"""
             {muya_root_vars}
             body {{ background: {page_bg}; color: {ink}; overflow-x: hidden; }}
@@ -17771,6 +17887,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 box-shadow: {shadow};
                 border: {border};
             }}
+            {heading_css}
         """
 
     def create_notes_toolbar(self, parent_layout):
