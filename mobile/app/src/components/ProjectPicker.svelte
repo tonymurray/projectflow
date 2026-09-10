@@ -94,6 +94,7 @@
     padding: 10px 6px 10px 12px;
     text-align: left; line-height: 1.3;
     word-break: break-word;
+    display: flex; align-items: center;
   }
   .row.pinned .name-btn { color: var(--t-active); }
 
@@ -103,6 +104,7 @@
     font-size: 0.75rem; padding: 10px 8px;
     flex-shrink: 0; opacity: 0.25;
     transition: opacity 0.15s;
+    display: flex; align-items: center; justify-content: center;
   }
   .pin-btn.pinned { opacity: 1; }
   .row:hover .pin-btn { opacity: 0.6; }

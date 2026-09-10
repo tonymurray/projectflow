@@ -14,6 +14,9 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 ### Changed
 - Launcher items no longer open when clicked while editing a project — a status-bar hint suggests exiting edit mode instead. Dragging to reorder/move items is unaffected.
 
+### Fixed
+- **Mobile app: project names cut off at the top in the "All Projects" list.** Vertical centering relied on `line-height` alone, which some WebViews render inconsistently for `<button>` elements — switched to flexbox centering (`display: flex; align-items: center`) instead, which computes position from the button's actual content box rather than font line-height metrics.
+
 ## 2026-09-08
 
 ### Added
