@@ -2,6 +2,17 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-11
+
+### Added
+- **Website title field in Kickstart**: the "Website" section now has a title field (defaults to "Project website") alongside the URL, used as the display name for the "Open Website" launcher — useful for naming it something like "Google Project website" on a project with more than one site.
+- **Save feedback for the Notes and Code Editor Save buttons**: the button's own text now briefly turns green with a "✓ Saved" label for ~2 seconds after any save (autosave or manual click) — just the text color, not the whole button, and with no separate status-bar message alongside it, to keep this from being distracting during active editing.
+
+### Fixed
+- **Kickstart's "Set as pinned Web URL" (and Project Settings' "Default Viewer Tab") silently failed to switch the viewer.** The pinned default was saved correctly to disk, but the viewer itself stayed on whatever it was already showing — a regression from the 2026-09-09 fix that stopped unrelated background refreshes from resetting the active viewer, which also (unintentionally) blocked these two places from applying a *deliberate* pin change immediately. Both now switch the viewer the moment you set the pin, same as before.
+- **"+ Add" (quick-add launcher) was a dead end on a brand-new project with no categories yet** — it just told you to go create a category first via Edit mode. It now auto-creates a starter "Resources" category and adds your item straight into it.
+- **A new project's website still opened to Wikipedia even after pinning your own site via Kickstart.** The pinned URL saved correctly, but it was only ever used as a fallback for when no web tab already existed — and the template's own Wikipedia link had already become a real tab on the very first load, so it kept winning on every reopen. Checking "Set as pinned Web URL" now replaces the project's web content outright instead of leaving the old one in place to shadow it.
+
 ## 2026-09-09
 
 ### Added

@@ -3108,7 +3108,7 @@ class ProjectFlowApp(QMainWindow):
 
         dlg.exec()
 
-    def _show_kickstart_dialog(self, folder_path=None, website_url=""):
+    def _show_kickstart_dialog(self, folder_path=None, website_url="", website_title=""):
         """Kickstart / Project Finder: review-and-apply suggestions for a project's base
         folder — detected project-type commands, dev shortcuts, documentation, a project
         alias, and an optional website. Reachable both as a retrofit action (Project
@@ -3231,6 +3231,10 @@ class ProjectFlowApp(QMainWindow):
         website_edit.setPlaceholderText("https://example.com")
         website_edit.setStyleSheet(input_style)
         body_layout.addWidget(website_edit)
+        website_title_edit = QLineEdit(website_title or "Project website")
+        website_title_edit.setPlaceholderText("Project website")
+        website_title_edit.setStyleSheet(input_style)
+        body_layout.addWidget(website_title_edit)
         website_launcher_cb = QCheckBox('Add "Open Website" launcher')
         website_launcher_cb.setStyleSheet(check_style)
         website_pin_cb = QCheckBox("Set as pinned Web URL (opens by default)")
@@ -3243,6 +3247,7 @@ class ProjectFlowApp(QMainWindow):
             # longer auto-checks "Add launcher" for you. Clearing the URL still force-
             # unchecks both, since neither makes sense with nothing to point at.
             has_url = bool(website_edit.text().strip())
+            website_title_edit.setEnabled(has_url)
             website_launcher_cb.setEnabled(has_url)
             website_pin_cb.setEnabled(has_url)
             if not has_url:
@@ -3422,7 +3427,8 @@ class ProjectFlowApp(QMainWindow):
             chosen = QFileDialog.getExistingDirectory(dlg, "Select Project Folder", folder_path)
             if chosen:
                 dlg.reject()
-                self._show_kickstart_dialog(folder_path=chosen, website_url=website_edit.text().strip())
+                self._show_kickstart_dialog(folder_path=chosen, website_url=website_edit.text().strip(),
+                                             website_title=website_title_edit.text().strip())
 
         def do_apply():
             self._apply_kickstart_selections(
@@ -3431,6 +3437,7 @@ class ProjectFlowApp(QMainWindow):
                 alias_checked=alias_cb.isChecked(),
                 alias_name=alias_name_edit.text().strip(),
                 website=website_edit.text().strip(),
+                website_title=website_title_edit.text().strip() or "Project website",
                 website_launcher_checked=website_launcher_cb.isChecked(),
                 website_pin_checked=website_pin_cb.isChecked(),
                 dialog=dlg,
@@ -3443,7 +3450,8 @@ class ProjectFlowApp(QMainWindow):
         dlg.exec()
 
     def _apply_kickstart_selections(self, folder_path, checkbox_entries, alias_checked, alias_name,
-                                     website, website_launcher_checked, website_pin_checked, dialog):
+                                     website, website_launcher_checked, website_pin_checked, dialog,
+                                     website_title="Project website"):
         """Apply handler for _show_kickstart_dialog(): writes every checked suggestion
         into self.COLUMN_1 (Documentation items go through _ensure_documentation_category()
         to match Scan-for-Docs' own behavior; everything else creates/reuses a plain
@@ -3509,14 +3517,41 @@ class ProjectFlowApp(QMainWindow):
                 if links_cat is None:
                     links_cat = []
                     self.COLUMN_1.append({"Links": links_cat})
-                links_cat.append(["Open Website", website, "firefox"])
+                links_cat.append([website_title or "Project website", website, "firefox"])
                 added += 1
             if website_pin_checked:
                 self.config_webview_url = website
                 if not self.config_column2_default:
                     self.config_column2_default = "webview"
+                # Also switch the active viewer directly, not just the saved default —
+                # refresh_projects() below is not a genuine project switch (current_config_file
+                # is unchanged), so load_notes()'s own pinned-default-reapply is gated off (see
+                # _column2_mode_loaded_for) precisely to stop unrelated refreshes from
+                # clobbering whatever the user is actively looking at. That gate has no way to
+                # distinguish "unrelated refresh" from "the user just deliberately repinned the
+                # default from this very dialog" — so this deliberate change has to set
+                # column2_mode itself, immediately, rather than relying on the reload path to
+                # pick it up.
+                self.column2_mode = "webview"
+                # config_webview_url is only ever consulted as a FALLBACK when self.web_tabs
+                # is empty (see load_notes()) — on a brand-new project the template's own
+                # pinned URL (e.g. Wikipedia) was already migrated into a real web_tabs entry
+                # on the very first load, long before Kickstart ever ran, so setting the
+                # scalar alone silently has no visible effect: that stale tab still wins on
+                # every subsequent load/reopen. Checking this box is an unambiguous "make
+                # this the project's web content" action, so replace web_tabs outright rather
+                # than leaving the stale entry to shadow it.
+                self.web_tabs = [WebTabState("url", website)]
+                self.web_active_index = 0
+                self.webview_url = website
 
         self._save_project_config()
+        if website and website_pin_checked:
+            # _save_project_config() doesn't touch webview_state/web_tabs (see save_notes()) —
+            # persist the corrected web_tabs now, before refresh_projects() below triggers any
+            # load_notes() call that would otherwise just re-read the still-stale value back
+            # off disk.
+            self.save_notes()
         self.refresh_projects()
         dialog.accept()
 
@@ -5138,6 +5173,15 @@ class ProjectFlowApp(QMainWindow):
             self.config_project_name = self._proj_project_name.text().strip() or None
             # Viewer defaults
             self.config_column2_default = self._proj_default_viewer.currentText() or None
+            if self.config_column2_default:
+                # Switch the active viewer immediately, not just the saved default — the
+                # refresh_projects() this save triggers is not a genuine project switch, so
+                # load_notes()'s own pinned-default-reapply is gated off (see
+                # _column2_mode_loaded_for) to stop unrelated refreshes from clobbering
+                # whatever's currently on screen. That gate can't tell "unrelated refresh"
+                # apart from "the user just deliberately repinned the default right here" —
+                # same fix as Kickstart's own website-pin checkbox (_apply_kickstart_selections()).
+                self.column2_mode = self.config_column2_default
             self.config_launcher_tab_default = self._proj_default_launcher_tab.currentText() or None
             self.config_pdf_file = self._proj_pdf_file.text().strip() or None
             self.config_webview_url = self._proj_webview_url.text().strip() or None
@@ -5601,6 +5645,26 @@ class ProjectFlowApp(QMainWindow):
         color = color_map.get(status_type, self.t('status_success'))
         self.status_label.setText(message)
         self.status_label.setStyleSheet(f"color: {color}; margin: 10px; font-weight: bold;")
+
+    def _flash_button_saved(self, button, restore_callback, duration_ms=2000):
+        """Briefly turns `button`'s own text green with a "✓ Saved" label to confirm a
+        save just happened, without touching its background/border — a full-button color
+        fill (an earlier version of this) plus the top status-bar message together read as
+        distracting during active editing, so this is deliberately just a text-color
+        change layered on top of whatever style the button already has. Snapshots the
+        button's current stylesheet first and appends a single override rule for `color`
+        (QSS cascades same as CSS — a later same-selector rule wins per-property, so this
+        doesn't disturb background/border/padding from the original), rather than
+        reconstructing the button's full style from scratch. After `duration_ms`, calls
+        `restore_callback` (the button's own state-refresh method) to put it back to
+        whatever its current dirty/clean state actually calls for — never a hardcoded
+        style — since more edits may already have happened by then."""
+        if not button:
+            return
+        original_style = button.styleSheet()
+        button.setText("✓ Saved")
+        button.setStyleSheet(original_style + f"\nQPushButton {{ color: {self.t('status_success')}; }}")
+        QTimer.singleShot(duration_ms, restore_callback)
 
     def setup_first_run(self):
         """Copy example files to projects/notes directories on first run"""
@@ -13901,15 +13965,20 @@ function filterAliases(q) {{
             QMessageBox.warning(self, "External Editor", f"Failed to open: {e}")
 
     def quick_add_launcher(self):
-        """Open the add-item dialog targeting the first category"""
+        """Open the add-item dialog targeting the first category — auto-creates a starter
+        "Resources" category first if the project has none yet, rather than telling the
+        user to go create one via Edit mode first (the only outcome this used to have for
+        a brand-new, empty project, which read as an awkward dead end for the one button
+        whose whole job is "add a launcher without needing to enter edit mode")."""
         first_category = None
         for cat_dict in self.COLUMN_1:
             if cat_dict:
                 first_category = list(cat_dict.keys())[0]
                 break
         if not first_category:
-            QMessageBox.information(self, "Quick Add", "No categories found. Add a category first via Edit mode.")
-            return
+            first_category = "Resources"
+            self.COLUMN_1.append({first_category: []})
+            self.save_config_to_json()
         self._show_item_edit_dialog(0, first_category, None)
 
     def toggle_edit_mode(self):
@@ -15784,6 +15853,10 @@ function filterAliases(q) {{
                 border: 1px solid {self.t('bg_category_hover')};
             }}
         """
+        # Stashed so _update_code_editor_buttons() can restore code_save_btn's normal
+        # look after a temporary "✓ Saved" flash (_flash_button_saved) — that function
+        # only ever overrides the stylesheet, so something has to know the way back.
+        self._code_toolbar_btn_style = btn_style
 
         self.code_open_btn = QPushButton(" Open")
         self.code_open_btn.setIcon(self._open_icon())
@@ -18325,10 +18398,17 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                     f.write(markdown)
                 session.webview.page().runJavaScript("window.__muyaClearDirty && window.__muyaClearDirty()")
                 session.dirty = False
-                if session is getattr(self, '_notes_muya_session', None):
+                is_notes_session = session is getattr(self, '_notes_muya_session', None)
+                if is_notes_session:
+                    # Notes has its own Save button (_flash_button_saved handles the "just
+                    # saved" confirmation there) — showing the status-bar message too, on
+                    # top of the button flash, read as distracting during active editing.
                     self._update_notes_save_btn()
-                self.status_label.setText(f"✓ Autosaved {os.path.basename(session.path)}")
-                self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
+                    self._flash_button_saved(getattr(self, 'notes_save_btn', None), self._update_notes_save_btn)
+                else:
+                    # The general webview markdown session has no Save button of its own to
+                    # flash, so the status-bar message remains its only save confirmation.
+                    self.set_status(f"✓ Autosaved {os.path.basename(session.path)}", "success")
             except OSError as e:
                 self.status_label.setText(f"✗ Autosave failed: {e}")
 
@@ -18609,8 +18689,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                     active_tab.pending_unsaved_content = None
                 self._update_code_editor_buttons()
                 self._rebuild_code_tab_strip()
-                self.status_label.setText(f"✓ Saved {os.path.basename(session.path)}")
-                self.status_label.setStyleSheet("color: #27ae60; margin: 10px;")
+                # The status-bar message is deliberately skipped here — the Save button's
+                # own flash (below) is the confirmation; showing both read as distracting.
+                self._flash_button_saved(getattr(self, 'code_save_btn', None), self._update_code_editor_buttons)
             except OSError as e:
                 self.status_label.setText(f"✗ Save failed: {e}")
 
@@ -18884,6 +18965,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 self.code_save_btn.setText("💾 Save (unsaved changes)")
             else:
                 self.code_save_btn.setText("💾 Save")
+            # Also restore the button's normal stylesheet — undoes _flash_button_saved()'s
+            # temporary green "✓ Saved" override, since this is the one function that
+            # otherwise fully determines this button's appearance from current state.
+            self.code_save_btn.setStyleSheet(getattr(self, '_code_toolbar_btn_style', ''))
             self.code_save_btn.setEnabled(bool(session.editing and session.path))
         if hasattr(self, 'code_filename_label'):
             self.code_filename_label.setText(os.path.basename(session.path) if session.path else "")
