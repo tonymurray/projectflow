@@ -16593,6 +16593,8 @@ function filterAliases(q) {{
 
     def create_folder_toolbar(self, parent_layout):
         """Create a toolbar for the folder browser"""
+        self._build_folder_shortcuts_row(parent_layout, "right")
+
         toolbar_widget = QWidget()
         toolbar_layout = QHBoxLayout(toolbar_widget)
         toolbar_layout.setContentsMargins(0, 0, 0, 5)
@@ -16709,6 +16711,8 @@ function filterAliases(q) {{
         clicking a file opens it straight into the built-in viewer (see _open_path_in_best_viewer)
         instead of the tree's default navigate/xdg-open behavior.
         """
+        self._build_folder_shortcuts_row(column_layout, "left")
+
         toolbar_widget = QWidget()
         toolbar_layout = QHBoxLayout(toolbar_widget)
         toolbar_layout.setContentsMargins(0, 0, 0, 4)
@@ -17195,6 +17199,7 @@ function filterAliases(q) {{
         else:
             self._folder_raw_entries, self._folder_scan_error = entries, error
         self._render_folder_view_side(side)
+        self._update_folder_shortcut_highlight(side)
 
     def _refresh_all_folder_views(self):
         """Refresh whichever side(s) currently have a browsed path, from disk. Used after an
@@ -17322,6 +17327,153 @@ function filterAliases(q) {{
         if self.config_folder_path:
             populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
             populate(self.config_folder_path)
+
+    def _get_folder_location_shortcuts(self, limit=5):
+        """Derive quick-jump folder shortcuts from the project's own launcher items —
+        modeled directly on the Terminal toolbar's alias quick-jump buttons
+        (_get_current_project_aliases()/ALIAS_TOOLBAR_LIMIT). No new config is introduced:
+        an item already fully describes "this path, opened in a file manager" via
+        app in ("file_manager", "dolphin") — the complete set of file-manager app values
+        this codebase actually uses ("nautilus"/"thunar" only ever appear as candidate
+        binaries for the configured file-manager executable, never as a launcher app
+        value). Returns [(display_name, resolved_path), ...] in the project's own
+        category/item order, so reordering the project's config controls which ones show
+        — same rule the alias buttons follow. Deliberately capped small with no overflow
+        menu (unlike aliases' 10-button-cap-plus-"+N"-menu): the whole point of a 5-item
+        cap here is to keep this row small, so anything past it is simply not shown.
+
+        The project's own pinned folder_path — if set and it still resolves to a real
+        directory — is always included first, labeled "Project Home": previously this was
+        deliberately excluded (already one click away via the toolbar's own "⌂⌂" icon
+        button), but that button is small and unlabeled, so the request was to always
+        surface the project's primary location as a full, equally-visible button in this
+        same row too. It counts toward `limit` like any other entry, rather than being an
+        extra one added on top — 5 total, not 5 plus one."""
+        shortcuts = []
+        seen_paths = set()
+        if self.config_folder_path:
+            resolved, _used_mapping = self._resolve_existing_path(self.config_folder_path)
+            resolved = os.path.expanduser(resolved)
+            if os.path.isdir(resolved):
+                seen_paths.add(os.path.normpath(resolved))
+                shortcuts.append(("Project Home", resolved))
+        for cat_dict in self.COLUMN_1:
+            for _category_name, items in cat_dict.items():
+                for item in items:
+                    if len(item) < 2:
+                        continue
+                    app = item[2] if len(item) >= 3 else "kate"
+                    if app not in ("file_manager", "dolphin"):
+                        continue
+                    raw_path = str(item[1])
+                    first_token = raw_path.split()[0] if ' ' in raw_path else raw_path
+                    resolved, _used_mapping = self._resolve_existing_path(first_token)
+                    resolved = os.path.expanduser(resolved)
+                    if not os.path.isdir(resolved):
+                        continue
+                    normalized = os.path.normpath(resolved)
+                    if normalized in seen_paths:
+                        # Either a real duplicate, or the same folder as "Project Home" above.
+                        continue
+                    seen_paths.add(normalized)
+                    shortcuts.append((item[0], resolved))
+        return shortcuts[:limit]
+
+    def _build_folder_shortcuts_row(self, parent_layout, side):
+        """Adds a row of quick-jump buttons for _get_folder_location_shortcuts()'s result,
+        one per candidate folder location, directly above the caller's own toolbar (called
+        as the first line of create_folder_toolbar()/_build_launcher_folder_panel()). Adds
+        nothing if there are no candidates — no empty row, no placeholder.
+
+        Each button is checkable and highlighted (see the QPushButton:checked rule, the
+        same convention create_code_editor_toolbar's wrap-toggle button uses) whenever it
+        matches the side's currently-browsed folder — refreshed live from
+        _update_folder_shortcut_highlight(), called at the end of _populate_folder_side()
+        after every navigation, since navigating (Up/Home/another shortcut) re-renders the
+        folder view in place without rebuilding this toolbar. Button/path pairs are stashed
+        in self._folder_shortcut_button_refs[side] for that refresh to find; reset here on
+        every rebuild (including the empty-shortcuts case) so a stale reference from a
+        previous build is never left behind for that side."""
+        if not hasattr(self, '_folder_shortcut_button_refs'):
+            self._folder_shortcut_button_refs = {}
+        self._folder_shortcut_button_refs[side] = []
+
+        shortcuts = self._get_folder_location_shortcuts()
+        if not shortcuts:
+            return
+
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 5)
+        row_layout.setSpacing(5)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+
+        current_path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
+        normalized_current = os.path.normpath(os.path.expanduser(current_path)) if current_path else None
+
+        for name, path in shortcuts:
+            btn = QPushButton(name)
+            btn.setStyleSheet(btn_style)
+            btn.setToolTip(path)
+            btn.setCheckable(True)
+            btn.setChecked(os.path.normpath(path) == normalized_current)
+            btn.clicked.connect(lambda checked=False, p=path, s=side: self._jump_to_folder_shortcut(p, s))
+            row_layout.addWidget(btn)
+            self._folder_shortcut_button_refs[side].append((btn, path))
+        row_layout.addStretch()
+
+        parent_layout.addWidget(row_widget)
+        # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
+        self._immersive_hide_widgets.append(row_widget)
+
+    def _jump_to_folder_shortcut(self, path, side):
+        """Click handler for _build_folder_shortcuts_row()'s buttons — mirrors
+        folder_go_project_default() exactly, just with an arbitrary resolved path instead
+        of the project's own pinned folder_path."""
+        populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
+        populate(path)
+
+    def _update_folder_shortcut_highlight(self, side):
+        """Refreshes the checked/highlighted state of this side's folder-shortcut buttons
+        (see _build_folder_shortcuts_row) to match whichever folder is now being browsed —
+        called from _populate_folder_side() after every navigation, since navigating
+        doesn't rebuild the toolbar these buttons live in. Wrapped per-button in
+        try/except RuntimeError, matching this file's existing guard for a widget that may
+        have outlived its own rebuild (e.g. the Files tab wasn't active during the most
+        recent build_main_content() pass), since that's a stale-reference risk, not a bug
+        to fix here."""
+        refs = getattr(self, '_folder_shortcut_button_refs', {}).get(side, [])
+        if not refs:
+            return
+        current_path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
+        normalized_current = os.path.normpath(os.path.expanduser(current_path)) if current_path else None
+        for btn, path in refs:
+            try:
+                btn.setChecked(os.path.normpath(path) == normalized_current)
+            except RuntimeError:
+                pass
 
     def _pin_current_folder_as_project_default(self, side="right"):
         """Pin the currently browsed folder as this project's default folder_path — the

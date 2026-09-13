@@ -2,6 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-13
+
+### Added
+- **Folder location shortcuts**: both folder-browsing surfaces (the main Folder viewer and the Focus-layout Files panel) now show a small row of quick-jump buttons above the toolbar for a project's "key locations" — auto-derived from the project's own `file_manager`/`dolphin` launcher items (no new config to set up), capped at 5. Useful for projects whose files live in more than one folder (e.g. a main working folder plus a separate documents/resources folder). The project's own pinned default folder is always included first as "Project Home", and whichever button matches the folder you're currently browsing lights up, updating live as you navigate.
+
 ## 2026-09-11
 
 ### Added
