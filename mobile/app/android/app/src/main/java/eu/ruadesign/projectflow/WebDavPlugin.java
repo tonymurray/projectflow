@@ -1,5 +1,9 @@
 package eu.ruadesign.projectflow;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -17,6 +21,37 @@ import okhttp3.Response;
 @CapacitorPlugin(name = "WebDav")
 public class WebDavPlugin extends Plugin {
     private final OkHttpClient client = new OkHttpClient();
+    private ConnectivityManager.NetworkCallback networkCallback;
+
+    @Override
+    public void load() {
+        // client is a single long-lived OkHttpClient for the whole plugin lifetime, with
+        // no awareness of network-interface changes by default — its internal connection
+        // pool / failed-route cache can stay tied to a now-dead path (e.g. after a
+        // wifi<->wifi or wifi<->mobile-data switch) until something forces it to drop
+        // those. Evicting the pool whenever the active network changes is the fix —
+        // cheap, and doesn't touch the actual request-handling logic below at all.
+        ConnectivityManager cm = (ConnectivityManager) getContext()
+            .getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                client.connectionPool().evictAll();
+            }
+        };
+        cm.registerDefaultNetworkCallback(networkCallback);
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        ConnectivityManager cm = (ConnectivityManager) getContext()
+            .getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm != null && networkCallback != null) {
+            cm.unregisterNetworkCallback(networkCallback);
+        }
+        super.handleOnDestroy();
+    }
 
     @PluginMethod
     public void request(final PluginCall call) {

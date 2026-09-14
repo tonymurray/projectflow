@@ -8,6 +8,35 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 
 const WebDav = registerPlugin('WebDav');
 
+// Typed errors so callers can tell "never reached the server" (NetworkError) apart from
+// "server responded, but with an error status" (HttpError) without parsing message strings.
+export class HttpError extends Error {
+  constructor(status, method) {
+    super(`${method} ${status}`);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
+export class NetworkError extends Error {
+  constructor(message) {
+    super(message || 'Network request failed');
+    this.name = 'NetworkError';
+  }
+}
+
+// Statuses worth treating the same as "offline" for retry purposes — the server responded,
+// but only to say it's temporarily unable to help (Nextcloud's 423 Locked during sync, plus
+// the standard "busy/unavailable, try again" statuses). Everything else (401, 404, 400, ...)
+// is a real error that needs different user action than "wait and retry."
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504, 423]);
+
+export function isOfflineish(err) {
+  if (err instanceof NetworkError) return true;
+  if (err instanceof HttpError) return RETRYABLE_STATUSES.has(err.status);
+  return false;
+}
+
 let _config = null;
 
 export function setConfig(cfg) {
@@ -40,17 +69,25 @@ async function request(method, url, body = null, extraHeaders = {}) {
   const headers = { Authorization: authHeader(), ...extraHeaders };
   if (body !== null) headers['Content-Type'] = 'text/plain; charset=utf-8';
 
-  if (Capacitor.isNativePlatform()) {
-    const result = await WebDav.request({ method, url, headers, body: body ?? undefined });
-    return {
-      ok: result.status >= 200 && result.status < 300,
-      status: result.status,
-      text: async () => result.data,
-      json: async () => JSON.parse(result.data),
-    };
-  }
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const result = await WebDav.request({ method, url, headers, body: body ?? undefined });
+      return {
+        ok: result.status >= 200 && result.status < 300,
+        status: result.status,
+        text: async () => result.data,
+        json: async () => JSON.parse(result.data),
+      };
+    }
 
-  return fetch(url, { method, headers, body });
+    return await fetch(url, { method, headers, body });
+  } catch (e) {
+    // Native plugin promise rejection (DNS/timeout/no route — OkHttp only rejects on a
+    // real IOException, never on a plain HTTP error status) or the browser fetch()
+    // throwing (e.g. "TypeError: Failed to fetch") both mean the same thing: we never
+    // got a response at all.
+    throw new NetworkError(e.message);
+  }
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -58,7 +95,7 @@ async function request(method, url, body = null, extraHeaders = {}) {
 export async function listProjects() {
   const url = projectsBase();
   const res = await request('PROPFIND', url, null, { Depth: '1' });
-  if (!res.ok) throw new Error(`PROPFIND ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'PROPFIND');
   const xml = await res.text();
   return parseProjectList(xml);
 }
@@ -83,14 +120,14 @@ function parseProjectList(xml) {
 export async function loadProject(filename) {
   const url = `${projectsBase()}/${encodeURIComponent(filename)}`;
   const res = await request('GET', url);
-  if (!res.ok) throw new Error(`GET ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'GET');
   return await res.json();
 }
 
 export async function saveProjectConfig(filename, config) {
   const url = `${projectsBase()}/${encodeURIComponent(filename)}`;
   const res = await request('PUT', url, JSON.stringify(config, null, 2));
-  if (!res.ok) throw new Error(`PUT ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'PUT');
   return true;
 }
 
@@ -108,7 +145,7 @@ export async function loadNote(filename) {
   const url = `${notesBase()}/${encodeURIComponent(filename)}`;
   const res = await request('GET', url);
   if (res.status === 404) return '';
-  if (!res.ok) throw new Error(`GET ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'GET');
   return await res.text();
 }
 
@@ -116,7 +153,7 @@ export async function loadHtml(filename) {
   const url = `${notesBase()}/${encodeURIComponent(filename)}`;
   const res = await request('GET', url);
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`GET ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'GET');
   return await res.text();
 }
 
@@ -126,14 +163,14 @@ export async function loadFromProjectFolder(projectFilename, docFilename) {
   const url = `${projectsBase()}/${encodePath(name)}/${encodeURIComponent(docFilename)}`;
   const res = await request('GET', url);
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`GET ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'GET');
   return await res.text();
 }
 
 export async function saveNote(filename, content) {
   const url = `${notesBase()}/${encodeURIComponent(filename)}`;
   const res = await request('PUT', url, content);
-  if (!res.ok) throw new Error(`PUT ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, 'PUT');
   return true;
 }
 

@@ -1,14 +1,23 @@
 <script>
-  import { orderedProjects, pinnedProjects, activeProject, activeTab, loading, error, fetchProjects, selectProject, theme, pendingShare, initShareReceiver } from '../lib/store.js';
+  import { get } from 'svelte/store';
+  import { orderedProjects, pinnedProjects, activeProject, activeConfig, activeTab, loading, error, offline, pendingQueue, fetchProjects, selectProject, retryConnection, flushQueue, theme, pendingShare, initShareReceiver, initNetworkWatcher } from '../lib/store.js';
   import Launchers from './Launchers.svelte';
   import Notes from './Notes.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
   import ShareTarget from './ShareTarget.svelte';
+  import PasteText from './PasteText.svelte';
 
   fetchProjects();
   initShareReceiver();
+  initNetworkWatcher();
+  // Covers the case where the app was closed while offline with items still queued and
+  // is later reopened already on wifi — no live "regained connectivity" transition ever
+  // fires in that case, so retryConnection()'s own flush (wired via initNetworkWatcher)
+  // never gets a chance to run on its own.
+  if (get(pendingQueue).length) flushQueue();
 
   let showPicker = false;
+  let showPaste = false;
 
   function toggleTheme() {
     theme.update(t => t === 'dark' ? 'light' : 'dark');
@@ -35,11 +44,26 @@
         {/each}
       {/if}
     </div>
+    {#if $offline}
+      <button class="offline-pill" on:click={retryConnection} title="Retry connection">
+        📡 Offline · Retry
+      </button>
+    {/if}
+    {#if $pendingQueue.length}
+      <button class="offline-pill" on:click={retryConnection} title="Send queued items now">
+        📤 {$pendingQueue.length} pending · Retry
+      </button>
+    {/if}
+    <button class="all-btn" on:click={() => showPaste = true} title="Paste text or link into a note/launcher">📋</button>
     <button class="all-btn" on:click={() => showPicker = true} title="All projects">≡</button>
   </header>
 
   {#if showPicker}
     <ProjectPicker on:close={() => showPicker = false} />
+  {/if}
+
+  {#if showPaste}
+    <PasteText on:close={() => showPaste = false} />
   {/if}
 
   {#if $pendingShare}
@@ -52,6 +76,12 @@
       <div class="status-msg">Loading…</div>
     {:else if $error}
       <div class="status-msg err">{$error}</div>
+    {:else if $offline && !$activeConfig}
+      <div class="status-msg offline">
+        <p>📡 Currently offline</p>
+        <p class="hint">Can't reach the server right now.</p>
+        <button on:click={retryConnection}>Retry</button>
+      </div>
     {:else if !$activeProject}
       <div class="status-msg">Select a project above</div>
     {:else if $activeTab === 'launchers'}
@@ -103,6 +133,15 @@
   }
   .all-btn:hover { background: var(--bg-hover); }
 
+  .offline-pill {
+    flex-shrink: 0;
+    background: none; border: 1px solid var(--t-unsaved);
+    border-radius: 8px; color: var(--t-unsaved);
+    font-size: 0.8rem; padding: 4px 10px; line-height: 1.2;
+    white-space: nowrap;
+  }
+  .offline-pill:hover { background: var(--bg-hover); }
+
   main { flex: 1; overflow-y: auto; }
 
   .status-msg {
@@ -110,6 +149,16 @@
     height: 100%; color: var(--t-ghost); font-size: 0.9rem;
   }
   .status-msg.err { color: var(--t-error); }
+  .status-msg.offline {
+    flex-direction: column; gap: 6px; color: var(--t-unsaved);
+  }
+  .status-msg.offline .hint { color: var(--t-ghost); font-size: 0.82rem; }
+  .status-msg.offline button {
+    margin-top: 6px; background: var(--bg-card); color: var(--t-unsaved);
+    border: 1px solid var(--t-unsaved); border-radius: 8px;
+    padding: 6px 18px; font-size: 0.85rem;
+  }
+  .status-msg.offline button:hover { background: var(--bg-hover); }
 
   nav {
     flex-shrink: 0;

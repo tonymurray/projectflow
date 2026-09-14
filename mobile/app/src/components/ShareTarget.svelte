@@ -1,6 +1,8 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { projects, activeProject, addLinkToProject, addTextToProjectNote } from '../lib/store.js';
+  import { get } from 'svelte/store';
+  import { projects, activeProject, offline, addLinkToProject, addTextToProjectNote, queueOperation } from '../lib/store.js';
+  import { isOfflineish, NetworkError } from '../lib/webdav.js';
 
   export let share; // { text, subject }
 
@@ -14,6 +16,7 @@
   let selected = $activeProject;
   let busy = false;
   let done = false;
+  let queued = false;
   let errorMsg = null;
 
   function onBackdrop(e) {
@@ -24,19 +27,29 @@
     if (!selected || busy) return;
     busy = true;
     errorMsg = null;
+    const op = isUrl
+      ? { type: 'link', projectFilename: selected.filename, projectName: selected.name, url: trimmed, title: share.subject }
+      : { type: 'note', projectFilename: selected.filename, projectName: selected.name, text: trimmed };
     try {
+      // Already known offline — skip the doomed attempt/timeout and queue right away.
+      if (get(offline)) throw new NetworkError('offline');
       if (isUrl) {
         await addLinkToProject(selected, trimmed, share.subject);
       } else {
         await addTextToProjectNote(selected, trimmed);
       }
       done = true;
-      setTimeout(() => dispatch('close'), 900);
     } catch (e) {
-      errorMsg = e.message;
+      if (isOfflineish(e)) {
+        queueOperation(op);
+        queued = true;
+      } else {
+        errorMsg = e.message;
+      }
     } finally {
       busy = false;
     }
+    if (done || queued) setTimeout(() => dispatch('close'), 900);
   }
 </script>
 
@@ -54,6 +67,8 @@
 
       {#if done}
         <div class="status ok">Added ✓</div>
+      {:else if queued}
+        <div class="status queued">📤 Queued — will send when back online</div>
       {:else}
         <div class="hint">
           {isUrl ? 'Adds as a launcher in "Added Resources"' : 'Prepended to the project note'} for:
@@ -142,6 +157,7 @@
   .status { font-size: 0.85rem; padding: 6px 0; }
   .status.ok  { color: var(--t-saved); text-align: center; padding: 20px 0; font-size: 1rem; }
   .status.err { color: var(--t-error); }
+  .status.queued { color: var(--t-unsaved); text-align: center; padding: 20px 0; font-size: 1rem; }
 
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .cancel-btn, .add-btn {
