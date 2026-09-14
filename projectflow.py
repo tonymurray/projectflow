@@ -715,7 +715,24 @@ class ClickableSearchTitle(QWidget):
         self.config_map = {}
         for path in config_paths:
             name = os.path.basename(path)
-            name = os.path.splitext(name)[0]
+            if name == '.projectflow':
+                # A folder-project's filename is always literally ".projectflow" — the
+                # generic splitext-based derivation below would produce ".PROJECTFLOW" for
+                # every one of them. Prefer the project's own project_name field (set by
+                # every "Make Project" flow — see create_folder_project_config()), falling
+                # back to the parent folder name only if that field is absent/unreadable —
+                # the exact same precedence get_display_name_for_config_path() already uses
+                # for this case elsewhere in the app.
+                name = None
+                try:
+                    with open(path) as f:
+                        name = json.load(f).get('project_name')
+                except Exception:
+                    pass
+                if not name:
+                    name = os.path.basename(os.path.dirname(path))
+            else:
+                name = os.path.splitext(name)[0]
             if name.endswith('_config'):
                 name = name[:-7]
             display_name = name.replace('_', ' ').upper()
@@ -3686,6 +3703,50 @@ class ProjectFlowApp(QMainWindow):
         self._proj_use_three_columns = QCheckBox("Use three columns view")
         form_layout.addRow(field_label("Layout:"), self._proj_use_three_columns)
 
+        # Sharing — for a .projectflow folder-project living in a folder synced with
+        # someone else (Nextcloud/Drive). "Shared" is a manual, synced label (both
+        # collaborators see it, since it's the same JSON file) — deliberately NOT
+        # auto-detected from any folder-location heuristic, since only the user actually
+        # knows whether a given folder is meant to be shared. Hidden entirely for a
+        # regular projects/*.json config (its notes/config live in the personal,
+        # unshared projects/notes trees, so the label wouldn't mean anything there) — see
+        # _populate_settings_form()'s setRowVisible() call. Trust is a SEPARATE, LOCAL-
+        # ONLY checkbox (see _proj_trust_shared below and trusted_shared_projects in
+        # .projectflow_settings.json) — never synced, since a trust flag stored in the
+        # shared file itself could be silently flipped by anyone with folder access,
+        # defeating the whole point of the safeguard.
+        sharing_layout = QVBoxLayout()
+        sharing_layout.setSpacing(4)
+        self._proj_is_shared = QCheckBox("👥 This is a shared project")
+        self._proj_is_shared.setToolTip("Label this project as shared with someone else via a synced folder (Nextcloud/Drive)")
+        sharing_layout.addWidget(self._proj_is_shared)
+        self._proj_is_shared_desc = QLabel(
+            "Launcher items using absolute paths may not resolve on a collaborator's machine."
+        )
+        self._proj_is_shared_desc.setToolTip(
+            "File/folder resources inside this project's own folder are resolved "
+            "automatically regardless (see the automatic path fallback); other absolute "
+            "paths outside this project's folder are not."
+        )
+        self._proj_is_shared_desc.setWordWrap(True)
+        sharing_layout.addWidget(self._proj_is_shared_desc)
+        self._proj_trust_shared = QCheckBox("⚠️ Trust this shared project (allow it to run commands)")
+        self._proj_trust_shared.setToolTip(
+            "When untrusted, launchers that run a command (aliases, terminal, rsync, npm, etc.) "
+            "ask for confirmation before running instead of running immediately."
+        )
+        sharing_layout.addWidget(self._proj_trust_shared)
+        # Only meaningful once the project is actually marked shared — live-toggled as the
+        # checkbox above is (un)checked, not just at populate time, so it doesn't sit there
+        # looking relevant for an unshared project between save and the next reopen.
+        self._proj_is_shared.toggled.connect(self._proj_trust_shared.setVisible)
+        form_layout.addRow(field_label("Sharing:"), sharing_layout)
+        # setRowVisible()/isRowVisible() key off the exact object passed to addRow() as the
+        # row's field — a widget merely nested inside that layout (e.g. the checkbox itself)
+        # has no row of its own that QFormLayout knows about, so the anchor must be
+        # sharing_layout, not self._proj_is_shared.
+        self._proj_sharing_row_anchor = sharing_layout
+
         # Default Launcher Tab (Focus layout) — pins Files/Docs/Resources/Apps, mirrors
         # Default Viewer Tab below (see _set_launcher_tab_as_default()). Ordered before
         # Default Viewer Tab (launcher tab first, then viewer) for consistency with how
@@ -3861,6 +3922,8 @@ class ProjectFlowApp(QMainWindow):
         ):
             line_edit.textChanged.connect(self._mark_settings_form_dirty)
         self._proj_use_three_columns.toggled.connect(self._mark_settings_form_dirty)
+        self._proj_is_shared.toggled.connect(self._mark_settings_form_dirty)
+        self._proj_trust_shared.toggled.connect(self._mark_settings_form_dirty)
         self._proj_default_viewer.currentTextChanged.connect(self._mark_settings_form_dirty)
         self._proj_default_launcher_tab.currentTextChanged.connect(self._mark_settings_form_dirty)
 
@@ -3956,12 +4019,15 @@ class ProjectFlowApp(QMainWindow):
         """)
 
         self._proj_use_three_columns.setStyleSheet(label_style)
+        self._proj_is_shared.setStyleSheet(label_style)
+        self._proj_trust_shared.setStyleSheet(label_style)
         self._style_project_color_button()
         section_label_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;"
         desc_style = f"color: {self.t('fg_secondary')}; font-size: 12px;"
         self._settings_integrations_header.setStyleSheet(section_label_style)
         self._settings_menu_label.setStyleSheet(section_label_style)
         self._settings_menu_desc.setStyleSheet(desc_style)
+        self._proj_is_shared_desc.setStyleSheet(desc_style)
         self._proj_baloo_desc.setStyleSheet(desc_style)
         self._settings_scan_docs_desc.setStyleSheet(desc_style)
         self._settings_kickstart_desc.setStyleSheet(desc_style)
@@ -4004,6 +4070,14 @@ class ProjectFlowApp(QMainWindow):
         self._style_project_color_button()
 
         self._proj_use_three_columns.setChecked(self.layout_mode != "focus")
+
+        # Sharing: hidden entirely for a regular projects/*.json config — see the
+        # checkbox's own construction comment in _build_settings_form() for why.
+        is_projectflow_config = os.path.basename(self.current_config_file or "") == '.projectflow'
+        self._settings_form_layout.setRowVisible(self._proj_sharing_row_anchor, is_projectflow_config)
+        self._proj_is_shared.setChecked(bool(getattr(self, 'config_is_shared', False)))
+        self._proj_trust_shared.setChecked(self._is_shared_project_trusted(self.current_config_file))
+        self._proj_trust_shared.setVisible(self._proj_is_shared.isChecked())
 
         # Rebuild both dropdowns' item lists from the live (possibly drag-reordered) tab
         # order every time this form is populated, so they never drift out of sync with
@@ -5169,6 +5243,18 @@ class ProjectFlowApp(QMainWindow):
             if hasattr(self, '_proj_color_value'):
                 self.config_project_color = self._proj_color_value or None
 
+            # Sharing: is_shared is a synced project field (both collaborators see the
+            # same label, since it's the same file); trust is local-only and never written
+            # to config_* / the project's own JSON — see _trust_shared_project()'s docstring
+            # for why. Only meaningful for .projectflow configs, but harmless to read/write
+            # unconditionally here since the checkbox row is hidden for other config types.
+            if hasattr(self, '_proj_is_shared'):
+                self.config_is_shared = self._proj_is_shared.isChecked()
+                if self._proj_trust_shared.isChecked():
+                    self._trust_shared_project(self.current_config_file)
+                else:
+                    self._untrust_shared_project(self.current_config_file)
+
             # Project name
             self.config_project_name = self._proj_project_name.text().strip() or None
             # Viewer defaults
@@ -5451,6 +5537,13 @@ class ProjectFlowApp(QMainWindow):
             elif "project_color" in config_data:
                 del config_data["project_color"]
 
+            # Shared-project label — synced (same file both collaborators see); trust is
+            # local-only and deliberately never written here (see _trust_shared_project()).
+            if getattr(self, 'config_is_shared', False):
+                config_data["is_shared"] = True
+            elif "is_shared" in config_data:
+                del config_data["is_shared"]
+
             # The per-project "Path mapping" checkbox was removed (see _resolve_existing_path())
             # — mapping is now a global, always-on fallback used only when a path is missing,
             # so this flag is obsolete. Drop it opportunistically on the next save of a project
@@ -5618,10 +5711,10 @@ class ProjectFlowApp(QMainWindow):
         """)
         return btn
 
-    def on_item_clicked(self, btn, path, app):
+    def on_item_clicked(self, btn, path, app, display_name=None):
         """Handle item button click - update style and open"""
         btn.setStyleSheet(self.get_item_button_style(clicked=True))
-        self.open_in_app(path, app)
+        self.open_in_app(path, app, display_name=display_name)
 
     def _edit_mode_launcher_click_hint(self):
         """Wired to launcher buttons instead of on_item_clicked() while self.edit_mode is
@@ -6158,6 +6251,9 @@ StartupNotify=true
                 self.config_browser_new_tab = config_data.get('browser_new_tab', None)
                 # Load per-project color for the projects section
                 self.config_project_color = config_data.get('project_color', None)
+                # Load shared-project label (see Project Settings' "Sharing" section) —
+                # a synced field, unlike trust (see _is_shared_project_trusted()).
+                self.config_is_shared = bool(config_data.get('is_shared', False))
                 # "Open All" per-category opt-in (see _toggle_open_all_for_category()) —
                 # loaded fresh every call, not gated on is_project_switch, since it's
                 # always sourced straight from disk and toggling it saves immediately.
@@ -6252,6 +6348,7 @@ StartupNotify=true
                 self.config_notes_file = None
                 self.config_project_name = None
                 self.config_project_color = None
+                self.config_is_shared = False
                 # create_default_project() (just called above) writes "layout_mode": "focus"
                 # into the new file on disk — match that here too, rather than hardcoding
                 # 'standard' and silently overriding what was just written, which left a
@@ -6401,8 +6498,20 @@ StartupNotify=true
         Examples:
             main.json -> main
             work.json -> work
+
+        A .projectflow folder project's filename is always literally ".projectflow" —
+        the filename-stem approach above would tag every such project with the same
+        useless ".projectflow" tag instead of something project-specific. Use the
+        project's own name instead (project_name field, falling back to the parent folder
+        name), via get_display_name_for_config_path()'s existing precedence for this exact
+        case — reused rather than duplicated. Regular projects/*.json configs keep the
+        original filename-stem behavior unchanged (even when project_name is set), since
+        changing that could silently orphan Baloo tags someone already applied under the
+        old name.
         """
         config_name = os.path.basename(self.current_config_file)
+        if config_name == '.projectflow':
+            return self.get_display_name_for_config_path(self.current_config_file)
         # Remove .json extension
         return os.path.splitext(config_name)[0]
 
@@ -8501,6 +8610,10 @@ function filterAliases(q) {{
         if os.path.isdir(configs_dir):
             config_paths = [os.path.join(configs_dir, f) for f in os.listdir(configs_dir)
                            if f.endswith('.json')]
+        # Also index folder/shared projects (.projectflow files) — previously only
+        # projects/*.json was searchable here, leaving folder-projects (and the projects
+        # marked "shared" among them) unreachable by name from this search box.
+        config_paths += [p for p in self.settings.get("folder_projects", []) if os.path.exists(p)]
 
         self.title_search = ClickableSearchTitle(config_name, config_paths, self.t, self)
         self.title_search.configSelected.connect(self.switch_to_config)
@@ -8804,6 +8917,7 @@ function filterAliases(q) {{
         # Reuses _build_color_cache()/_sorted_colors() rather than duplicating that logic.
         # Placed before "All Projects" (A–Z) per user request.
         self._build_color_cache()
+        self._build_shared_cache()
         project_colors = getattr(self, '_color_cache', {})
         unique_colors = list(set(project_colors.values()))
         ordered_colors = self._sorted_colors(unique_colors)
@@ -8820,6 +8934,14 @@ function filterAliases(q) {{
 
         folder_paths = [p for p in self.settings.get("folder_projects", []) if os.path.exists(p)]
         add_column("🗂 Folder Projects", folder_paths, "No folder projects yet.", is_pinned=False)
+
+        # Shared — the subset of folder_paths whose own .projectflow config has is_shared
+        # set (a manual, synced label — see Project Settings' "Sharing" section). Not a
+        # separate storage mechanism, just a filtered view of the same folder-project list
+        # above, for jumping straight to a collaborator's project without scrolling the
+        # full Folder Projects column.
+        shared_paths = [p for p in folder_paths if getattr(self, '_shared_cache', {}).get(p)]
+        add_column("👥 Shared", shared_paths, "No shared projects yet.", is_pinned=False)
 
         # Archive block — small, de-emphasized, bottom-right corner. Deliberately a separate
         # row added below columns_row (not a 6th entry inside it) so it naturally lands at
@@ -9134,6 +9256,7 @@ function filterAliases(q) {{
 
         # Build color cache from project files before rendering any buttons
         self._build_color_cache()
+        self._build_shared_cache()
         self._update_color_strip()
 
         # Color filter/sort overrides normal mode
@@ -9685,6 +9808,24 @@ function filterAliases(q) {{
                     pass
         self._color_cache = cache
 
+    def _build_shared_cache(self):
+        """Scan every known folder-project (.projectflow) file and cache which ones have
+        is_shared set — mirrors _build_color_cache() exactly, just for a different field.
+        Scoped to folder_projects/archived_folder_projects only (unlike the color cache,
+        which also scans the main projects/*.json directory) since is_shared is only ever
+        meaningful for a .projectflow config — the Project Settings checkbox that sets it
+        is hidden entirely for a regular project (see _populate_settings_form())."""
+        cache = {}
+        for path in self.settings.get("folder_projects", []) + self.settings.get("archived_folder_projects", []):
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        if json.load(f).get("is_shared"):
+                            cache[path] = True
+                except Exception:
+                    pass
+        self._shared_cache = cache
+
     def _color_hue(self, hex_str):
         """Return HSL hue (0.0–1.0) for sorting colors in rainbow order."""
         import colorsys
@@ -9752,6 +9893,10 @@ function filterAliases(q) {{
         resolved value, silently corrupting the portable path for every other machine.
         Falling back ONLY when the direct path is missing, and only for the one action that
         needed it, avoids that failure mode entirely.
+
+        A third tier, _resolve_via_project_folder(), runs after the mapping fallback above
+        also fails — see that method for why (shared-project support: a launcher item's
+        absolute path was only ever correct on whoever's machine originally saved it).
         """
         if not self._is_local_path(path):
             return path, False
@@ -9760,7 +9905,63 @@ function filterAliases(q) {{
         mapped = self._resolve_path(path)
         if mapped != path and os.path.exists(os.path.expanduser(mapped)):
             return mapped, True
+        via_project = self._resolve_via_project_folder(path)
+        if via_project:
+            return via_project, True
         return path, False
+
+    def _resolve_via_project_folder(self, path):
+        """Third path-resolution tier, tried after the direct path and the global mapping
+        table both fail: re-anchor a broken absolute path onto this project's own, already
+        machine-correct config_folder_path.
+
+        Motivating case: two people share a project folder via Nextcloud/Drive at DIFFERENT
+        absolute paths (e.g. /home/userA/Nextcloud/projects/SHAREDPROJECT/ vs.
+        /home/userB/Nextcloud/hobbies/SHAREDPROJECT/) — a launcher item saved by userA as
+        /home/userA/Nextcloud/projects/SHAREDPROJECT/logos/current_logo.png is simply wrong
+        on userB's machine, with no manual path-mapping entry able to fix it without userB
+        hand-writing a rule for every collaborator's home directory. Unlike folder_path/
+        notes_file (already portable via .projectflow's own "."-relative convention, see
+        resolve_relative_paths_in_config()), individual launcher item paths are ordinary
+        absolute strings with no such convention.
+
+        The fix needs no new config: config_folder_path is already correctly resolved for
+        THIS machine (whether via the .projectflow "."-relative convention or a plain pinned
+        folder_path). Its basename becomes an anchor to search for inside the broken path —
+        find its LAST occurrence as a path segment (closest to the actual file, so a generic
+        name reused higher up the tree is less likely to be mistaken for the real project
+        root), take everything after it, and re-join that remainder onto the CURRENT
+        config_folder_path. Used only if the reconstructed path actually exists — same
+        existence-gated, read-only, never-persisted contract as the mapping fallback above.
+
+        Applied unconditionally whenever config_folder_path is set, not gated on is_shared —
+        it's equally safe and useful for a single user reorganizing one personal project
+        across two of their own machines under a differently-named parent folder.
+
+        Known, accepted limitation: a generic anchor folder name that happens to recur
+        elsewhere in the broken path could in principle resolve to the wrong file. Not
+        guarded against further — this only ever fires when the path is already broken, and
+        only "succeeds" if the guessed file genuinely exists, which keeps the practical risk
+        narrow enough not to warrant extra machinery.
+        """
+        folder_path = getattr(self, 'config_folder_path', None)
+        if not folder_path:
+            return None
+        anchor = os.path.basename(os.path.normpath(os.path.expanduser(folder_path)))
+        if not anchor:
+            return None
+        expanded = os.path.expanduser(path)
+        parts = expanded.split(os.sep)
+        if anchor not in parts:
+            return None
+        last_index = len(parts) - 1 - parts[::-1].index(anchor)
+        remainder = os.sep.join(parts[last_index + 1:])
+        if not remainder:
+            return None
+        candidate = os.path.join(os.path.expanduser(folder_path), remainder)
+        if os.path.exists(candidate):
+            return candidate
+        return None
 
     def _path_is_via_mapping(self, path):
         """True if `path` is a local file/folder path that doesn't exist directly but does
@@ -10140,6 +10341,10 @@ function filterAliases(q) {{
         raw_name = self.get_display_name_for_config_path(config_path)
         display_name = raw_name.replace("_config", "").replace("_", " ").replace("-", " ").title()
         is_current = (config_path == self.current_config_file)
+        # "Shared" label (see _build_shared_cache()) — a "👥 " text prefix on the button
+        # itself, kept separate from `display_name` so search-ref matching (which lowercases
+        # display_name for its filter) is unaffected by the badge.
+        is_shared_project = getattr(self, '_shared_cache', {}).get(config_path, False)
 
         def _fire_on_select():
             if on_select:
@@ -10172,7 +10377,7 @@ function filterAliases(q) {{
 
         if flow_managed:
             # FlowWidget will set cell width dynamically; main button expands to fill
-            btn_label = display_name  # FlowWidget re-elides on every resize
+            btn_label = f"👥 {display_name}" if is_shared_project else display_name  # FlowWidget re-elides on every resize
             if draggable:
                 btn = DraggableConfigButton(btn_label, config_path)
             else:
@@ -10183,7 +10388,8 @@ function filterAliases(q) {{
             # Zone 1 fixed-width pinned row — pre-elide at 120px
             _fixed_w = 120
             fm = QFontMetrics(QApplication.font())
-            btn_label = fm.elidedText(display_name, Qt.TextElideMode.ElideRight, _fixed_w - 18)
+            _label_text = f"👥 {display_name}" if is_shared_project else display_name
+            btn_label = fm.elidedText(_label_text, Qt.TextElideMode.ElideRight, _fixed_w - 18)
             btn = DraggableConfigButton(btn_label, config_path) if draggable else QPushButton(btn_label)
             btn.setFixedWidth(_fixed_w)
 
@@ -10233,6 +10439,8 @@ function filterAliases(q) {{
             tooltip = f"{display_name}\n📌 {config_path}\n(Drag to reorder)"
         else:
             tooltip = f"{display_name}\n{config_path}"
+        if is_shared_project:
+            tooltip += "\n👥 Shared project"
         btn.setToolTip(tooltip)
         btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         btn.customContextMenuRequested.connect(lambda pos, p=config_path: self._project_context_menu(btn, pos, p, archived=False))
@@ -10333,6 +10541,44 @@ function filterAliases(q) {{
         self.settings["pinned_projects"] = []
         self.save_settings()
         self.refresh_projects()
+
+    def _is_shared_project_trusted(self, config_path):
+        """Whether THIS machine has explicitly trusted the shared project at config_path
+        to run command-executing launchers (alias/run/terminal/rsync/etc. — see
+        COMMAND_EXECUTING_APPS). Backed by trusted_shared_projects in
+        .projectflow_settings.json — deliberately local-only, never synced: if trust were
+        stored in the shared project file itself, anyone with folder access could silently
+        flip it, defeating the safeguard entirely (see is_shared's own construction
+        comment in _build_settings_form())."""
+        if not config_path:
+            return False
+        return config_path in self.settings.get("trusted_shared_projects", [])
+
+    def _trust_shared_project(self, config_path):
+        """Add config_path to the local trust list — mirrors _pin_project()'s shape.
+        Deliberately does NOT call refresh_projects(): this is also invoked mid-click from
+        the "Trust & Run" confirmation (see _confirm_shared_project_execution()), where a
+        full UI rebuild would be a jarring side effect of what should feel like a quick,
+        lightweight permission grant."""
+        if not config_path:
+            return
+        trusted = self.settings.get("trusted_shared_projects", [])
+        if config_path not in trusted:
+            trusted.append(config_path)
+            self.settings["trusted_shared_projects"] = trusted
+            self.save_settings()
+
+    def _untrust_shared_project(self, config_path):
+        """Remove config_path from the local trust list (the Project Settings viewer's
+        own Trust checkbox can be unchecked to revoke trust, not just checked to grant
+        it)."""
+        if not config_path:
+            return
+        trusted = self.settings.get("trusted_shared_projects", [])
+        if config_path in trusted:
+            trusted.remove(config_path)
+            self.settings["trusted_shared_projects"] = trusted
+            self.save_settings()
 
     def handle_item_reorder(self, col_idx, category_name, from_idx, to_idx):
         """Handle an item being dragged to a new position within its category"""
@@ -11024,7 +11270,7 @@ function filterAliases(q) {{
                                 btn.clicked.connect(self._edit_mode_launcher_click_hint)
                             else:
                                 btn.clicked.connect(
-                                    lambda checked=False, p=path, a=app, b=btn: self.on_item_clicked(b, p, a)
+                                    lambda checked=False, p=path, a=app, b=btn, n=display_name: self.on_item_clicked(b, p, a, n)
                                 )
                             tooltip = f"[{app}] {path}"
                             if is_ai_via_mapping:
@@ -13012,22 +13258,57 @@ function filterAliases(q) {{
         'rsync_backup', 'rsync_backup_id', 'rsync_backup_id_port',
     })
 
+    def _app_executes_command(self, app):
+        """True if `app` is a launcher type that actually executes a command/script rather
+        than just opening a viewer/file manager/browser — every COMMAND_EXECUTING_APPS
+        entry, plus any custom handler explicitly marked "type": "shell" in
+        launch_handlers_custom.json."""
+        if app in self.COMMAND_EXECUTING_APPS:
+            return True
+        custom = getattr(self, 'custom_handlers', {}).get(app)
+        return isinstance(custom, dict) and custom.get('type') == 'shell'
+
     def _items_with_command_execution(self, items):
         """Return the display names of items in `items` whose app type actually executes a
-        command/script — every COMMAND_EXECUTING_APPS entry, plus any custom handler
-        explicitly marked "type": "shell" in launch_handlers_custom.json."""
+        command/script — see _app_executes_command()."""
         names = []
         for item in items:
             if len(item) < 3:
                 continue
             display_name, _path, app = item[0], item[1], item[2]
-            risky = app in self.COMMAND_EXECUTING_APPS
-            if not risky:
-                custom = getattr(self, 'custom_handlers', {}).get(app)
-                risky = isinstance(custom, dict) and custom.get('type') == 'shell'
-            if risky:
+            if self._app_executes_command(app):
                 names.append(display_name)
         return names
+
+    def _confirm_shared_project_execution(self, names, config_path):
+        """Gate for command-executing launchers on a project marked shared (config_is_shared)
+        that this machine hasn't yet trusted (_is_shared_project_trusted()) — used by both a
+        single launcher click (open_in_app()) and open_all_in_group() so a shared+untrusted
+        project shows this same, stricter prompt in either case rather than two different
+        dialogs for the same underlying risk. Returns True if it's fine to proceed (not
+        shared, or already trusted, or the user just chose to trust it now — which also
+        persists that trust via _trust_shared_project() so future clicks in this project
+        don't re-prompt); False if the user cancelled, in which case nothing runs and no
+        state changes. Kept a plain binary choice (no "run once, don't remember" option),
+        matching the simplicity of every other confirm dialog in this codebase."""
+        if not getattr(self, 'config_is_shared', False):
+            return True
+        if self._is_shared_project_trusted(config_path):
+            return True
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Shared Project — Untrusted")
+        msg.setText(
+            "This will run:\n\n" + "\n".join(names) +
+            "\n\nThis project is marked as shared — only continue if you trust its source."
+        )
+        trust_btn = msg.addButton("Trust && Run", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(cancel_btn)
+        msg.exec()
+        if msg.clickedButton() != trust_btn:
+            return False
+        self._trust_shared_project(config_path)
+        return True
 
     def open_all_in_group(self, items):
         """Open all items in a group. If any item is a command-executing type (see
@@ -13041,6 +13322,11 @@ function filterAliases(q) {{
         something riskier."""
         risky_names = self._items_with_command_execution(items)
         if risky_names:
+            # A shared, not-yet-trusted project gets the stricter trust prompt instead of
+            # the plain "this will also run" one below — same underlying risk, same helper
+            # a single launcher click already goes through (see open_in_app()).
+            if not self._confirm_shared_project_execution(risky_names, self.current_config_file):
+                return
             reply = QMessageBox.question(
                 self, "Open All",
                 "This will also run:\n\n" + "\n".join(risky_names) + "\n\nContinue?",
@@ -20637,9 +20923,20 @@ Project created: {date_str}
             self.status_label.setText(f"✗ Reload failed: {str(e)}")
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
 
-    def open_in_app(self, path, app="default", force_external=False):
+    def open_in_app(self, path, app="default", force_external=False, display_name=None):
         """Open the specified path in the given application"""
         try:
+            # Shared-project safeguard: block a command-executing launcher (see
+            # _app_executes_command()/COMMAND_EXECUTING_APPS) on a project marked shared
+            # until this machine has trusted it — checked before any dispatch branch below,
+            # including the alias/run console-routing just past this, so nothing bypasses
+            # it. No-op (returns True immediately) for a non-shared or already-trusted
+            # project, so this is a pure no-op cost for the overwhelming common case.
+            if self._app_executes_command(app) and not self._confirm_shared_project_execution(
+                [display_name or path], self.current_config_file
+            ):
+                return
+
             # Fall back to a global path mapping only if the direct path is missing (before
             # ~ expansion) — read-only, never persisted back to the config. See
             # _resolve_existing_path().

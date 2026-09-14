@@ -2,6 +2,15 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-14
+
+### Added
+- **Sharing projects with a collaborator**: a `.projectflow` folder-project can now be manually labeled "👥 This is a shared project" in Project Settings. Shared projects get a 👥 badge wherever they're listed (Folder Projects, the new "Shared" mega-menu column, title-bar search — which now also indexes folder projects by name) and a safeguard: launchers that run a command (aliases, terminal, rsync, npm, etc.) ask for confirmation on an untrusted shared project before running, with a one-time "Trust & Run" (or a proactive "Trust this shared project" checkbox) to stop asking. Trust is stored locally per machine, never in the shared file itself.
+- **Automatic path fallback for shared-project resources**: if a launcher item's absolute path doesn't exist (e.g. two collaborators sync the same folder to different absolute locations), ProjectFlow now tries re-anchoring it onto the project's own current folder path automatically — no manual path-mapping entry needed.
+
+### Fixed
+- **Baloo tag name was wrong for every folder project**: the "Tag files in this project with Baloo tag '...'" button (and the Tagged Files feature it feeds) showed the literal tag `.projectflow` instead of the project's actual name, since the tag-naming logic derived from the config filename — which for a folder project is always literally `.projectflow`. Now uses the project's own name (falling back to its parent folder name) for these projects instead.
+
 ## 2026-09-13
 
 ### Added
