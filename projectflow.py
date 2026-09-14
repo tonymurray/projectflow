@@ -4239,6 +4239,43 @@ class ProjectFlowApp(QMainWindow):
 
         layout.addRow(app_label, app_combo)
 
+        # Live "Resolves to" preview for alias items — the stored path value never
+        # contains a literal "cd" for a bare directory (that's implicit, see
+        # _parse_alias_rest()), which was reported as confusing: with nothing here
+        # showing what actually happens, a value like "android /home/tony/Android" reads
+        # as if the directory will be run as a command rather than cd'ed into. Updated live
+        # (no debounce needed — pure string/path logic, no subprocess spawn unlike the
+        # shadow-name check below).
+        alias_preview_label = QLabel("")
+        alias_preview_label.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        alias_preview_label.setWordWrap(True)
+        alias_preview_label.setVisible(False)
+        layout.addRow(alias_preview_label)
+
+        def _update_alias_preview():
+            if app_combo.currentText().strip() != "alias":
+                alias_preview_label.setVisible(False)
+                return
+            raw = path_input.toPlainText().strip().split('\n', 1)[0]
+            _name, _, _rest = raw.partition(' ')
+            _rest = _rest.strip()
+            if not _rest:
+                alias_preview_label.setVisible(False)
+                return
+            workdir, shell_cmd = self._parse_alias_rest(_rest)
+            if workdir and shell_cmd:
+                preview = f"Resolves to: cd {workdir} && {shell_cmd}"
+            elif workdir:
+                preview = f"Resolves to: cd {workdir}"
+            else:
+                preview = f"Resolves to: runs \"{shell_cmd}\""
+            alias_preview_label.setText(preview)
+            alias_preview_label.setVisible(True)
+
+        path_input.textChanged.connect(_update_alias_preview)
+        app_combo.currentTextChanged.connect(_update_alias_preview)
+        _update_alias_preview()
+
         # Live warning when the alias name being typed shadows a real shell builtin/
         # command/function — see _alias_shadow_warning(). Debounced (checked ~400ms after
         # typing stops, not per-keystroke) since each check spawns a bash subprocess.
@@ -6994,6 +7031,28 @@ StartupNotify=true
         if os.path.isdir(expanded) and not command.strip().startswith('cd '):
             return f"cd {command.strip()}"
         return command.strip()
+
+    def _parse_alias_rest(self, rest):
+        """Parse an alias item's "rest" (the path value with the leading alias-name token
+        already stripped off, e.g. "/home/tony/Android" from "android /home/tony/Android")
+        into (workdir, shell_cmd) — workdir is an expanded directory to cd into (None if
+        none was determined), shell_cmd is the command to run there ("" for a pure cd).
+
+        Handles "cd <dir>" (no chained commands), "cd <dir> && cmd", a bare existing
+        directory (implicit cd — this is the case that confused a user who expected to see
+        a literal "cd" in the stored value and didn't), and a plain command (no workdir).
+        Shared by open_in_app()'s external "1c. Alias handler" branch and
+        _open_alias_launcher_in_console() (both previously duplicated this verbatim) plus
+        the Add/Edit Item dialog's live "Resolves to" preview."""
+        if rest.lower().startswith('cd ') and not re.search(r'&&|\|\||;', rest):
+            return os.path.expanduser(rest[3:].strip()), ""
+        cd_and_match = re.match(r'^cd\s+(\S+)\s*&&\s*(.+)$', rest.strip(), re.IGNORECASE)
+        if cd_and_match:
+            return os.path.expanduser(cd_and_match.group(1)), cd_and_match.group(2).strip()
+        expanded_rest = os.path.expanduser(rest)
+        if os.path.isdir(expanded_rest):
+            return expanded_rest, ""
+        return None, rest
 
     def _classify_shell_name(self, name):
         """Classify `name` against the user's actual shell via `type -t`, rather than
@@ -16649,7 +16708,20 @@ function filterAliases(q) {{
     def _get_current_project_aliases(self):
         """Return [(name, command), ...] for every alias item in the current project's own
         launcher categories (self.COLUMN_1) — not the separate cross-project alias file/project.
-        Parsed the same way open_in_app's alias branch does: path = "name command_or_directory"."""
+        Parsed the same way open_in_app's alias branch does: path = "name command_or_directory".
+
+        The returned command is run through _resolve_alias_command() — the SAME
+        transformation _write_alias_to_file() applies before writing the real shell alias —
+        so a bare-directory value (e.g. "/home/tony/Android", the common case: no literal
+        "cd" stored, since a plain directory implicitly means "cd here" throughout this
+        format) gets prefixed to "cd /home/tony/Android" here too. Without this, the alias
+        quick-jump buttons (_run_alias_in_ttyd_console()) paste the raw path straight into
+        the terminal and press Enter — bash then tries to *execute* the directory as a
+        command ("bash: /home/tony/Android: Is a directory") instead of cd'ing into it, a
+        real reported bug: this was the one caller in the whole alias-handling chain that
+        skipped the cd-prefixing step every other path (the shell alias file itself,
+        open_in_app()'s external branch, and _open_alias_launcher_in_console()) already
+        applies."""
         aliases = []
         for category_dict in self.COLUMN_1:
             for _category_name, items in category_dict.items():
@@ -16658,7 +16730,7 @@ function filterAliases(q) {{
                         name, _, rest = item[1].partition(' ')
                         rest = rest.strip()
                         if rest:
-                            aliases.append((name, rest))
+                            aliases.append((name, self._resolve_alias_command(rest)))
         return aliases
 
     def _run_alias_in_ttyd_console(self, command):
@@ -16797,27 +16869,17 @@ function filterAliases(q) {{
         when the ttyd backend is active (checked by the caller) — qtconsole has no live
         interactive shell to paste into.
 
-        Mirrors open_in_app's own "cd <dir>" / "cd <dir> && cmd" / plain-dir / plain-command
-        parsing exactly, so console-routed and externally-launched aliases behave
-        identically — just landing in the internal terminal vs an external window.
+        Parsing itself is shared via _parse_alias_rest() (see its docstring), so
+        console-routed and externally-launched aliases behave identically — just landing
+        in the internal terminal vs an external window.
         """
         _alias_name, _, _rest = path.partition(' ')
         _rest = _rest.strip()
-        if _rest.lower().startswith('cd ') and not re.search(r'&&|\|\||;', _rest):
-            workdir = os.path.expanduser(_rest[3:].strip())
-            shell_cmd = ""
-        elif re.match(r'^cd\s+\S+\s*&&', _rest, re.IGNORECASE):
-            _cd_match = re.match(r'^cd\s+(\S+)\s*&&\s*(.+)$', _rest.strip(), re.IGNORECASE)
-            workdir = os.path.expanduser(_cd_match.group(1))
-            shell_cmd = _cd_match.group(2).strip()
-        else:
-            _expanded_rest = os.path.expanduser(_rest)
-            if os.path.isdir(_expanded_rest):
-                workdir = _expanded_rest
-                shell_cmd = ""
-            else:
-                workdir = getattr(self, 'console_path', None) or os.path.expanduser("~")
-                shell_cmd = _rest
+        workdir, shell_cmd = self._parse_alias_rest(_rest)
+        if workdir is None:
+            # Plain command, no directory of its own — run it wherever the console's
+            # default path is.
+            workdir = getattr(self, 'console_path', None) or os.path.expanduser("~")
         if self.column2_mode != "console":
             self.switch_to_viewer_mode("console")
         if not self._open_terminal_tab(workdir):
@@ -21046,33 +21108,27 @@ Project created: {date_str}
 
             # 1c. Alias handler — path = "alias_name command_or_directory"
             # The alias name (first word) is stripped; only the command/path is executed.
+            # Parsing itself is shared via _parse_alias_rest() (see its docstring) — this
+            # branch just decides how to turn the resulting (workdir, shell_cmd) into an
+            # actual external-terminal command.
             if app == "alias":
                 _alias_name, _, _rest = path.partition(' ')
                 _rest = _rest.strip()
-                # "cd <dir>" (no chained commands) → open terminal at that directory
-                if _rest.lower().startswith('cd ') and not re.search(r'&&|\|\||;', _rest):
-                    _dir = os.path.expanduser(_rest[3:].strip())
-                    cmd = self._get_terminal_workdir_command(_dir)
-                elif re.match(r'^cd\s+\S+\s*&&', _rest, re.IGNORECASE):
+                _workdir, _shell_cmd = self._parse_alias_rest(_rest)
+                if _workdir and not _shell_cmd:
+                    # Pure cd (explicit "cd <dir>" or an implicit bare directory) → open
+                    # terminal at that directory.
+                    cmd = self._get_terminal_workdir_command(_workdir)
+                elif _workdir:
                     # "cd <dir> && cmd" — cd must run outside the subshell so
                     # the interactive bash that follows starts in the right directory.
-                    _cd_match = re.match(r'^cd\s+(\S+)\s*&&\s*(.+)$', _rest.strip(), re.IGNORECASE)
-                    if _cd_match:
-                        _dir = os.path.expanduser(_cd_match.group(1))
-                        _subcmd = _cd_match.group(2).strip()
-                        shell_cmd = f'cd {shlex.quote(_dir)} && (trap "exit 0" INT; {_subcmd}); exec bash'
-                    else:
-                        shell_cmd = f'(trap "exit 0" INT; {_rest}); exec bash'
+                    shell_cmd = f'cd {shlex.quote(_workdir)} && (trap "exit 0" INT; {_shell_cmd}); exec bash'
                     cmd = self._get_terminal_command(shell_cmd, hold=False)
                 else:
-                    _expanded_rest = os.path.expanduser(_rest)
-                    if os.path.isdir(_expanded_rest):
-                        cmd = self._get_terminal_workdir_command(_expanded_rest)
-                    else:
-                        # Run command then drop to interactive shell so the user
-                        # gets a prompt rather than a frozen/blank terminal window.
-                        shell_cmd = f'(trap "exit 0" INT; {_rest}); exec bash'
-                        cmd = self._get_terminal_command(shell_cmd, hold=False)
+                    # Run command then drop to interactive shell so the user
+                    # gets a prompt rather than a frozen/blank terminal window.
+                    shell_cmd = f'(trap "exit 0" INT; {_shell_cmd}); exec bash'
+                    cmd = self._get_terminal_command(shell_cmd, hold=False)
                 subprocess.Popen(cmd, start_new_session=True)
                 self.status_label.setText(f"✓ Alias '{_alias_name}': {_rest}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")

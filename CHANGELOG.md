@@ -10,6 +10,7 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 
 ### Fixed
 - **Baloo tag name was wrong for every folder project**: the "Tag files in this project with Baloo tag '...'" button (and the Tagged Files feature it feeds) showed the literal tag `.projectflow` instead of the project's actual name, since the tag-naming logic derived from the config filename — which for a folder project is always literally `.projectflow`. Now uses the project's own name (falling back to its parent folder name) for these projects instead.
+- **Alias quick-jump buttons (Terminal toolbar) didn't `cd` for a directory-only alias**: clicking one for an alias like `android /home/tony/Android` pasted the raw path into the terminal and pressed Enter, which bash tried to run as a command instead of `cd`ing into it (`bash: /home/tony/Android: Is a directory`). Every other alias code path (the generated shell alias file, the launcher item itself, opening externally) already treated a bare directory as an implicit `cd` — this was the one place that didn't. Also added a live "Resolves to: cd ..." preview in the Add/Edit Item dialog for alias items, since the stored value never shows a literal `cd` for this common case.
 
 ## 2026-09-13
 
