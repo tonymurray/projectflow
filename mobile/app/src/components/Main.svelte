@@ -1,6 +1,6 @@
 <script>
   import { get } from 'svelte/store';
-  import { orderedProjects, pinnedProjects, activeProject, activeConfig, activeTab, loading, error, offline, pendingQueue, fetchProjects, selectProject, retryConnection, flushQueue, theme, pendingShare, initShareReceiver, initNetworkWatcher } from '../lib/store.js';
+  import { orderedProjects, pinnedProjects, activeProject, activeConfig, activeTab, loading, error, offline, pendingQueue, queueFeedback, fetchProjects, selectProject, retryConnection, flushQueue, theme, pendingShare, initShareReceiver, initNetworkWatcher } from '../lib/store.js';
   import Launchers from './Launchers.svelte';
   import Notes from './Notes.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
@@ -57,6 +57,13 @@
     <button class="all-btn" on:click={() => showPaste = true} title="Paste text or link into a note/launcher">📋</button>
     <button class="all-btn" on:click={() => showPicker = true} title="All projects">≡</button>
   </header>
+
+  {#if $queueFeedback}
+    <div class="queue-banner">
+      <span>{$queueFeedback}</span>
+      <button class="dismiss-btn" on:click={() => queueFeedback.set(null)} title="Dismiss">✕</button>
+    </div>
+  {/if}
 
   {#if showPicker}
     <ProjectPicker on:close={() => showPicker = false} />
@@ -142,6 +149,20 @@
   }
   .offline-pill:hover { background: var(--bg-hover); }
 
+  .queue-banner {
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg-card); border-bottom: 1px solid var(--t-unsaved);
+    color: var(--t-unsaved); font-size: 0.8rem; line-height: 1.35;
+    padding: 8px 12px;
+  }
+  .queue-banner span { flex: 1; }
+  .queue-banner .dismiss-btn {
+    flex-shrink: 0;
+    background: none; border: none; color: var(--t-unsaved);
+    font-size: 1rem; padding: 2px 4px; line-height: 1;
+  }
+
   main { flex: 1; overflow-y: auto; }
 
   .status-msg {
@@ -180,5 +201,6 @@
     .hint      { font-size: 1.05rem; }
     header     { padding: 10px 10px 10px 14px; }
     .all-btn   { font-size: 1.4rem; padding: 6px 14px; }
+    .queue-banner { font-size: 0.95rem; padding: 10px 16px; }
   }
 </style>

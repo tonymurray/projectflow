@@ -119,6 +119,13 @@ export function queueOperation(op) {
   pendingQueue.update(q => [...q, { ...op, queuedAt: Date.now() }]);
 }
 
+// Set by flushQueue() whenever a flush attempt leaves one or more items stuck on a
+// per-resource failure (e.g. a locked file) rather than genuine offline — surfaced as a
+// dismissible banner so "N pending" isn't a silent dead end. Cleared automatically the
+// next time a flush attempt fully succeeds; left untouched on a genuine offline break,
+// since the offline pill already covers that case on its own.
+export const queueFeedback = writable(null); // string message | null
+
 // Real bug found via testing: flushQueue() can be triggered from more than one place in
 // quick succession (Android can fire networkStatusChange more than once for a single
 // reconnect, each scheduling its own retryConnection() -> flushQueue() via
@@ -195,7 +202,20 @@ export async function flushQueue() {
         error.set(`Queued ${item.type === 'link' ? 'link' : 'note'} for "${item.projectName}" failed: ${e.message}`);
       }
     }
-    pendingQueue.set([...remaining, ...stillStuck]);
+    const finalQueue = [...remaining, ...stillStuck];
+    pendingQueue.set(finalQueue);
+    if (stillStuck.length) {
+      const names = [...new Set(stillStuck.map(i => i.projectName))].join(', ');
+      queueFeedback.set(
+        `Could not sync ${stillStuck.length === 1 ? 'an item' : stillStuck.length + ' items'} for ${names} — ` +
+        `the note or project file may be locked (e.g. still open in Nextcloud's web editor). ` +
+        `Check there, then try Retry again.`
+      );
+    } else if (finalQueue.length === 0) {
+      // Everything that was queued this round is now gone (sent, or dropped as a
+      // non-retryable failure above) — any earlier "might be locked" message is stale.
+      queueFeedback.set(null);
+    }
   } finally {
     _flushing = false;
   }
