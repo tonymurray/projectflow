@@ -14,6 +14,11 @@ configs/
 notes
 notes/
 
+# Images directory (pasted note images, optionally synced via Nextcloud — see
+# get_images_folder()); created dynamically on first pasted image, not shipped
+images
+images/
+
 # Shared human/AI context docs (personal working notes, not versioned)
 ai/
 

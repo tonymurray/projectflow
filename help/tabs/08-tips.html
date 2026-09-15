@@ -59,6 +59,18 @@
 </div>
 
 <div class="tip">
+  <div class="tip-title">Syncing projects, notes, and images across computers</div>
+  <p>
+    <code>projects/</code> and <code>images/</code> (pasted note images) are both plain folders that ship
+    alongside the app — the same trick used for <code>notes_folder</code> works for them too: replace the
+    local folder with a symlink into a synced location (e.g. Nextcloud) and it travels across every
+    computer that syncs the same account. For images specifically, since they're referenced from notes with
+    relative paths, this works best if the synced folder and the ProjectFlow installation sit at the same
+    relative location on each computer.
+  </p>
+</div>
+
+<div class="tip">
   <div class="tip-title">Bootstrap Baloo tags in one click</div>
   <p>
     Rather than tagging files by hand in Dolphin first, use "Create Baloo tags for all projects" (Settings

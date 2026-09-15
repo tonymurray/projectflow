@@ -32,6 +32,8 @@ import urllib.parse
 import datetime
 import zipfile
 import csv as _csv
+import base64
+from pathlib import Path
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile, QWebEnginePage
@@ -6839,6 +6841,12 @@ StartupNotify=true
         """Get the folder where project config JSON files are stored"""
         return os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
 
+    def get_images_folder(self):
+        """Folder where images pasted into notes are stored as real files. Fixed
+        location, like get_projects_directory() — symlink it to a synced folder (e.g.
+        Nextcloud) if you want images to travel across devices; no separate setting."""
+        return os.path.join(self.script_dir, "images")
+
     # ------------------------------------------------------------------
     # Backup
     # ------------------------------------------------------------------
@@ -7593,6 +7601,13 @@ function filterAliases(q) {{
             if os.path.exists(archive_file):
                 with open(archive_file, 'r', encoding='utf-8') as f:
                     existing_content = f.read()
+
+            # Convert any freshly-pasted image (base64 blob, or an absolute file://
+            # reference from the live editor's display-time rewrite) before it's
+            # combined and written — archived content is only ever shown read-only
+            # afterward, never reloaded into a live Muya session, so it never gets a
+            # future "load" moment to self-heal the way a live note otherwise would.
+            markdown_content = self._convert_markdown_for_save(markdown_content, archive_file)
 
             # Prepend new content with date header first (newest at top)
             new_archive = separator + markdown_content + "\n\n" + existing_content
@@ -18303,6 +18318,126 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             session.pending_markdown = None
             session.pending_view_state = None
 
+    # Matches any markdown image reference: ![alt](src). Shared by the image-path
+    # rewriting helpers below — one pattern, used both directions (load-time
+    # relative->absolute, save-time absolute->relative).
+    _IMAGE_REF_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+    # Matches an inline base64-embedded image specifically — what Muya's paste/drop
+    # handler falls back to writing when no imagePathPicker is configured (which this
+    # app never sets). A real .md file containing one of these was observed to have
+    # its image silently stripped when edited/re-saved via Nextcloud's own web Notes
+    # app — plausibly because a huge inline data URI isn't something that editor's own
+    # save path round-trips correctly. _convert_inline_images_to_files() below is the
+    # actual fix: decode it once, write it as a real file, and never let a base64 blob
+    # reach disk again.
+    _INLINE_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(data:image/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)\)')
+    # Matches the absolute file:// form _absolutize_note_images() writes for display —
+    # _relativize_note_images() below is its inverse, used right before every save.
+    _FILE_URI_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\((file:///[^)]+)\)')
+
+    def _relative_image_ref(self, target_path, note_path):
+        """Compute the relative-path markdown reference from note_path to target_path.
+        Resolves both through any symlinks first (os.path.realpath) — so if
+        get_images_folder() is itself a symlink into a synced folder (e.g. Nextcloud),
+        the computed reference is anchored at the real, synced location rather than
+        the local symlink, which is what makes it resolve correctly both for this app
+        and for whatever else renders the note elsewhere (e.g. Nextcloud's own web
+        Notes app), regardless of the symlink's own path on this one machine."""
+        note_dir_real = os.path.realpath(os.path.dirname(note_path))
+        target_real = os.path.realpath(target_path)
+        rel = os.path.relpath(target_real, start=note_dir_real)
+        return urllib.parse.quote(rel.replace(os.sep, '/'))
+
+    def _absolutize_note_images(self, content, note_path):
+        """Rewrite every local relative image reference in `content` (as loaded from
+        note_path) into an absolute file:// URI the Muya webview can actually load.
+        Needed because every Muya session's webview base URL is fixed at
+        assets/muya/ (see the setHtml() call below), not the note's own folder — a
+        plain relative reference wouldn't render at all otherwise. Display-time only;
+        never written back to disk (_relativize_note_images is the inverse, applied
+        right before every save)."""
+        note_dir = os.path.dirname(note_path)
+
+        def replace(m):
+            alt, src = m.group(1), m.group(2)
+            if re.match(r'^(https?|data|file):', src):
+                return m.group(0)  # remote URL, already-inline, or already-absolute
+            try:
+                real_path = os.path.realpath(os.path.join(note_dir, urllib.parse.unquote(src)))
+                if not os.path.isfile(real_path):
+                    return m.group(0)  # broken/unknown reference — leave it as-is
+                uri = Path(real_path).as_uri()
+            except (OSError, ValueError):
+                return m.group(0)
+            return f'![{alt}]({uri})'
+
+        return self._IMAGE_REF_RE.sub(replace, content)
+
+    def _convert_inline_images_to_files(self, content, note_path):
+        """Decode every inline base64 data-URI image in `content` and write it as a
+        real file under get_images_folder(), replacing the match with a relative
+        reference (see _relative_image_ref) — the actual fix for pasted images
+        vanishing when a note is edited elsewhere (see _INLINE_IMAGE_RE above)."""
+        note_stem = os.path.splitext(os.path.basename(note_path))[0]
+        images_dir = self.get_images_folder()
+        counter = [0]
+
+        def replace(m):
+            alt, ext, payload = m.group(1), m.group(2), m.group(3)
+            try:
+                image_bytes = base64.b64decode(payload)
+            except (base64.binascii.Error, ValueError):
+                return m.group(0)
+            try:
+                os.makedirs(images_dir, exist_ok=True)
+                counter[0] += 1
+                timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                filename = f"{note_stem}-{timestamp}-{counter[0]}.{ext}"
+                target_path = os.path.join(images_dir, filename)
+                with open(target_path, 'wb') as f:
+                    f.write(image_bytes)
+            except OSError:
+                return m.group(0)  # couldn't write the file — leave the image inline
+                                    # rather than silently losing it
+            return f'![{alt}]({self._relative_image_ref(target_path, note_path)})'
+
+        return self._INLINE_IMAGE_RE.sub(replace, content)
+
+    def _relativize_note_images(self, content, note_path):
+        """Inverse of _absolutize_note_images — rewrite any absolute file:// image
+        reference back into a relative path before writing to disk, so an
+        absolute, machine-specific path never reaches the saved .md file."""
+        def replace(m):
+            alt, uri = m.group(1), m.group(2)
+            try:
+                target_path = urllib.parse.unquote(uri[len('file://'):])
+            except (ValueError, UnicodeDecodeError):
+                return m.group(0)
+            return f'![{alt}]({self._relative_image_ref(target_path, note_path)})'
+
+        return self._FILE_URI_IMAGE_RE.sub(replace, content)
+
+    def _convert_markdown_for_save(self, content, note_path):
+        """Run both save-time image conversions (base64->file, absolute->relative) on
+        content that's about to be written to note_path. Pure text transform — the
+        caller still does the actual disk write. Cheap pre-checks skip all the real
+        work on the overwhelming majority of saves, which have no images at all."""
+        if "data:image" in content:
+            content = self._convert_inline_images_to_files(content, note_path)
+        if "file://" in content:
+            content = self._relativize_note_images(content, note_path)
+        return content
+
+    def _write_markdown_converting_images(self, path, markdown_content):
+        """Convert (see _convert_markdown_for_save) and write markdown_content to
+        path. The one place every Muya-editing save path should write through, so a
+        pasted image is protected the same way regardless of which save path wrote
+        it. Returns the converted text actually written."""
+        markdown_content = self._convert_markdown_for_save(markdown_content, path)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(markdown_content)
+        return markdown_content
+
     def _load_muya_shell(self, session, path, content, extra_css="", view_state=None):
         """Load the Muya editor shell into session.webview with the given content, targeting
         path as the save destination. Shared by the file-backed and notes-backed openers below.
@@ -18328,7 +18463,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         session.path = path
         session.editing = True
-        session.pending_markdown = content
+        session.pending_markdown = self._absolutize_note_images(content, path)
         session.pending_view_state = view_state
         session.dirty = False  # a freshly-loaded document is clean until edited
         session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
@@ -18894,8 +19029,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 self.status_label.setText("✗ Autosave failed: no content from editor")
                 return
             try:
-                with open(session.path, 'w', encoding='utf-8') as f:
-                    f.write(markdown)
+                self._write_markdown_converting_images(session.path, markdown)
                 session.webview.page().runJavaScript("window.__muyaClearDirty && window.__muyaClearDirty()")
                 session.dirty = False
                 is_notes_session = session is getattr(self, '_notes_muya_session', None)
@@ -18934,8 +19068,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             def on_markdown(markdown):
                 if markdown is not None:
                     try:
-                        with open(session.path, 'w', encoding='utf-8') as f:
-                            f.write(markdown)
+                        self._write_markdown_converting_images(session.path, markdown)
                     except OSError as e:
                         self.status_label.setText(f"✗ Autosave failed: {e}")
                 callback()

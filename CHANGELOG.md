@@ -2,6 +2,15 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-15
+
+### Fixed
+- **Images pasted into notes could vanish if the note was later edited via Nextcloud's own web Notes app.** Root cause: pasted/dropped images were embedded as inline base64 `data:` URIs directly in the `.md` file (Muya's built-in fallback, since ProjectFlow never configured an `imagePathPicker`) — technically valid markdown, but a genuinely unusual thing for a `.md` file to contain, and Nextcloud Notes' own editor didn't reliably round-trip a huge inline blob on save. Pasted images are now written as real files under a new `images/` folder (fixed location, mirrors the existing `projects/` folder — symlink it to a synced location like Nextcloud if you want images to travel across devices, same trick already used for `projects/`/`notes/`) and referenced with a normal relative path instead, computed so it stays correct even through a symlink into a different sync root. Applies to every place a Muya-edited note gets written to disk, including the Notes Archive, not just the obvious autosave path.
+- **A second, related gap found while fixing this**: a relative image reference didn't render at all inside ProjectFlow's own Notes/Markdown editor, regardless of where the image lived — the editor's webview loads with its base URL fixed at its own asset folder, not the note's folder. Fixed alongside the above; also fixes any existing manually-added relative image reference in a `.md` file, not just newly pasted ones.
+
+### Added
+- New Help tip (Tips tab) explaining the `projects/`/`images/` symlink-to-sync trick.
+
 ## 2026-09-14
 
 ### Added
