@@ -33,6 +33,7 @@ import datetime
 import zipfile
 import csv as _csv
 import base64
+import hashlib
 from pathlib import Path
 import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -1148,6 +1149,12 @@ class LinkOpeningWebPage(QWebEnginePage):
         super().__init__(profile, parent)
         self._open_url_callback = open_url_callback
 
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        # See ExternalLinkPage's identical override — same reasoning, just covering the
+        # general Web viewer's webview (arbitrary .md files, not the dedicated Notes
+        # panel), which uses this class instead.
+        print(f"[web JS console] {message} ({source_id}:{line_number})")
+
     def createWindow(self, window_type):
         temp_page = QWebEnginePage(self.profile(), None)
         state = {"done": False}
@@ -1208,6 +1215,15 @@ class ExternalLinkPage(QWebEnginePage):
     def __init__(self, profile, parent, open_url_externally_callback):
         super().__init__(profile, parent)
         self._open_url_externally = open_url_externally_callback
+
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        # This app otherwise has zero visibility into JS-side console.log/warn/error —
+        # nothing forwards it to stdout, unlike the mobile app's Capacitor/Console
+        # logging — which made a live JS-side hang (the large-image-insert issue)
+        # impossible to diagnose without this. Kept in place going forward rather than
+        # ripped out after that one investigation, since it's cheap and the same gap
+        # would just resurface the next time something needs live JS-side debugging.
+        print(f"[notes JS console] {message} ({source_id}:{line_number})")
 
     def createWindow(self, window_type):
         temp_page = QWebEnginePage(self.profile(), None)
@@ -1427,6 +1443,9 @@ class ProjectFlowApp(QMainWindow):
 
         # Folder browser view mode: "tree" (details) or "icons" (Dolphin-style grid) — per-machine preference
         self.folder_view_mode = self.settings.get("folder_view_mode", "tree")
+        # Folder browser sort mode: "name" (A-Z, default) or "date" (most recent first) —
+        # per-machine preference, shared by both folder-browsing surfaces like folder_view_mode.
+        self.folder_sort_mode = self.settings.get("folder_sort_mode", "name")
 
         # Folder browser filter text (Dolphin-style filter bar) — session-only, shared across
         # both folder-browsing surfaces even though (as of the independent-navigation split
@@ -1697,6 +1716,7 @@ class ProjectFlowApp(QMainWindow):
                     "launcher_tab_order": [],  # user-ordered list of launcher tab ids (docs/resources/files/apps)
                     "viewer_tab_order": [],  # user-ordered list of viewer tab ids (notes/code/console/webview/pdf/image/time)
                     "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
+                    "folder_sort_mode": "name",  # Folder browser sort: "name" (A-Z) or "date" (most recent first)
                     "show_projects_section": True,  # Show the always-visible Projects section below the columns
                 }
                 self.save_settings()
@@ -10824,6 +10844,7 @@ function filterAliases(q) {{
                 self.launcher_folder_icon_view = None
                 self.launcher_folder_view_stack = None
                 self.launcher_folder_view_toggle_btn = None
+                self.launcher_folder_sort_toggle_btn = None
                 self.launcher_folder_filter_input = None
 
             # Create a vertical layout for this entire column
@@ -17042,6 +17063,16 @@ function filterAliases(q) {{
         self.folder_view_toggle_btn.clicked.connect(self._toggle_folder_view_mode)
         toolbar_layout.addWidget(self.folder_view_toggle_btn)
 
+        # Sort mode toggle (A-Z vs. most-recent-first) — button shows the icon/label for
+        # whichever mode a click would switch INTO, matching the view-toggle button above.
+        self.folder_sort_toggle_btn = QPushButton("Date" if self.folder_sort_mode == "name" else "A-Z")
+        self.folder_sort_toggle_btn.setStyleSheet(btn_style)
+        self.folder_sort_toggle_btn.setToolTip(
+            "Sort by date (most recent first)" if self.folder_sort_mode == "name" else "Sort alphabetically (A-Z)"
+        )
+        self.folder_sort_toggle_btn.clicked.connect(self._toggle_folder_sort_mode)
+        toolbar_layout.addWidget(self.folder_sort_toggle_btn)
+
         # Separator
         sep1 = QLabel("|")
         sep1.setStyleSheet(f"color: {self.t('border')}; margin: 0 5px;")
@@ -17051,6 +17082,8 @@ function filterAliases(q) {{
         self.folder_path_label = QLabel("~")
         self.folder_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
         self.folder_path_label.setToolTip("Current directory")
+        self.folder_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.folder_path_label.setCursor(Qt.CursorShape.IBeamCursor)
         toolbar_layout.addWidget(self.folder_path_label, 1)
 
         # Pin default button
@@ -17166,9 +17199,19 @@ function filterAliases(q) {{
         self.launcher_folder_view_toggle_btn.clicked.connect(self._toggle_folder_view_mode)
         toolbar_layout.addWidget(self.launcher_folder_view_toggle_btn)
 
+        self.launcher_folder_sort_toggle_btn = QPushButton("Date" if self.folder_sort_mode == "name" else "A-Z")
+        self.launcher_folder_sort_toggle_btn.setStyleSheet(mini_btn_style)
+        self.launcher_folder_sort_toggle_btn.setToolTip(
+            "Sort by date (most recent first)" if self.folder_sort_mode == "name" else "Sort alphabetically (A-Z)"
+        )
+        self.launcher_folder_sort_toggle_btn.clicked.connect(self._toggle_folder_sort_mode)
+        toolbar_layout.addWidget(self.launcher_folder_sort_toggle_btn)
+
         self.launcher_folder_path_label = QLabel("~")
         self.launcher_folder_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
         self.launcher_folder_path_label.setToolTip("Current directory")
+        self.launcher_folder_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.launcher_folder_path_label.setCursor(Qt.CursorShape.IBeamCursor)
         toolbar_layout.addWidget(self.launcher_folder_path_label, 1)
 
         column_layout.addWidget(toolbar_widget)
@@ -17297,6 +17340,12 @@ function filterAliases(q) {{
         dirs.sort(key=str.lower)
         files.sort(key=str.lower)
 
+        def _mtime(full_path):
+            try:
+                return os.path.getmtime(full_path)
+            except OSError:
+                return 0.0
+
         result = []
         for d in dirs:
             full_path = os.path.join(path, d)
@@ -17304,13 +17353,13 @@ function filterAliases(q) {{
             display_name = f"[P] {d}/" if is_project else f"{d}/"
             result.append({
                 'full_path': full_path, 'display_name': display_name,
-                'kind': 'dir', 'is_project': is_project,
+                'kind': 'dir', 'is_project': is_project, 'mtime': _mtime(full_path),
             })
         for f in files:
             full_path = os.path.join(path, f)
             result.append({
                 'full_path': full_path, 'display_name': f,
-                'kind': 'file', 'is_project': False,
+                'kind': 'file', 'is_project': False, 'mtime': _mtime(full_path),
             })
         return result, None
 
@@ -17435,9 +17484,30 @@ function filterAliases(q) {{
 
     def _render_folder_tree(self, entries, target=None):
         """Render scanned entries into a tree/details view — self.folder_browser by default,
-        or the given target widget (e.g. the launcher-column mini panel)."""
+        or the given target widget (e.g. the launcher-column mini panel). A second "Modified"
+        column shows each entry's mtime — useful on its own, and especially once sorting by
+        date is available (see folder_sort_mode) so the order is actually explained."""
         tree = target if target is not None else self.folder_browser
         tree.clear()
+        tree.setColumnCount(2)
+        # QHeaderView defaults stretchLastSection to True for QTreeWidget — since the date
+        # column is last, that silently overrides everything below (Interactive mode,
+        # explicit setColumnWidth) and force-stretches it to fill all remaining space
+        # regardless, which is what actually caused the widening-gap symptom seen live.
+        tree.header().setStretchLastSection(False)
+        tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # ResizeToContents alone rendered this column far wider than the actual date
+        # text needed (confirmed live via screenshot — ~50% of the panel, filenames
+        # truncated as a result). An explicit width from real font metrics is
+        # deterministic instead of depending on ResizeToContents recalculating
+        # correctly against a tree that's just been cleared. Interactive (not Fixed)
+        # still lets the user drag it wider/narrower if they want to.
+        tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        # Measured against all-wide-digit text (0/8/9 render noticeably wider than 1/2 in a
+        # proportional font) — a narrower sample string (e.g. one full of 1s/2s) undersized
+        # this in practice, clipping genuinely-occurring dates like "23:.." or "00:..".
+        date_col_width = QFontMetrics(tree.font()).horizontalAdvance("0000-00-00 00:00") + 20
+        tree.setColumnWidth(1, date_col_width)
         icon_provider = QFileIconProvider()
         folder_icon = self._folder_theme_icon()
 
@@ -17449,6 +17519,10 @@ function filterAliases(q) {{
             item.setIcon(0, folder_icon if e['kind'] == 'dir' else icon_provider.icon(QFileInfo(e['full_path'])))
             item.setData(0, Qt.ItemDataRole.UserRole, e['full_path'])
             item.setData(0, Qt.ItemDataRole.UserRole + 1, e['kind'])
+            if e.get('mtime'):
+                item.setText(1, datetime.datetime.fromtimestamp(e['mtime']).strftime('%Y-%m-%d %H:%M'))
+                item.setTextAlignment(1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                item.setForeground(1, QColor(self.t('fg_secondary')))
             tree.addTopLevelItem(item)
 
     def _render_folder_icons(self, entries, target=None):
@@ -17605,13 +17679,18 @@ function filterAliases(q) {{
         into that side's target widgets only. Shared by _populate_folder_side() and the filter
         bar's textChanged handler so live filtering doesn't need to re-scan disk per keystroke."""
         if side == "left":
-            entries = self._launcher_folder_raw_entries
-            error = self._launcher_folder_scan_error
+            entries = getattr(self, '_launcher_folder_raw_entries', None)
+            error = getattr(self, '_launcher_folder_scan_error', None)
             tree = getattr(self, 'launcher_folder_browser', None)
             icons = getattr(self, 'launcher_folder_icon_view', None)
         else:
-            entries = self._folder_raw_entries
-            error = self._folder_scan_error
+            # Unlike the launcher-panel side, _folder_raw_entries has no __init__ default —
+            # it's only ever created by the first real scan (_populate_folder_side()). A
+            # caller reachable before that first scan (confirmed live: the sort-mode toggle,
+            # since folder_current_path can be pre-seeded from config_folder_path well
+            # before the Folder tab is ever opened) hit a plain AttributeError here.
+            entries = getattr(self, '_folder_raw_entries', None)
+            error = getattr(self, '_folder_scan_error', None)
             tree = getattr(self, 'folder_browser', None)
             icons = getattr(self, 'folder_icon_view', None)
 
@@ -17623,8 +17702,24 @@ function filterAliases(q) {{
                 self._render_folder_error_into_icon_view(icons, error)
             return
 
+        if entries is None:
+            # Genuinely never scanned yet this session — folder_current_path/
+            # launcher_folder_current_path can be pre-seeded (e.g. from
+            # config_folder_path) before the Folder tab/panel is ever actually opened,
+            # well before _populate_folder_side() ever runs a real scan. Confirmed live:
+            # a re-render triggered from outside that path (e.g. the sort-mode toggle)
+            # while still in this state crashed on sorted(None, ...) below. Nothing to
+            # render yet either way.
+            return
+
         filter_text = (self.folder_filter_text or "").strip().lower()
         entries = [e for e in entries if filter_text in e['display_name'].lower()] if filter_text else entries
+
+        # "name" mode is already the order _scan_folder_entries() produced (dirs first,
+        # each group A-Z) — only re-sort for "date", keeping the same dirs-before-files
+        # grouping but by most-recent-first within each group instead of alphabetically.
+        if self.folder_sort_mode == "date":
+            entries = sorted(entries, key=lambda e: (0 if e['kind'] == 'dir' else 1, -e.get('mtime', 0)))
 
         if tree is not None:
             self._render_folder_tree(entries, target=tree)
@@ -18124,6 +18219,29 @@ function filterAliases(q) {{
             self.launcher_folder_view_toggle_btn.setText(btn_text)
             self.launcher_folder_view_toggle_btn.setToolTip(btn_tooltip)
 
+    def _toggle_folder_sort_mode(self):
+        """Switch the folder browser(s) between A-Z and most-recent-first sort — applies to
+        both the main Folder viewer and the launcher-column mini panel, whichever exist. Pure
+        re-render from the already-cached scan (see _render_folder_view_side()), no re-scan
+        needed, matching how the filter bar re-renders live without touching disk."""
+        self.folder_sort_mode = "date" if self.folder_sort_mode == "name" else "name"
+        self.settings["folder_sort_mode"] = self.folder_sort_mode
+        self.save_settings()
+        btn_text = "Date" if self.folder_sort_mode == "name" else "A-Z"
+        btn_tooltip = (
+            "Sort by date (most recent first)" if self.folder_sort_mode == "name" else "Sort alphabetically (A-Z)"
+        )
+        if getattr(self, 'folder_sort_toggle_btn', None) is not None:
+            self.folder_sort_toggle_btn.setText(btn_text)
+            self.folder_sort_toggle_btn.setToolTip(btn_tooltip)
+        if getattr(self, 'launcher_folder_sort_toggle_btn', None) is not None:
+            self.launcher_folder_sort_toggle_btn.setText(btn_text)
+            self.launcher_folder_sort_toggle_btn.setToolTip(btn_tooltip)
+        if getattr(self, 'folder_current_path', None):
+            self._render_folder_view_side("right")
+        if getattr(self, 'launcher_folder_current_path', None):
+            self._render_folder_view_side("left")
+
     def _handle_folder_item_activation(self, path, item_type):
         """Open/navigate to a folder-browser entry — shared by the tree and icon views."""
         if not path:
@@ -18377,10 +18495,17 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """Decode every inline base64 data-URI image in `content` and write it as a
         real file under get_images_folder(), replacing the match with a relative
         reference (see _relative_image_ref) — the actual fix for pasted images
-        vanishing when a note is edited elsewhere (see _INLINE_IMAGE_RE above)."""
+        vanishing when a note is edited elsewhere (see _INLINE_IMAGE_RE above).
+
+        The live editor is never hot-swapped after a save (see
+        _write_markdown_converting_images), so the SAME still-present base64 blob
+        keeps getting handed to this function again on every later autosave tick
+        until the note is actually reloaded — confirmed live (two near-identical
+        files, ~10s apart, same bytes). Filenames are content-hashed rather than
+        timestamped specifically so a re-conversion of identical bytes reuses the
+        existing file instead of piling up duplicates."""
         note_stem = os.path.splitext(os.path.basename(note_path))[0]
         images_dir = self.get_images_folder()
-        counter = [0]
 
         def replace(m):
             alt, ext, payload = m.group(1), m.group(2), m.group(3)
@@ -18390,12 +18515,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 return m.group(0)
             try:
                 os.makedirs(images_dir, exist_ok=True)
-                counter[0] += 1
-                timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-                filename = f"{note_stem}-{timestamp}-{counter[0]}.{ext}"
+                content_hash = hashlib.sha256(image_bytes).hexdigest()[:12]
+                filename = f"{note_stem}-{content_hash}.{ext}"
                 target_path = os.path.join(images_dir, filename)
-                with open(target_path, 'wb') as f:
-                    f.write(image_bytes)
+                if not os.path.exists(target_path):
+                    with open(target_path, 'wb') as f:
+                        f.write(image_bytes)
             except OSError:
                 return m.group(0)  # couldn't write the file — leave the image inline
                                     # rather than silently losing it

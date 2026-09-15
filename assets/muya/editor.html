@@ -36,6 +36,43 @@
   // the chosen file's bytes and resolves with a base64 data: URL, the exact
   // same embedding ImageEditTool already falls back to for a pasted
   // clipboard image (see pasteImage.ts) - no Python round-trip needed.
+  //
+  // Inserting a large inline base64 image into Muya's live contenteditable
+  // document was confirmed live to hang the editor entirely - this file's own
+  // read/encode step is fast, the hang is inside Muya's own internal
+  // insert/render code afterward. Confirmed via testing that even a 551KB PNG
+  // screenshot (751KB as base64) was enough to hang it - well below what a
+  // naive "few MB" guess would have assumed - so the threshold here is
+  // deliberately conservative. Anything above it is downscaled/recompressed
+  // to a JPEG data URL via canvas before it's ever handed to Muya.
+  var PF_IMAGE_MAX_RAW_BYTES = 150 * 1024;
+  var PF_IMAGE_MAX_DIMENSION = 1200;
+
+  function pfReadFileAsDataUrl(file, onDone) {
+    var reader = new FileReader();
+    reader.onload = function (e) { onDone(e.target.result); };
+    reader.onerror = function () { onDone(''); };
+    reader.readAsDataURL(file);
+  }
+
+  function pfDownscaleToDataUrl(file, onDone) {
+    pfReadFileAsDataUrl(file, function (rawDataUrl) {
+      if (!rawDataUrl) { onDone(''); return; }
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, PF_IMAGE_MAX_DIMENSION / Math.max(img.width, img.height));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        onDone(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = function () { onDone(''); };
+      img.src = rawDataUrl;
+    });
+  }
+
   M.Muya.use(M.ImageEditTool, {
     imagePathPicker: function () {
       return new Promise(function (resolve) {
@@ -46,10 +83,11 @@
           input.removeEventListener('change', onChange);
           var file = input.files && input.files[0];
           if (!file) { resolve(''); return; }
-          var reader = new FileReader();
-          reader.onload = function (e) { resolve(e.target.result); };
-          reader.onerror = function () { resolve(''); };
-          reader.readAsDataURL(file);
+          if (file.size <= PF_IMAGE_MAX_RAW_BYTES) {
+            pfReadFileAsDataUrl(file, resolve);
+          } else {
+            pfDownscaleToDataUrl(file, resolve);
+          }
         };
         input.addEventListener('change', onChange);
         input.click();

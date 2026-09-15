@@ -31,11 +31,13 @@
     <tr><td class="viewer"><code>Ctrl+D</code></td><td>Strikethrough</td></tr>
     <tr><td class="viewer"><code>Ctrl+L</code></td><td>Link</td></tr>
     <tr><td class="viewer"><code>Ctrl+Shift+H</code></td><td>Highlight</td></tr>
-    <tr><td class="viewer"><code>Ctrl+Shift+I</code></td><td>Image</td></tr>
+    <tr><td class="viewer"><code>Ctrl+Alt+I</code></td><td>Image</td></tr>
     <tr><td class="viewer"><code>Ctrl+Shift+R</code></td><td>Clear formatting</td></tr>
   </tbody>
 </table>
 <p class="lede">Headings, lists, quotes, code blocks and the like currently only work by typing the markdown syntax directly (e.g. <code># </code>, <code>- </code>, <code>&gt; </code>) — dedicated shortcuts for these may follow later.</p>
+<p class="lede">Note the Image shortcut is <code>Ctrl+Alt+I</code>, not the more expected <code>Ctrl+Shift+I</code> — that combo is reserved by the browser engine underneath (Chromium's "open DevTools" shortcut), so it never reaches the editor.</p>
+<p class="lede">A picked image larger than a small threshold is automatically downscaled/recompressed before it's inserted — a large photo can take a couple of seconds to appear, with no progress indicator yet. This is deliberate: a full-size image inserted directly can hang the editor entirely, so the brief pause is the trade-off.</p>
 <h2>Editor shortcuts</h2>
 <p class="lede">These shortcuts work the same whether the Editor is set to CodeMirror or Monaco, with one
   exception noted below — Monaco additionally has its own large set of built-in shortcuts, in a separate
