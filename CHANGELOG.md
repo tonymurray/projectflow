@@ -10,6 +10,7 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 
 ### Added
 - New Help tip (Tips tab) explaining the `projects/`/`images/` symlink-to-sync trick.
+- **`Ctrl+Alt+I` to insert an image in the Notes/Markdown editor.** Muya's own built-in shortcut for this is Shift+Ctrl+I, but that collides with Chromium's reserved "open DevTools" accelerator — QtWebEngine swallows it before it ever reaches the page's own JS (confirmed live: no image picker, no DevTools either), so it silently did nothing. `Ctrl+Alt+I` isn't a reserved browser combo, so it reaches the editor and calls the exact same insert action.
 
 ## 2026-09-14
 

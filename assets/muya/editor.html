@@ -123,6 +123,23 @@
   window.__muyaClearDirty = function () {
     dirty = false;
   };
+
+  // Muya's own built-in image shortcut (Shift+Ctrl+I, see
+  // FORMAT_SHORTCUTS_SHIFT in inlineFormatToolbar) collides with Chromium's
+  // reserved "open DevTools" accelerator — QtWebEngine swallows it before it
+  // ever reaches this page's own JS, even with DevTools itself disabled, so
+  // it silently does nothing (confirmed: no picker, no DevTools either).
+  // Ctrl+Alt+I isn't a reserved browser combo, so it reaches here fine.
+  // muya.format('image') is the exact same public call the built-in
+  // shortcut makes internally (see Muya.format() in muya.ts) — same insert,
+  // just reachable via a key combo that actually arrives.
+  document.addEventListener('keydown', function (e) {
+    if (!muya) return;
+    if (e.ctrlKey && e.altKey && !e.shiftKey && (e.key === 'i' || e.key === 'I')) {
+      e.preventDefault();
+      muya.format('image');
+    }
+  });
 })();
 </script>
 </body>
