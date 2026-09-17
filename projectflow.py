@@ -906,6 +906,102 @@ class ClickableSearchTitle(QWidget):
         """)
 
 
+class EditablePathLabel(QWidget):
+    """A small path label that turns into an editable text field on click — the same
+    click-to-edit / Enter-to-confirm / Escape-or-focus-out-to-cancel shape as
+    ClickableSearchTitle above, just restyled for the folder browser's small 11px path
+    label instead of the title's 20pt search box, and with no QCompleter (that widget
+    completes against a small fixed list of project names; a path has no such fixed
+    list to complete against without a QFileSystemModel — a reasonable future addition,
+    not needed just to make the path typeable)."""
+
+    pathEntered = pyqtSignal(str)  # raw text entered, on Enter — caller resolves/navigates
+
+    def __init__(self, theme_func, parent=None):
+        super().__init__(parent)
+        self.t = theme_func
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.stack = QStackedWidget()
+        self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.display_label = QLabel("~")
+        self.display_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
+        self.display_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.display_label.mousePressEvent = lambda e: self.enter_edit_mode()
+        self.stack.addWidget(self.display_label)
+
+        self.path_input = QLineEdit()
+        self._apply_input_style()
+        self.path_input.returnPressed.connect(self._on_return_pressed)
+        self.path_input.installEventFilter(self)
+        self.stack.addWidget(self.path_input)
+
+        layout.addWidget(self.stack)
+        self.stack.setCurrentIndex(0)
+
+    def _apply_input_style(self):
+        self.path_input.setStyleSheet(f"""
+            QLineEdit {{
+                font-size: 11px;
+                color: {self.t('fg_secondary')};
+                background-color: {self.t('bg_secondary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 1px 4px;
+            }}
+        """)
+
+    def eventFilter(self, obj, event):
+        if obj is self.path_input:
+            if event.type() == QEvent.Type.FocusOut:
+                # Small delay, same as ClickableSearchTitle, so a click that's actually
+                # aimed elsewhere on the page doesn't race the focus change.
+                QTimer.singleShot(100, self._maybe_exit_on_focus_out)
+            elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                self.exit_edit_mode()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _maybe_exit_on_focus_out(self):
+        if not self.path_input.hasFocus():
+            self.exit_edit_mode()
+
+    def enter_edit_mode(self):
+        self.path_input.setText(self.display_label.text())
+        self.stack.setCurrentIndex(1)
+        self.path_input.setFocus()
+        self.path_input.selectAll()
+
+    def exit_edit_mode(self):
+        self.stack.setCurrentIndex(0)
+
+    def _on_return_pressed(self):
+        text = self.path_input.text().strip()
+        self.exit_edit_mode()
+        if text:
+            self.pathEntered.emit(text)
+
+    # Proxy methods so every existing caller (_populate_folder_side(),
+    # _style_folder_path_label()) keeps working completely unchanged — they only ever
+    # call these three, believing they're talking to a plain QLabel.
+    def setText(self, text):
+        self.display_label.setText(text)
+
+    def text(self):
+        return self.display_label.text()
+
+    def setStyleSheet(self, qss):
+        self.display_label.setStyleSheet(qss)
+
+    def setToolTip(self, tip):
+        self.display_label.setToolTip(tip)
+        self.path_input.setToolTip(tip)
+
+
 class FolderBrowserDelegate(QStyledItemDelegate):
     """Custom delegate to render folder items with a card-like border appearance"""
 
@@ -4329,7 +4425,7 @@ class ProjectFlowApp(QMainWindow):
         # Delete button for existing items
         btn_layout = QHBoxLayout()
         if not is_new:
-            delete_btn = QPushButton("Delete")
+            delete_btn = QPushButton("Remove launcher")
             delete_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {self.t('bg_danger')};
@@ -4502,8 +4598,8 @@ class ProjectFlowApp(QMainWindow):
         """Delete an item after confirmation"""
         reply = QMessageBox.question(
             dialog,
-            "Delete Item",
-            "Delete this item?",
+            "Remove Launcher",
+            "Remove this launcher?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -14499,7 +14595,7 @@ function filterAliases(q) {{
             }}
         """)
         edit_action = menu.addAction("✏️  Edit")
-        delete_action = menu.addAction("🗑  Delete")
+        delete_action = menu.addAction("🗑  Remove launcher")
 
         # "Move to category" physically relocates the item into any real category. A fixed
         # "Documentation (docs)" entry is always offered first regardless of whether that
@@ -14652,7 +14748,7 @@ function filterAliases(q) {{
 
         del_btn = QPushButton("🗑")
         del_btn.setFixedSize(30, 28)
-        del_btn.setToolTip("Delete launcher")
+        del_btn.setToolTip("Remove launcher")
         del_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
@@ -17079,11 +17175,9 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(sep1)
 
         # Path label
-        self.folder_path_label = QLabel("~")
-        self.folder_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
-        self.folder_path_label.setToolTip("Current directory")
-        self.folder_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.folder_path_label.setCursor(Qt.CursorShape.IBeamCursor)
+        self.folder_path_label = EditablePathLabel(self.t)
+        self.folder_path_label.setToolTip("Current directory — click to type a path")
+        self.folder_path_label.pathEntered.connect(lambda p: self.populate_folder_browser(p))
         toolbar_layout.addWidget(self.folder_path_label, 1)
 
         # Pin default button
@@ -17207,11 +17301,9 @@ function filterAliases(q) {{
         self.launcher_folder_sort_toggle_btn.clicked.connect(self._toggle_folder_sort_mode)
         toolbar_layout.addWidget(self.launcher_folder_sort_toggle_btn)
 
-        self.launcher_folder_path_label = QLabel("~")
-        self.launcher_folder_path_label.setStyleSheet(f"font-size: 11px; color: {self.t('fg_secondary')};")
-        self.launcher_folder_path_label.setToolTip("Current directory")
-        self.launcher_folder_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.launcher_folder_path_label.setCursor(Qt.CursorShape.IBeamCursor)
+        self.launcher_folder_path_label = EditablePathLabel(self.t)
+        self.launcher_folder_path_label.setToolTip("Current directory — click to type a path")
+        self.launcher_folder_path_label.pathEntered.connect(lambda p: self.populate_launcher_folder_browser(p))
         toolbar_layout.addWidget(self.launcher_folder_path_label, 1)
 
         column_layout.addWidget(toolbar_widget)
