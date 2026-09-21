@@ -7095,6 +7095,40 @@ StartupNotify=true
     # so the two stay in sync if this line is ever changed.
     TODO_STARTER_LINE = "- [ ] "
 
+    def _get_project_pending_tasks(self, config_path):
+        """Read-only: outstanding (unchecked) task strings from config_path's own
+        todo.md, for an ARBITRARY other project — used by the project mega-menu's
+        Tasks column (see _build_project_mega_menu_content()). Deliberately never
+        creates anything (no os.makedirs/open(..., 'w') anywhere in this method),
+        mirroring _viewer_tab_has_content()'s own read-only "todo" branch, just
+        sourced from the other project's own JSON rather than self.config_*
+        (which only reflects whichever project is currently loaded). A project
+        that's never used Docs/Notes/To-Do at all (no documents_subfolder yet) or
+        whose todo.md is still just the untouched starter line correctly returns
+        an empty list, not an error."""
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            return []
+        slug = data.get('documents_subfolder')
+        if not slug:
+            return []
+        todo_path = os.path.join(self.get_documents_folder(), slug, "todo.md")
+        if not os.path.exists(todo_path):
+            return []
+        try:
+            with open(todo_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            return []
+        tasks = []
+        for line in content.splitlines():
+            match = re.match(r'^- \[ \]\s*(.*)$', line.strip())
+            if match and match.group(1).strip():
+                tasks.append(match.group(1).strip())
+        return tasks
+
     def _get_or_create_todo_file(self):
         """Path to this project's todo.md, inside its own documents subfolder —
         creating it on first use, same lazy-creation philosophy as the Documents
@@ -9126,8 +9160,9 @@ function filterAliases(q) {{
 
     def _build_project_mega_menu_content(self, menu):
         """Builds the root widget for the project mega-menu popup (see
-        _show_project_mega_menu()) — six columns (Pinned / Recent / All Projects (A–Z) /
-        By Color / a combined Folder Projects+Shared+Archived column / a Tasks placeholder)
+        _show_project_mega_menu()) — six columns (Pinned / Recent / A to Z /
+        By Color / a combined Folder Projects+Shared+Archived column / Tasks — outstanding
+        to-dos from Pinned+Recent projects, see add_tasks_column() below)
         plus a live search box filtering across all of them at once, mirroring the launcher
         search box's widget-visibility-toggling pattern rather than rebuilding on every
         keystroke. Archive used to be its own small, de-emphasized block pinned to the
@@ -9326,14 +9361,14 @@ function filterAliases(q) {{
 
         # Icon (not emoji) here — see add_column()'s icon branch for why: 📁/📂 render as a
         # yellow/manila folder in most color-emoji fonts.
-        add_column("All Projects (A–Z)", all_paths, "No projects found.", is_pinned=False,
+        add_column("A to Z", all_paths, "No projects found.", is_pinned=False,
                    icon=self._blue_folder_icon())
 
         # By Color — same ordering as the main Projects section's own 🎨 sort
         # (_populate_color_sorted_projects()): custom color_order priority, uncolored last.
         # Reuses _build_color_cache()/_sorted_colors() rather than duplicating that logic.
-        # Placed after "All Projects" (A–Z) — reverses an earlier request that had put it
-        # before, per a later session's direct feedback.
+        # Placed after "A to Z" — reverses an earlier request that had put it before, per
+        # a later session's direct feedback.
         self._build_color_cache()
         self._build_shared_cache()
         project_colors = getattr(self, '_color_cache', {})
@@ -9375,12 +9410,87 @@ function filterAliases(q) {{
              "No archived projects."),
         ])
 
-        # Tasks placeholder — the slot freed up by combining Folder Projects/Shared/Archived
-        # above. Just an empty-state message for now (reusing add_column()'s own muted
-        # empty-state label by passing zero paths) — a stub for eventually surfacing To-Do
-        # items (see the To-Do viewer tab) across projects here; real cross-project todo.md
-        # scanning is deliberately out of scope for this pass.
-        add_column("☑ Tasks", [], "Cross-project task view — coming soon.", is_pinned=False)
+        # Tasks — the slot freed up by combining Folder Projects/Shared/Archived above.
+        # Walks Pinned then Recent (the same two source lists already computed above,
+        # deduped by path) and, for any project with real outstanding to-dos
+        # (_get_project_pending_tasks() — read-only, never creates a project's
+        # documents/todo.md as a side effect of merely opening this menu), shows that
+        # project's own button followed by each task as one truncated line underneath.
+        # Only the project button is clickable (opens that project, same as any other
+        # mega-menu button, closing the menu via on_select=menu.close) — per the initial
+        # spec, jumping straight to a specific task/the To-Do tab is left for later, not
+        # wired up now. Folder Projects/Shared/Archived aren't scanned here — the spec
+        # explicitly scoped this first pass to Pinned + Recent only.
+        def add_tasks_column():
+            col_widget = QWidget()
+            col_layout = QVBoxLayout(col_widget)
+            col_layout.setContentsMargins(0, 0, 0, 0)
+            col_layout.setSpacing(10)
+
+            header_style = f"color: {self.t('fg_secondary')}; font-size: 13px; font-weight: bold;"
+            header = QLabel("☑ Tasks")
+            header.setStyleSheet(header_style)
+            col_layout.addWidget(header)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+            scroll_content = QWidget()
+            scroll_layout = QVBoxLayout(scroll_content)
+            scroll_layout.setContentsMargins(0, 0, 0, 4)
+            scroll_layout.setSpacing(10)
+
+            task_label_style = f"color: {self.t('fg_secondary')}; font-size: 13px; padding-left: 4px;"
+            column_containers = []
+            seen = set()
+            for path in list(pinned_paths) + list(recent_paths):
+                if path in seen:
+                    continue
+                seen.add(path)
+                tasks = self._get_project_pending_tasks(path)
+                if not tasks:
+                    continue
+
+                # One group widget per project (button + its task lines) is what actually
+                # gets registered for search-filtering/visibility — so a project's tasks
+                # always hide/show together with its own button, rather than a project's
+                # button and task lines being independently (and confusingly) filterable.
+                group_widget = QWidget()
+                group_layout = QVBoxLayout(group_widget)
+                group_layout.setContentsMargins(0, 0, 0, 0)
+                group_layout.setSpacing(2)
+
+                btn_container = self._create_config_button(
+                    path, is_pinned=False, draggable=False, flow_managed=True,
+                    on_select=menu.close
+                )
+                group_layout.addWidget(btn_container)
+                for task_text in tasks:
+                    truncated = task_text if len(task_text) <= 70 else task_text[:69].rstrip() + "…"
+                    task_label = QLabel(f"·  {truncated}")
+                    task_label.setStyleSheet(task_label_style)
+                    task_label.setWordWrap(False)
+                    group_layout.addWidget(task_label)
+
+                scroll_layout.addWidget(group_widget)
+                display_name = self.get_display_name_for_config_path(path)
+                search_refs.append((group_widget, display_name.lower()))
+                column_containers.append(group_widget)
+
+            if not column_containers:
+                empty_label = QLabel("No outstanding tasks in your pinned or recent projects.")
+                empty_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 8px 0;")
+                empty_label.setWordWrap(True)
+                scroll_layout.addWidget(empty_label)
+
+            scroll_layout.addStretch(1)
+            scroll.setWidget(scroll_content)
+            col_layout.addWidget(scroll, 1)
+            columns_row.addWidget(col_widget, 1)
+            column_scroll_areas.append((scroll, column_containers))
+
+        add_tasks_column()
 
         def on_search_text_changed(text):
             needle = text.strip().lower()
