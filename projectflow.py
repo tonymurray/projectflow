@@ -17249,7 +17249,10 @@ function filterAliases(q) {{
         # subfolder is always resolvable/creatable on click, never "unset").
         docs_btn = QPushButton()
         docs_btn.setIcon(self._document_icon())
-        docs_btn.setIconSize(QSize(16, 16))
+        # Smaller than the app's usual 16x16 icon convention — this toolbar's other
+        # buttons are plain text glyphs at the style's 12px font-size, so a full-size
+        # icon read as noticeably larger/heavier than its neighbors.
+        docs_btn.setIconSize(QSize(13, 13))
         docs_btn.setStyleSheet(btn_style)
         docs_btn.setToolTip("Go to this project's documents folder")
         docs_btn.clicked.connect(lambda: self.folder_go_project_documents("right"))
@@ -17391,7 +17394,7 @@ function filterAliases(q) {{
 
         docs_btn = QPushButton()
         docs_btn.setIcon(self._document_icon())
-        docs_btn.setIconSize(QSize(16, 16))
+        docs_btn.setIconSize(QSize(13, 13))
         docs_btn.setStyleSheet(mini_btn_style)
         docs_btn.setToolTip("Go to this project's documents folder")
         docs_btn.clicked.connect(lambda: self.folder_go_project_documents("left"))

@@ -11,6 +11,9 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   - Creating a note or file this way now also files it as a real launcher item automatically — notes go under a new **"Notes"** category (pooled into the Docs bucket, separate from Documentation, which stays reserved for project-folder-derived docs like Scan for Docs/Kickstart), files go under a new **"Project Files"** category (Resources). Both categories are auto-created on first use. Any open folder browser view also refreshes immediately, so the new file is visible without a manual Refresh click.
   - `documents/` is git-ignored, same as `projects/`/`notes/`/`images/`.
 
+### Fixed
+- The new **Docs** shortcut button's icon rendered noticeably larger than its neighboring text-glyph buttons (↑/⌂/↻/⊞/A-Z) in the Folder Browser toolbar — reduced from the app's usual 16×16 icon size to 13×13 to match their visual weight.
+
 ## 2026-09-15
 
 ### Fixed
