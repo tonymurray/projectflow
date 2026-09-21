@@ -1436,6 +1436,28 @@ class ProjectFlowApp(QMainWindow):
         self._notes_muya_session.autosave_timer.timeout.connect(
             lambda: self._muya_autosave_tick(self._notes_muya_session)
         )
+
+        # Third, independent Muya-hosting webview for the per-project To-Do list —
+        # same "created once here, detach/re-add on rebuild" pattern as notes_webview
+        # above, since it's also a persistent QWebEngineView. Unlike Notes, there is
+        # always exactly one todo.md per project (see _get_or_create_todo_file()), so
+        # no multi-tab system (NotesTabState/self.notes_tabs) is needed here — just
+        # this one session, always pointed at the current project's todo.md.
+        self.todo_webview = QWebEngineView()
+        self.todo_webview.setPage(ExternalLinkPage(self.web_profile, self.todo_webview, self._open_url_externally))
+        self._relabel_external_link_actions(self.todo_webview.page())
+        self._enable_web_fullscreen_support(self.todo_webview)
+        # Default 1.2s autosave (see MuyaSession.__init__) rather than Notes' lazier
+        # 15s — that slower interval exists specifically because Notes can have many
+        # tabs open across devices; a single per-project todo.md doesn't have that risk,
+        # and prompt saving suits frequent quick checkbox-toggle edits better.
+        self._todo_muya_session = MuyaSession(self.todo_webview)
+        self.todo_webview.loadFinished.connect(
+            lambda ok: self._on_muya_webview_load_finished(ok, self._todo_muya_session)
+        )
+        self._todo_muya_session.autosave_timer.timeout.connect(
+            lambda: self._muya_autosave_tick(self._todo_muya_session)
+        )
         # Tracks an explicitly-opened non-project note in the Focus-layout Notes tab (see
         # _open_note_in_notes_tab()/_open_markdown_file()) — None means "show the project's
         # own note". Deliberately NOT reset in load_notes() (which reruns on every incidental
@@ -4243,7 +4265,7 @@ class ProjectFlowApp(QMainWindow):
             viewer_tab_ids.remove("time")
         self._proj_default_viewer.clear()
         self._proj_default_viewer.addItems(
-            [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_ids, viewer_tab_ids) + ["help"]
+            [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_ids, viewer_tab_ids, project_order=getattr(self, 'config_viewer_tab_order', None)) + ["help"]
         )
 
         self._proj_default_viewer.setCurrentText(getattr(self, 'config_column2_default', None) or "")
@@ -6437,6 +6459,11 @@ StartupNotify=true
                 # has already used the Docs/New Note/New File feature at least once —
                 # see _get_or_create_project_documents_folder().
                 self.config_documents_subfolder = config_data.get('documents_subfolder', None)
+                # Per-project viewer tab row order (drag-reordered, see
+                # _reorder_tab_button()) — [] means this project hasn't customized its
+                # own order yet, so _ordered_tab_ids() falls back to the global
+                # viewer_tab_order preference (or canonical order, if that's unset too).
+                self.config_viewer_tab_order = config_data.get('viewer_tab_order', [])
                 # Load project name if specified (for display in title bar)
                 self.config_project_name = config_data.get('project_name', None)
                 # Load per-project browser new-tab override
@@ -6539,6 +6566,7 @@ StartupNotify=true
                 self.config_browser_new_tab = None
                 self.config_notes_file = None
                 self.config_documents_subfolder = None
+                self.config_viewer_tab_order = []
                 self.config_project_name = None
                 self.config_project_color = None
                 self.config_is_shared = False
@@ -7054,6 +7082,29 @@ StartupNotify=true
             self._save_documents_subfolder_to_config(slug)
         path = os.path.join(base, slug)
         os.makedirs(path, exist_ok=True)
+        return path
+
+    # A brand-new todo.md is seeded with exactly this line (see _get_or_create_todo_file())
+    # rather than left blank. Also used by _open_todo_in_muya() to compute where the
+    # cursor should land on first open (right after it) — kept as one shared constant
+    # so the two stay in sync if this line is ever changed.
+    TODO_STARTER_LINE = "- [ ] "
+
+    def _get_or_create_todo_file(self):
+        """Path to this project's todo.md, inside its own documents subfolder —
+        creating it on first use, same lazy-creation philosophy as the Documents
+        folder itself and new_note_file(). No per-config override field: unlike
+        notes_file, the location is always fully derived.
+
+        Pre-seeded with a single empty checklist item ("- [ ] ") rather than a truly
+        blank file — an empty Muya document otherwise starts as a plain paragraph, so
+        typing right away produces prose, not a task, defeating the point of a
+        dedicated To-Do tab. _open_todo_in_muya() additionally seats the cursor right
+        after this on the file's very first open (see TODO_STARTER_LINE)."""
+        path = os.path.join(self._get_or_create_project_documents_folder(), "todo.md")
+        if not os.path.exists(path):
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(self.TODO_STARTER_LINE)
         return path
 
     # ------------------------------------------------------------------
@@ -8121,7 +8172,7 @@ function filterAliases(q) {{
                 # old configs that still have this saved rather than silently ignoring them.
                 if self.config_column2_default == "examples":
                     self.config_column2_default = "help"
-                if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes", "code"):
+                if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes", "code", "todo"):
                     self.column2_mode = self.config_column2_default
         except Exception as e:
             print(f"Error loading notes: {e}")
@@ -8647,6 +8698,9 @@ function filterAliases(q) {{
             elif self.column2_mode == "notes":
                 resource_key = None
                 resource_value = None
+            elif self.column2_mode == "todo":
+                resource_key = None
+                resource_value = None
             else:
                 return
 
@@ -8800,6 +8854,8 @@ function filterAliases(q) {{
                 _terminal_tab.webview.setParent(self)
         if self.code_webview is not None:
             self.code_webview.setParent(self)
+        if self.todo_webview is not None:
+            self.todo_webview.setParent(self)
         # settings_form is a plain QWidget (not a QWebEngineView, so it doesn't have the
         # "breaks if reparented after being shown" issue the webviews above have) but still
         # needs this same detach-before-teardown treatment: it's the single persistent form
@@ -10005,32 +10061,80 @@ function filterAliases(q) {{
     # Project Settings dropdowns, so there is exactly one place each row's default order lives.
     _TAB_ORDER_CONFIG = {
         DraggableTabButton.LAUNCHER_TAB_MIME: ("launcher_tab_order", ["docs", "resources", "files", "apps"]),
-        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "code", "console", "webview", "pdf", "image", "time"]),
+        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "todo", "code", "console", "webview", "pdf", "image", "time"]),
     }
 
-    def _ordered_tab_ids(self, setting_key, canonical_order, valid_ids):
+    def _ordered_tab_ids(self, setting_key, canonical_order, valid_ids, project_order=None):
         """Return valid_ids arranged per settings[setting_key], backfilling any valid id
         missing from the stored order (new, or not yet customized) at the position it
-        holds in canonical_order. Mirrors _sorted_colors()'s stored-order-plus-backfill
-        logic above, but for a small fixed known id set rather than an open set of colors."""
-        stored = [t for t in self.settings.get(setting_key, []) if t in valid_ids]
+        holds in canonical_order — specifically, right after the nearest earlier
+        canonical-order id that's already present in the stored list (or at the very
+        start if none of the earlier ones are), not blindly appended at the end. This
+        matters once a user has already customized/saved an order before a new tab id
+        is introduced (e.g. "todo" added after someone already had a saved
+        viewer_tab_order): without position-aware backfill, the new tab always landed
+        last regardless of where it canonically belongs. Mirrors _sorted_colors()'s
+        stored-order-plus-backfill logic above, but for a small fixed known id set
+        rather than an open set of colors.
+
+        `project_order`, if given as a non-empty list, takes precedence over the
+        global settings[setting_key] value — used by the viewer tab row, which is
+        per-project (self.config_viewer_tab_order), falling back to the global
+        preference only when THIS project hasn't customized its own order yet. The
+        Launcher Tab Bar stays purely global (project_order always None there)."""
+        stored_source = project_order if project_order else self.settings.get(setting_key, [])
+        stored = [t for t in stored_source if t in valid_ids]
         for t in canonical_order:
             if t in valid_ids and t not in stored:
-                stored.append(t)
+                insert_at = 0
+                for earlier in canonical_order[:canonical_order.index(t)]:
+                    if earlier in stored:
+                        insert_at = stored.index(earlier) + 1
+                stored.insert(insert_at, t)
         return stored
+
+    def _save_viewer_tab_order_to_config(self, order):
+        """Persist the per-project viewer tab order into the active project's own
+        config file — same read-modify-write shape as _save_layout_mode_to_config().
+        Omits the key entirely when order is empty (falls back to the global
+        viewer_tab_order preference/canonical order) rather than persisting a
+        literal empty list — same convention as _persist_docs_categories()."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            if order:
+                config_data['viewer_tab_order'] = order
+            else:
+                config_data.pop('viewer_tab_order', None)
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving viewer_tab_order: {e}")
 
     def _reorder_tab_button(self, mime_type, moved_id, target_id):
         """Move moved_id to just before target_id within its own row's order, then save
-        and refresh. Shared by both the Launcher Tab Bar and the viewer tab row via
-        DraggableTabButton.dropEvent() — mirrors _reorder_colors() above."""
+        and refresh. Shared by both the Launcher Tab Bar (global, settings.json) and
+        the viewer tab row (per-project, see config_viewer_tab_order — falls back to
+        the global preference only when THIS project hasn't customized its own order
+        yet) via DraggableTabButton.dropEvent() — mirrors _reorder_colors() above."""
         setting_key, canonical_order = self._TAB_ORDER_CONFIG[mime_type]
-        order = self._ordered_tab_ids(setting_key, canonical_order, canonical_order)
+        is_viewer_row = mime_type == DraggableTabButton.VIEWER_TAB_MIME
+        project_order = getattr(self, 'config_viewer_tab_order', None) if is_viewer_row else None
+        order = self._ordered_tab_ids(setting_key, canonical_order, canonical_order, project_order=project_order)
         if moved_id in order:
             order.remove(moved_id)
         idx = order.index(target_id) if target_id in order else len(order)
         order.insert(idx, moved_id)
-        self.settings[setting_key] = order
-        self.save_settings()
+        if is_viewer_row:
+            self.config_viewer_tab_order = order
+            self._save_viewer_tab_order_to_config(order)
+        else:
+            self.settings[setting_key] = order
+            self.save_settings()
         self.refresh_projects()
 
     def _reorder_category(self, moved_name, target_name):
@@ -10058,9 +10162,13 @@ function filterAliases(q) {{
         self.refresh_projects()
 
     def _reset_viewer_tab_order(self):
-        """Reset the viewer tab row (Notes/Editor/Terminal/Web/PDF/Image/Time) back to its default order."""
-        self.settings["viewer_tab_order"] = []
-        self.save_settings()
+        """Reset THIS PROJECT's viewer tab row (Notes/To-Do/Editor/Terminal/Web/PDF/
+        Image/Time) back to its default order — clears the per-project override
+        (config_viewer_tab_order), falling back to the global viewer_tab_order
+        preference (or canonical order, if that's unset too), same as any other
+        project that's never customized its own order."""
+        self.config_viewer_tab_order = []
+        self._save_viewer_tab_order_to_config([])
         self.refresh_projects()
 
     def _build_color_cache(self):
@@ -12205,6 +12313,7 @@ function filterAliases(q) {{
                 # the visible row) when Kimai is actually configured.
                 viewer_tab_defs = {
                     "notes":   ("Notes",    "Project notes"),
+                    "todo":    ("To-Do",    "Project to-do list"),
                     "code":    ("Editor",   "Code editor"),
                     "console": ("Terminal", "Embedded console"),
                     "webview": ("Web",      "Web viewer"),
@@ -12218,7 +12327,7 @@ function filterAliases(q) {{
                 viewer_tab_canonical_order = self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1]
                 tab_buttons = [
                     (mode, *viewer_tab_defs[mode])
-                    for mode in self._ordered_tab_ids("viewer_tab_order", viewer_tab_canonical_order, viewer_tab_valid_ids)
+                    for mode in self._ordered_tab_ids("viewer_tab_order", viewer_tab_canonical_order, viewer_tab_valid_ids, project_order=getattr(self, 'config_viewer_tab_order', None))
                 ]
 
                 # Normal tab button style — bg_green_1 (the darkest stop) at rest.
@@ -12290,6 +12399,28 @@ function filterAliases(q) {{
                     }}
                 """
 
+                # De-emphasized style for a tab this project hasn't used yet (see
+                # _viewer_tab_has_content()) — reuses bg_secondary/fg_secondary, the
+                # same muted-state theme keys the Notes Save button already uses for
+                # its own "clean" indicator, rather than a one-off new color choice.
+                # Hover still brightens toward the normal interactive-feedback color
+                # (not a muted hover), so a dimmed tab still visibly signals it's
+                # clickable on mouseover despite looking de-emphasized at rest.
+                dimmed_tab_style = f"""
+                    QPushButton {{
+                        background-color: {self.t('bg_secondary')};
+                        color: {self.t('fg_secondary')};
+                        font-weight: normal;
+                        border-radius: 3px;
+                        padding: 5px 8px;
+                        font-size: 11px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {self.t('bg_button_hover')};
+                        color: {self.t('fg_on_dark')};
+                    }}
+                """
+
                 # Store tab buttons for styling updates
                 self.viewer_tab_buttons = {}
 
@@ -12311,9 +12442,21 @@ function filterAliases(q) {{
                         btn.setIcon(QIcon(icon_path))
                         btn.setIconSize(QSize(16, 16))
 
-                    # Set style based on whether this is the active mode
+                    # Set style based on whether this is the active mode, then
+                    # whether this project actually has content for it yet (see
+                    # _viewer_tab_has_content()) — the active tab always wins
+                    # regardless of content, so sitting on a genuinely empty tab
+                    # (e.g. a freshly-opened To-Do before its file exists) never
+                    # dims the very tab you're looking at. Content is checked BEFORE
+                    # the console special-case below it — Terminal is no longer
+                    # unconditionally exempt from dimming (see
+                    # _viewer_tab_has_content()'s "console" branch), so an empty
+                    # console must still fall into dimmed_tab_style rather than
+                    # always getting console_tab_btn_style regardless of content.
                     if mode == self.column2_mode:
                         btn.setStyleSheet(active_tab_style)
+                    elif not self._viewer_tab_has_content(mode):
+                        btn.setStyleSheet(dimmed_tab_style)
                     elif mode == 'console':
                         btn.setStyleSheet(console_tab_btn_style)
                     else:
@@ -12577,6 +12720,26 @@ function filterAliases(q) {{
                     self._make_viewer_footer(
                         f"Open in {editor_name}", "Open this file in the configured editor", self.open_code_file_in_external_editor,
                         extra_buttons=[("+ Add to Project", "Add this file to the project as a launcher", self._add_code_file_to_project)]
+                    )
+                )
+
+                # To-Do viewer container — a third Muya session (see __init__) dedicated
+                # to this project's own todo.md (_get_or_create_todo_file()). Minimal
+                # toolbar (just an "Add Task" button, see create_todo_toolbar()) since
+                # unlike Notes/Editor there's nothing arbitrary to open/pick — always
+                # this one file — plus the webview and the standard external-open footer.
+                self.todo_container = QWidget()
+                todo_container_layout = QVBoxLayout(self.todo_container)
+                todo_container_layout.setContentsMargins(0, 0, 0, 0)
+                self.create_todo_toolbar(todo_container_layout)
+                todo_container_layout.addWidget(self.todo_webview, 1)
+                _todo_editor_setting = self.settings.get("open_note_external")
+                _todo_editor_label = f"Open in {os.path.basename(_todo_editor_setting).capitalize()}" if _todo_editor_setting else "Open in external editor"
+                todo_container_layout.addWidget(
+                    self._make_viewer_footer(
+                        _todo_editor_label,
+                        "Open todo.md in the external markdown editor configured for Notes",
+                        self.open_todo_in_external_editor,
                     )
                 )
 
@@ -12904,6 +13067,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.time_container)
                 self.column2_stack_layout.addWidget(self.notes_viewer_container)
                 self.column2_stack_layout.addWidget(self.code_container)
+                self.column2_stack_layout.addWidget(self.todo_container)
                 self.column2_stack_layout.addWidget(self.settings_container)
 
                 # Show correct container based on mode
@@ -12916,6 +13080,7 @@ function filterAliases(q) {{
                 self.time_container.hide()
                 self.notes_viewer_container.hide()
                 self.code_container.hide()
+                self.todo_container.hide()
                 self.settings_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
@@ -12939,6 +13104,8 @@ function filterAliases(q) {{
                     self._kimai_load_entries()
                 elif self.column2_mode == "notes":
                     self.notes_viewer_container.show()
+                elif self.column2_mode == "todo":
+                    self.todo_container.show()
                 elif self.column2_mode == "settings":
                     self.settings_container.show()
                     # Populate only if not already loaded for this project — see
@@ -13066,6 +13233,14 @@ function filterAliases(q) {{
             # a brand new one instead of restoring the existing list).
             _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
             self._activate_notes_tab(_restore_notes_index)
+
+        # Same reload-gating idea as Notes just above, simplified: no multi-tab/layout
+        # concern here, just project-or-theme change (the paper CSS depends on theme).
+        todo_reload_key = (self.current_config_file, self.current_theme)
+        todo_should_reload = getattr(self, '_todo_loaded_for', None) != todo_reload_key
+        self._todo_loaded_for = todo_reload_key
+        if todo_should_reload:
+            self._open_todo_in_muya()
 
         # Archive/Joplin/external-editor controls — all keyed to the project's own
         # get_notes_file_path()/get_archive_file_path() (archive_notes(), view_archive(),
@@ -14537,6 +14712,23 @@ function filterAliases(q) {{
         except Exception as e:
             QMessageBox.warning(self, "External Editor", f"Failed to open: {e}")
 
+    def open_todo_in_external_editor(self):
+        """Open this project's todo.md in the external markdown editor configured for
+        Notes (open_note_external) — same setting, no separate one for To-Do."""
+        editor = self.settings.get("open_note_external")
+        if not editor:
+            QMessageBox.warning(self, "External Editor", "No external editor configured.\nSet 'open_note_external' in settings.")
+            return
+        todo_file = self._get_or_create_todo_file()
+        try:
+            subprocess.Popen([editor, todo_file], start_new_session=True)
+            self.status_label.setText(f"✓ Opened in {editor}")
+            self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
+        except FileNotFoundError:
+            QMessageBox.warning(self, "External Editor", f"Editor not found: {editor}")
+        except Exception as e:
+            QMessageBox.warning(self, "External Editor", f"Failed to open: {e}")
+
     def quick_add_launcher(self):
         """Open the add-item dialog targeting the first category — auto-creates a starter
         "Resources" category first if the project has none yet, rather than telling the
@@ -14692,6 +14884,7 @@ function filterAliases(q) {{
         """)
         edit_action = menu.addAction("✏️  Edit")
         delete_action = menu.addAction("🗑  Remove launcher")
+        add_todo_action = menu.addAction("☑  Add as To-Do")
 
         # "Move to category" physically relocates the item into any real category. A fixed
         # "Documentation (docs)" entry is always offered first regardless of whether that
@@ -14717,6 +14910,16 @@ function filterAliases(q) {{
             self._open_item_edit_dialog(col_idx, category_name, item_idx)
         elif action == delete_action:
             self.delete_item(col_idx, category_name, item_idx)
+        elif action == add_todo_action:
+            for cat_dict in self.COLUMN_1:
+                if category_name in cat_dict:
+                    items = cat_dict[category_name]
+                    if item_idx < len(items):
+                        item = items[item_idx]
+                        name = item[0] if len(item) > 0 else ""
+                        path = item[1] if len(item) > 1 else None
+                        self._prompt_and_add_as_todo(name, source_path=path)
+                    break
         elif action in move_actions:
             target_category = move_actions[action]
             if target_category == "__DOCS__":
@@ -15753,6 +15956,8 @@ function filterAliases(q) {{
             self.notes_viewer_container.hide()
         if hasattr(self, 'code_container'):
             self.code_container.hide()
+        if hasattr(self, 'todo_container'):
+            self.todo_container.hide()
         if hasattr(self, 'settings_container'):
             self.settings_container.hide()
 
@@ -15770,6 +15975,8 @@ function filterAliases(q) {{
             mode_info["notes"] = ("Notes", "Project Notes", self.notes_viewer_container)
         if hasattr(self, 'code_container'):
             mode_info["code"] = ("Editor", "Code Editor", self.code_container)
+        if hasattr(self, 'todo_container'):
+            mode_info["todo"] = ("To-Do", "Project To-Do", self.todo_container)
         if hasattr(self, 'settings_container'):
             mode_info["settings"] = ("Settings", "Project Settings", self.settings_container)
 
@@ -15819,6 +16026,197 @@ function filterAliases(q) {{
         self.update_viewer_tab_styling()
 
         self.save_notes()  # Save mode preference
+
+    def _any_launcher_item_matches(self, predicate):
+        """True if any launcher item anywhere in this project's COLUMN_1 satisfies
+        predicate(name, path, app) — shared iteration for the several "does this
+        project have a launcher item of type X" checks _viewer_tab_has_content()
+        uses to give a tab a persistent, launcher-based content signal alongside
+        (or, for Console, instead of) its own ephemeral open-tab list. `path` is
+        always a string (empty if the item's path field wasn't one); `app` is None
+        if the item has fewer than 3 elements."""
+        for cat_dict in self.COLUMN_1:
+            for items in cat_dict.values():
+                for item in items:
+                    if not item:
+                        continue
+                    name = item[0] if len(item) >= 1 else ""
+                    path = item[1] if len(item) >= 2 and isinstance(item[1], str) else ""
+                    app = item[2] if len(item) >= 3 else None
+                    if predicate(name, path, app):
+                        return True
+        return False
+
+    def _project_has_command_executing_launcher(self):
+        """True if any launcher item anywhere in this project actually executes a
+        command — alias/run/terminal/konsole/ssh_session/npm/directorydev/
+        rsync_backup* or a custom "type": "shell" handler, via the existing
+        _app_executes_command()/COMMAND_EXECUTING_APPS (the same set the Sharing
+        Projects trust gate already uses to answer "does this project run
+        commands"). Used to decide whether the Terminal tab counts as "has content"
+        for this project — a project with an alias, rsync backup, or explicit
+        terminal/konsole launcher clearly has real terminal-related workflows set
+        up, even if no terminal tab happens to be open right now."""
+        return self._any_launcher_item_matches(
+            lambda name, path, app: self._app_executes_command(app)
+        )
+
+    def _project_has_code_file_launcher(self):
+        """True if any launcher item anywhere in this project points at a file
+        whose extension routes into the Code Editor by default (see
+        _code_route_extensions() — .py/.js/.html/.txt/.nix/etc., plus whatever the
+        user's added via the code_editor_extensions setting). Used to decide
+        whether the Editor tab counts as "has content" for this project —
+        self.code_tabs, unlike a launcher item, reflects only which files are
+        currently open as tabs THIS session, and goes back to empty just by closing
+        them (the same class of gap the Terminal dimming fix above addressed for
+        self.terminal_tabs) — a real, persistent launcher item (e.g. a .txt file
+        created via the Editor toolbar's "+ New" button and saved) is a much
+        stronger signal that this project has real editable files."""
+        extensions = self._code_route_extensions()
+        return self._any_launcher_item_matches(
+            lambda name, path, app: os.path.splitext(path)[1].lower() in extensions
+        )
+
+    def _project_has_pdf_launcher(self):
+        """True if any launcher item anywhere in this project points at a .pdf
+        file — same reasoning as _project_has_code_file_launcher(): self.pdf_tabs
+        only reflects which PDFs are open as tabs this session."""
+        return self._any_launcher_item_matches(
+            lambda name, path, app: path.lower().endswith('.pdf')
+        )
+
+    # Same extension set _build_folder_context_menu() already uses to offer "Open
+    # in Image Viewer" for a right-clicked file — reused here rather than a second,
+    # separately-maintained list.
+    _IMAGE_LAUNCHER_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp')
+
+    def _project_has_image_launcher(self):
+        """True if any launcher item anywhere in this project points at an image
+        file — same reasoning as _project_has_pdf_launcher()."""
+        return self._any_launcher_item_matches(
+            lambda name, path, app: path.lower().endswith(self._IMAGE_LAUNCHER_EXTENSIONS)
+        )
+
+    def _project_has_web_launcher(self):
+        """True if any launcher item anywhere in this project opens as a web
+        page — app is firefox/chrome, or the path is itself a URL, matching the
+        same "does this open in the Web viewer" convention open_in_app() already
+        uses. Same reasoning as the other _project_has_*_launcher() checks:
+        self.web_tabs only reflects which pages are open as tabs this session."""
+        return self._any_launcher_item_matches(
+            lambda name, path, app: app in ("firefox", "chrome") or path.startswith(("http://", "https://"))
+        )
+
+    def _viewer_tab_has_content(self, mode):
+        """Whether this viewer tab has any real content for the CURRENT project —
+        used to de-emphasize (dim) tabs for content types this project hasn't used
+        yet. Terminal counts as "has content" if it has a pinned default
+        directory OR the project has any command-executing launcher item (see
+        _project_has_command_executing_launcher()) — a project with aliases/
+        rsync-backup/explicit terminal launchers clearly has real terminal
+        workflows even before anyone's opened the tab itself.
+
+        Deliberately does NOT check bool(self.terminal_tabs) — a real bug found
+        live: build_main_content()'s ttyd-backend setup unconditionally seeds
+        self.terminal_tabs with one default tab (pointed at console_path or "~")
+        whenever it's empty, so it becomes non-empty almost immediately after the
+        very first render regardless of genuine per-project terminal usage. Console
+        correctly rendered dimmed on that same first build (the tab ROW is
+        constructed earlier in build_main_content() than this seeding step), but
+        any LATER update_viewer_tab_styling() call — triggered by switching to
+        literally any other tab, not anything specific to that tab — then saw the
+        now-populated terminal_tabs and lit Console up, which is what a user
+        actually observed. terminal_tabs reflects "the terminal viewer's own
+        readiness bookkeeping", not "this project genuinely uses a terminal", so
+        it's the wrong signal for this check.
+
+        Editor has the identical gap for the identical reason: self.code_tabs only
+        reflects which files are open as Editor tabs THIS session, and goes back to
+        empty just by closing them, even though a real launcher item (e.g. a .txt
+        file created via the Editor toolbar's "+ New" button) still exists on disk
+        and in the project's own category list — see
+        _project_has_code_file_launcher(), used here as a second, persistent signal
+        alongside code_tabs rather than a replacement for it (unlike Console, which
+        dropped its ephemeral-list check entirely — code_tabs is still a perfectly
+        valid signal on its own, since unlike terminal_tabs it's never silently
+        auto-seeded by build_main_content()).
+
+        PDF/Image/Web get the identical treatment: _project_has_pdf_launcher()/
+        _project_has_image_launcher()/_project_has_web_launcher(), each a second,
+        persistent signal alongside their own tab list (never a replacement — none
+        of pdf_tabs/image_tabs/web_tabs are silently auto-seeded the way
+        terminal_tabs is, so each remains a perfectly valid signal on its own).
+        All five _project_has_*_launcher() checks share one iteration helper,
+        _any_launcher_item_matches(predicate).
+
+        Notes and To-Do are no longer unconditionally exempt — an earlier version
+        of this dimming feature treated both as "always meaningfully available", but
+        per direct feedback, an unused project note or an untouched todo.md are
+        exactly the kind of empty state this feature exists to de-emphasize.
+        Notes: self.notes_tabs is never actually empty (a placeholder project-note
+        tab always exists, see NotesTabState's "never truly empty" convention), so
+        checking it would always read True — the real signal is whether the
+        project's own note has any actual text (self.notes_data, already loaded by
+        load_notes(), no extra I/O) OR an arbitrary OTHER note is currently open in
+        the Notes tab (a notes_tabs entry with path is not None) — either means
+        real activity, even if the project's own note itself is blank.
+        To-Do: existence alone isn't a good signal either, now that a brand-new
+        todo.md is pre-seeded with one starter checklist line
+        (TODO_STARTER_LINE — see _get_or_create_todo_file()) rather than left
+        truly empty — a file that's never had anything typed beyond that starter
+        line is still functionally unused. Reads the (tiny) file directly rather
+        than trusting existence alone; acceptable since todo.md is always a few
+        lines at most and this only runs on tab-styling passes, not on every
+        keystroke.
+
+        Known caveat, not addressed here: new projects created from the template
+        start with a default "Wikipedia" web tab already in web_tabs, so "webview"
+        reads as "has content" out of the box for most projects rather than
+        reflecting whether the user has actually used the Web tab themselves —
+        _project_has_web_launcher() doesn't fix this (the template's default
+        website launcher item, if any, would count too) — not worth fragile "is
+        this still just the untouched template default" detection."""
+        if mode == "notes":
+            project_note_text = (getattr(self, 'notes_data', None) or {}).get("content", "")
+            has_other_open_note = any(
+                tab.path is not None for tab in getattr(self, 'notes_tabs', [])
+            )
+            return bool(project_note_text.strip()) or has_other_open_note
+        if mode == "console":
+            return (
+                bool(getattr(self, 'config_console_path', None))
+                or self._project_has_command_executing_launcher()
+            )
+        if mode == "pdf":
+            return bool(self.pdf_tabs) or self._project_has_pdf_launcher()
+        if mode == "image":
+            return bool(self.image_tabs) or self._project_has_image_launcher()
+        if mode == "webview":
+            return bool(self.web_tabs) or self._project_has_web_launcher()
+        if mode == "code":
+            return bool(self.code_tabs) or self._project_has_code_file_launcher()
+        if mode == "todo":
+            # Reads the file (never creates it as a side effect of styling a
+            # button — that would violate the lazy-creation convention
+            # _get_or_create_todo_file() already established) and checks for real
+            # content beyond the bare starter line, not just existence — a
+            # freshly-created, never-touched todo.md doesn't count as "used".
+            slug = getattr(self, 'config_documents_subfolder', None)
+            if not slug:
+                return False
+            todo_path = os.path.join(self.get_documents_folder(), slug, "todo.md")
+            if not os.path.exists(todo_path):
+                return False
+            try:
+                with open(todo_path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+            except OSError:
+                return False
+            return bool(content) and content != self.TODO_STARTER_LINE.strip()
+        if mode == "time":
+            return bool(getattr(self, 'config_kimai_project_id', None))
+        return True  # unrecognized mode: default to full-bright, not dimmed
 
     def update_viewer_tab_styling(self):
         """Update viewer tab buttons to highlight the active mode"""
@@ -15875,9 +16273,33 @@ function filterAliases(q) {{
             }}
         """
 
+        # Mirrors dimmed_tab_style in build_main_content() — see that definition's
+        # comment for why bg_secondary/fg_secondary. This is the call site that makes
+        # a tab un-dim immediately once it gains content mid-session (e.g. opening a
+        # project's first-ever PDF already calls switch_to_viewer_mode("pdf"), which
+        # calls this function right after).
+        dimmed_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_secondary')};
+                font-weight: normal;
+                border-radius: 3px;
+                padding: 5px 8px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+
+        # Content checked BEFORE the console special-case — see the identical
+        # ordering note in build_main_content()'s tab-construction loop.
         for mode, btn in self.viewer_tab_buttons.items():
             if mode == self.column2_mode:
                 btn.setStyleSheet(active_style)
+            elif not self._viewer_tab_has_content(mode):
+                btn.setStyleSheet(dimmed_style)
             elif mode == 'console':
                 btn.setStyleSheet(console_normal_style)
             else:
@@ -18969,6 +19391,151 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             {heading_css}
         """
 
+    def _todo_paper_css(self):
+        """Same underlying 'paper on page' structure as Notes (_notes_paper_css(),
+        including its theme-derived heading colors and dark-mode Muya CSS-variable
+        overrides — reused, not duplicated), with its own distinct surface treatment
+        layered on top: a flat, low-saturation page background and fully pill-shaped
+        rows for each checklist item, restyled from a first attempt (a green-tinted
+        gradient + faint offset cards) that didn't land — this version is matched
+        directly against reference screenshots the user supplied of
+        github.com/Lordwill1/todo-list (a small open-source to-do list web app,
+        credited here as visual inspiration only — no code/assets used): solid grey
+        pills on pale blue-grey (light) / dark teal-blue pills on near-black
+        (dark), with the checkbox itself restyled into a round button (the real
+        <input type="checkbox"> stays fully functional, just made invisible —
+        opacity:0, not appearance:none, see below for why) and a strikethrough+dim
+        treatment for completed items via :has(), matching the reference's own dark-mode
+        "Complete assignments" example. Colors tuned a second round per direct user
+        feedback against a live screenshot: a lighter row grey, an "inky blue" row
+        text color (#0c426f light theme, user-specified exactly; dark theme uses a
+        lighter analog for legibility rather than the same too-dark hex, which
+        wouldn't read against a dark row), an offset-grey (not white) unchecked
+        checkbox, and — a deliberate choice between two options the user offered
+        ("just a tick box, or green background with white tickbox") — just the
+        checkbox itself fills with the app's own established green accent
+        (#2f9e57 light / #4c9f70 dark, same as used elsewhere for green accents this
+        session) on completion, leaving the row's own background untouched, so
+        "done" reads as a calm state change on the checkbox rather than a bright
+        banner across the whole row. The reference's separate round trash/delete
+        button per row is NOT reproduced — there's no click hook for it without
+        editing the vendored Muya bundle's JS, and an undo-less one-click delete of a
+        markdown line is a real data-loss risk not worth taking on for a cosmetic ask.
+
+        `.mu-task-list-item` / `.mu-task-list-checkbox` / `.mu-checkbox-checked` are
+        the REAL classes Muya renders — verified by dumping the actual live DOM via a
+        standalone probe script (`document.getElementById('editor').innerHTML` after
+        `__initMuya()`), not assumed from the generic GFM/GitHub-markdown-css naming
+        convention a first attempt guessed at (`.task-list-item`/
+        `.task-list-item-checkbox`), which silently matched nothing at all — the
+        "styling never showed up" report this replaced was a real bug (100% Muya's
+        own default rendering, zero of this function's CSS ever applied), not a
+        caching/stale-process issue. `.mu-checkbox-checked` is a real class Muya adds
+        to the checkbox on check/uncheck (used here instead of a bare `:checked`
+        pseudo-class match, since it's the same signal Muya's own JS already relies
+        on). `:has()` needs no fallback — QtWebEngine 6.11's bundled Chromium has
+        supported it since well before this version.
+
+        Every selector below is prefixed with `#editor` anyway (the same specificity-
+        boost trick `_notes_paper_css()` already documents for its own H2-H6 heading
+        overrides against `.mu-container`), but this alone did NOT fix the checkbox —
+        `appearance: none`/`-webkit-appearance: none` on `#editor
+        .mu-task-list-checkbox` still lost to Chromium's own native/themed checkbox
+        paint (confirmed visually via the probe script both before and after adding
+        the `#editor` prefix: a half-native, half-custom double-rendered checkbox
+        either way). This is a known Chromium-on-Linux quirk, not a specificity
+        problem — some builds keep painting a native/GTK-themed control layer over an
+        `appearance:none` checkbox regardless of cascade. The fix is to sidestep
+        `appearance` entirely: the real `<input>` is hidden via `opacity: 0` (always
+        reliable, unlike `appearance`) while staying in normal flex flow (so spacing/
+        click-target position is unaffected), and the actual visible circle/checkmark
+        is drawn via `::before` on the *row* (`.mu-task-list-item`) instead of on the
+        `<input>` itself — `<input>` is a replaced/void element, and most browsers
+        don't reliably generate `::before`/`::after` pseudo-elements for it, which is
+        also why the checkmark glyph never showed up on the real checkbox in the
+        first working-pill-but-not-checkbox iteration of this function."""
+        notes_css = self._notes_paper_css()
+        if self.current_theme == "dark":
+            page_bg = "#0a141c"
+            row_bg = "#1a4a5c"
+            row_ink = "#dbe9f2"
+            done_ink = "#7a99a8"
+            checkbox_bg = "#4a4a4a"
+            done_bg = "#4c9f70"
+        else:
+            page_bg = "#dbe7ee"
+            row_bg = "#dedede"
+            row_ink = "#0c426f"
+            done_ink = "#6b8aa3"
+            checkbox_bg = "#9a9a9a"
+            done_bg = "#2f9e57"
+        checkmark = "#ffffff"
+        return notes_css + f"""
+            body {{ background: {page_bg}; }}
+            #editor .mu-task-list-item {{
+                position: relative;
+                display: flex;
+                align-items: center;
+                background: {row_bg};
+                color: {row_ink};
+                font-weight: bold;
+                border-radius: 999px;
+                padding: 10px 18px 10px 54px;
+                margin: 10px 0;
+                list-style: none;
+            }}
+            #editor .mu-task-list-item:has(.mu-checkbox-checked) {{
+                text-decoration: line-through;
+                color: {done_ink};
+                opacity: 0.85;
+            }}
+            #editor .mu-task-list-checkbox {{
+                /* opacity:0, not appearance:none/display:none — stays fully clickable,
+                   just invisible (see the function docstring for why appearance:none
+                   alone isn't enough here). Taken OUT of flex flow (position:absolute,
+                   same left/top as the ::before circle below) rather than left in
+                   normal flow: an unstyled checkbox's native intrinsic size doesn't
+                   reliably match the explicit width/height set on it without
+                   appearance:none, which threw off flex-based spacing against the
+                   ::before circle in an earlier version of this rule (confirmed via
+                   the probe script — the circle visibly overlapped the item's text).
+                   The row's own padding-left (54px = 18 left inset + 24 circle width +
+                   12 gap) reserves the text's start position independently instead. */
+                position: absolute;
+                left: 18px;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 24px;
+                height: 24px;
+                margin: 0;
+                cursor: pointer;
+                opacity: 0;
+                z-index: 1;
+            }}
+            #editor .mu-task-list-item::before {{
+                content: "";
+                position: absolute;
+                left: 18px;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+                background: {checkbox_bg};
+                pointer-events: none;
+            }}
+            #editor .mu-task-list-item:has(.mu-checkbox-checked)::before {{
+                content: "\\2713";
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: {done_bg};
+                color: {checkmark};
+                font-size: 14px;
+                font-weight: bold;
+            }}
+        """
+
     def create_notes_toolbar(self, parent_layout):
         """Create the Focus-layout Notes panel's toolbar: a filename label (blank when
         showing the project's own note, so it's never ambiguous which note is on screen),
@@ -19172,6 +19739,123 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 extra_css=self._notes_paper_css(), view_state=view_state
             )
         self._update_notes_toolbar()
+
+    def _open_todo_in_muya(self):
+        """Load this project's todo.md into the persistent To-Do Muya session. Much
+        simpler than _open_notes_in_muya(): always exactly this one file, no arbitrary-
+        note/multi-tab branching. No ongoing caret/scroll restore either (nothing else
+        ever replaces this session's content out from under it) — except a one-time
+        exception: on the very first open of a brand-new (just-seeded) todo.md, the
+        cursor is placed right after TODO_STARTER_LINE so typing immediately continues
+        the checklist item instead of landing at the very start of the document."""
+        todo_dir = self._get_or_create_project_documents_folder()
+        todo_path = os.path.join(todo_dir, "todo.md")
+        is_new = not os.path.exists(todo_path)
+        todo_path = self._get_or_create_todo_file()
+        view_state = {"cursor": {"line": 0, "ch": len(self.TODO_STARTER_LINE)}} if is_new else None
+        self._open_path_in_muya_session(
+            self._todo_muya_session, todo_path,
+            extra_css=self._todo_paper_css(), view_state=view_state
+        )
+
+    def create_todo_toolbar(self, parent_layout):
+        """The To-Do viewer's own minimal toolbar — just a single "☑ Add Task" button.
+        Added because typing straight into the editor defaults to a plain paragraph
+        (Muya has no notion of "this document is a checklist"), which reportedly read
+        as awkward for a tab whose whole point is checklist items — this gives an
+        explicit, no-markdown-knowledge-required way to add one. Reuses the exact same
+        _add_as_todo() plumbing as the right-click "Add as To-Do" action elsewhere,
+        just triggered locally with no source_path/pre-filled title."""
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 5)
+        toolbar_layout.setSpacing(5)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.t('bg_category_hover')};
+            }}
+        """
+
+        add_task_btn = QPushButton("☑ Add Task")
+        add_task_btn.setStyleSheet(btn_style)
+        add_task_btn.setToolTip("Add a new to-do item")
+        add_task_btn.clicked.connect(lambda: self._prompt_and_add_as_todo(""))
+        toolbar_layout.addWidget(add_task_btn)
+
+        toolbar_layout.addStretch()
+        parent_layout.addWidget(toolbar_widget)
+
+    def _prompt_and_add_as_todo(self, default_title, source_path=None):
+        """Shared "Add as To-Do" flow: prompt for a task title (pre-filled with the
+        item's display name, freely editable, or blank when triggered from the To-Do
+        tab's own "☑ Add Task" button), then append it to this project's todo.md via
+        _add_as_todo(). Used by the launcher right-click menu, the Folder Browser's
+        right-click menu, and create_todo_toolbar()'s button."""
+        from PyQt6.QtWidgets import QInputDialog
+        title, ok = QInputDialog.getText(self, "Add as To-Do", "Task title:", text=default_title)
+        if not ok or not title.strip():
+            return
+        self._add_as_todo(title.strip(), source_path=source_path)
+        self.set_status(f"✓ Added to To-Do: {title.strip()}", "success")
+
+    def _add_as_todo(self, title, source_path=None):
+        """Append a new GFM checklist line — "- [ ] {title}" (plus a clickable
+        file:// link when source_path is given, so it's reachable straight from the
+        rendered To-Do view too) — to this project's todo.md.
+
+        Deliberately writes a plain markdown line rather than a COLUMN_1 launcher
+        item: keeping todo.md the single source of truth for task state avoids a
+        second, easily-desynced place a task's done/not-done status could live (see
+        the plan's rationale for this feature)."""
+        line = f"- [ ] {title}"
+        if source_path:
+            line += f" ([source](file://{source_path}))"
+
+        session = getattr(self, '_todo_muya_session', None)
+        if session is not None and session.editing and session.webview:
+            # The To-Do tab is currently loaded — read its LIVE (possibly still-
+            # unsaved) markdown via the bridge before appending, rather than reading
+            # stale disk content out from under an in-progress edit.
+            session.webview.page().runJavaScript(
+                "window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null",
+                lambda markdown: self._write_todo_line(line, markdown or "")
+            )
+        else:
+            todo_file = self._get_or_create_todo_file()
+            with open(todo_file, 'r', encoding='utf-8') as f:
+                current = f.read()
+            self._write_todo_line(line, current)
+
+    def _write_todo_line(self, line, current_markdown):
+        """Append `line` to `current_markdown` and write the result to todo.md. If the
+        To-Do session is currently loaded, also pushes the new content back into the
+        live editor (via __setMuyaMarkdown(), which clears its own dirty flag — mirrored
+        here on the Python side) so the addition is visible immediately without needing
+        a tab switch, and stays in sync with what was just written to disk."""
+        stripped = current_markdown.rstrip("\n")
+        new_markdown = f"{stripped}\n{line}\n" if stripped else f"{line}\n"
+        todo_file = self._get_or_create_todo_file()
+        with open(todo_file, 'w', encoding='utf-8') as f:
+            f.write(new_markdown)
+        session = getattr(self, '_todo_muya_session', None)
+        if session is not None and session.editing and session.webview:
+            session.webview.page().runJavaScript(
+                f"window.__setMuyaMarkdown && window.__setMuyaMarkdown({json.dumps(new_markdown)})"
+            )
+            session.dirty = False
 
     def _notes_tab_title(self, tab):
         """Short display label for one Notes tab's strip button."""
@@ -20105,6 +20789,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if item_type != "dir":
             doc_action = menu.addAction("Add to Documentation...")
             doc_action.triggered.connect(lambda: self.show_add_to_documentation_dialog(path))
+
+        # Add as To-Do (files and directories) — see _add_as_todo()/_prompt_and_add_as_todo().
+        todo_action = menu.addAction("☑ Add as To-Do")
+        todo_action.triggered.connect(
+            lambda checked, p=path: self._prompt_and_add_as_todo(os.path.basename(p.rstrip('/')), source_path=p)
+        )
 
         # For directories: Make Project or Open Project
         if item_type == "dir":
