@@ -6404,13 +6404,14 @@ StartupNotify=true
             if os.path.exists(config_path):
                 return config_path
 
-        # Fall back to standard default
-        if os.path.exists(configs_dir):
-            configs_default = os.path.join(configs_dir, "projectflow.json")
-            if os.path.exists(configs_default):
-                return configs_default
-
-        return os.path.join(self.script_dir, "projectflow.json")
+        # Fall back to standard default — always lands inside the projects directory;
+        # create_default_project() (called reactively from load_config() when this path
+        # doesn't exist yet) creates that directory too if it doesn't exist. Previously
+        # fell back to script_dir/projectflow.json instead whenever configs_dir/
+        # projectflow.json specifically didn't exist — even if configs_dir itself already
+        # existed with other real project files in it — scattering a stray default file
+        # outside projects/ rather than landing it alongside everything else.
+        return os.path.join(configs_dir, "projectflow.json")
 
     def load_config(self):
         """Load configuration from JSON config file or use defaults"""
@@ -6555,7 +6556,11 @@ StartupNotify=true
                 self.COLUMN_1 = self.get_default_column_1()
                 self.COLUMN_HEADERS = ["Shortcuts and Actions"]
                 self.config_pdf_file = None
-                self.config_webview_url = None
+                # create_default_project() (just called above) writes "webview_url":
+                # "https://www.wikipedia.org/" into the new file on disk — match that here
+                # too, rather than hardcoding None and silently overriding what was just
+                # written, same reasoning as the layout_mode match a few lines below.
+                self.config_webview_url = "https://www.wikipedia.org/"
                 self.config_image_file = None
                 self.config_code_file = None
                 self.config_console_path = None
@@ -8775,6 +8780,7 @@ function filterAliases(q) {{
                 ]
             ],
             "column2_default": "help",
+            "webview_url": "https://www.wikipedia.org/",
             "layout_mode": "focus"
         }
 
@@ -9120,24 +9126,23 @@ function filterAliases(q) {{
 
     def _build_project_mega_menu_content(self, menu):
         """Builds the root widget for the project mega-menu popup (see
-        _show_project_mega_menu()) — five columns (Pinned/Recent/All Projects/Folder
-        Projects/By Color) plus a live search box filtering across all of them at once,
-        mirroring the launcher search box's widget-visibility-toggling pattern rather than
-        rebuilding on every keystroke, plus a small de-emphasized Archive block pinned to
-        the bottom-right corner (see the end of this method) — kept visually secondary
-        rather than a 6th full-width column, matching Archive's existing de-emphasized role
-        in the main Projects section, and deliberately left out of the live search filter
-        (a fixed overflow block, not one of the five equally-weighted browsable columns).
-        This closes the gap left by an earlier version of this menu that excluded Archive
-        entirely, needed now that the whole Projects section (create_projects_section()) can
-        be hidden via settings["show_projects_section"] — this menu has to be able to fully
-        replace it, Archive included. Column data is read directly from
-        settings (the same sources create_projects_section()'s _populate_*() methods use)
-        rather than calling those methods, since they render into self.projects_layout and
-        carry UI (drag-to-pin zones, sort-toggle headers) that doesn't belong in a transient
-        popup. Columns are given equal stretch and each scroll area is added with its own
-        stretch factor so, combined with the near-full-screen fixed size set by the caller,
-        the whole popup's space is actually used rather than shrinking to fit its content."""
+        _show_project_mega_menu()) — six columns (Pinned / Recent / All Projects (A–Z) /
+        By Color / a combined Folder Projects+Shared+Archived column / a Tasks placeholder)
+        plus a live search box filtering across all of them at once, mirroring the launcher
+        search box's widget-visibility-toggling pattern rather than rebuilding on every
+        keystroke. Archive used to be its own small, de-emphasized block pinned to the
+        popup's bottom-right corner — it's now a third stacked section inside the combined
+        column (see add_stacked_column() below) instead, freeing a real column slot for the
+        Tasks placeholder; Archived entries are still deliberately left out of the live
+        search filter (searching is expected to target active projects, not archived ones),
+        carried forward from that earlier design even though the block itself moved. Column
+        data is read directly from settings (the same sources create_projects_section()'s
+        _populate_*() methods use) rather than calling those methods, since they render into
+        self.projects_layout and carry UI (drag-to-pin zones, sort-toggle headers) that
+        doesn't belong in a transient popup. Columns are given equal stretch and each scroll
+        area is added with its own stretch factor so, combined with the near-full-screen
+        fixed size set by the caller, the whole popup's space is actually used rather than
+        shrinking to fit its content."""
         root = QWidget()
         root.setStyleSheet(f"background-color: {self.t('bg_primary')};")
         root_layout = QVBoxLayout(root)
@@ -9233,6 +9238,74 @@ function filterAliases(q) {{
             columns_row.addWidget(col_widget, 1)
             column_scroll_areas.append((scroll, column_containers))
 
+        def add_stacked_column(sections):
+            """Like add_column(), but stacks several labeled sections vertically inside
+            one shared scroll area/column slot instead of one heading + one list — used to
+            combine Folder Projects, Shared, and Archived into a single column, freeing a
+            slot for the Tasks placeholder. Each entry in `sections` is
+            (title, icon_or_None, config_paths, button_factory, searchable, empty_text):
+            button_factory(path) must return the same kind of container widget
+            add_column()'s own per-path loop builds (via _create_config_button()/
+            _create_archived_button()); searchable controls whether that section's items
+            are registered into search_refs (Archived stays out, matching the old
+            Archive block's own deliberate exclusion)."""
+            col_widget = QWidget()
+            col_layout = QVBoxLayout(col_widget)
+            col_layout.setContentsMargins(0, 0, 0, 0)
+            col_layout.setSpacing(10)
+
+            header_style = f"color: {self.t('fg_secondary')}; font-size: 13px; font-weight: bold;"
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+            scroll_content = QWidget()
+            scroll_layout = QVBoxLayout(scroll_content)
+            scroll_layout.setContentsMargins(0, 0, 0, 4)
+            scroll_layout.setSpacing(8)
+
+            column_containers = []
+            for i, (title, icon, config_paths, button_factory, searchable, empty_text) in enumerate(sections):
+                if i > 0:
+                    scroll_layout.addSpacing(14)
+                if icon is None:
+                    header = QLabel(title)
+                    header.setStyleSheet(header_style)
+                    scroll_layout.addWidget(header)
+                else:
+                    header_row = QWidget()
+                    header_row_layout = QHBoxLayout(header_row)
+                    header_row_layout.setContentsMargins(0, 0, 0, 0)
+                    header_row_layout.setSpacing(5)
+                    icon_label = QLabel()
+                    icon_label.setPixmap(icon.pixmap(16, 16))
+                    header_row_layout.addWidget(icon_label)
+                    text_label = QLabel(title)
+                    text_label.setStyleSheet(header_style)
+                    header_row_layout.addWidget(text_label)
+                    header_row_layout.addStretch(1)
+                    scroll_layout.addWidget(header_row)
+
+                if not config_paths:
+                    empty_label = QLabel(empty_text)
+                    empty_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 4px 0;")
+                    empty_label.setWordWrap(True)
+                    scroll_layout.addWidget(empty_label)
+                else:
+                    for path in config_paths:
+                        btn_container = button_factory(path)
+                        scroll_layout.addWidget(btn_container)
+                        if searchable:
+                            display_name = self.get_display_name_for_config_path(path)
+                            search_refs.append((btn_container, display_name.lower()))
+                            column_containers.append(btn_container)
+
+            scroll_layout.addStretch(1)
+            scroll.setWidget(scroll_content)
+            col_layout.addWidget(scroll, 1)
+            columns_row.addWidget(col_widget, 1)
+            column_scroll_areas.append((scroll, column_containers))
+
         pinned_paths = [p for p in self.settings.get("pinned_projects", [])
                         if os.path.exists(p) and '/.archive/' not in p]
         add_column("📌 Pinned", pinned_paths, "No pinned projects yet.", is_pinned=True)
@@ -9251,10 +9324,16 @@ function filterAliases(q) {{
                 key=lambda p: os.path.basename(p).lower()
             )
 
+        # Icon (not emoji) here — see add_column()'s icon branch for why: 📁/📂 render as a
+        # yellow/manila folder in most color-emoji fonts.
+        add_column("All Projects (A–Z)", all_paths, "No projects found.", is_pinned=False,
+                   icon=self._blue_folder_icon())
+
         # By Color — same ordering as the main Projects section's own 🎨 sort
         # (_populate_color_sorted_projects()): custom color_order priority, uncolored last.
         # Reuses _build_color_cache()/_sorted_colors() rather than duplicating that logic.
-        # Placed before "All Projects" (A–Z) per user request.
+        # Placed after "All Projects" (A–Z) — reverses an earlier request that had put it
+        # before, per a later session's direct feedback.
         self._build_color_cache()
         self._build_shared_cache()
         project_colors = getattr(self, '_color_cache', {})
@@ -9266,70 +9345,42 @@ function filterAliases(q) {{
         color_sorted_paths += [p for p in all_paths if not project_colors.get(p)]
         add_column("🎨 By Color", color_sorted_paths, "No projects found.", is_pinned=False)
 
-        # Icon (not emoji) here — see add_column()'s icon branch for why: 📁/📂 render as a
-        # yellow/manila folder in most color-emoji fonts.
-        add_column("All Projects (A–Z)", all_paths, "No projects found.", is_pinned=False,
-                   icon=self._blue_folder_icon())
-
+        # Combined Folder Projects / Shared / Archived column — three stacked sections in
+        # one scrollable slot instead of three separate columns/blocks, freeing a slot for
+        # the Tasks placeholder below. See add_stacked_column()'s own docstring for the
+        # section-tuple shape.
         folder_paths = [p for p in self.settings.get("folder_projects", []) if os.path.exists(p)]
-        add_column("🗂 Folder Projects", folder_paths, "No folder projects yet.", is_pinned=False)
 
         # Shared — the subset of folder_paths whose own .projectflow config has is_shared
         # set (a manual, synced label — see Project Settings' "Sharing" section). Not a
         # separate storage mechanism, just a filtered view of the same folder-project list
         # above, for jumping straight to a collaborator's project without scrolling the
-        # full Folder Projects column.
+        # full Folder Projects section.
         shared_paths = [p for p in folder_paths if getattr(self, '_shared_cache', {}).get(p)]
-        add_column("👥 Shared", shared_paths, "No shared projects yet.", is_pinned=False)
-
-        # Archive block — small, de-emphasized, bottom-right corner. Deliberately a separate
-        # row added below columns_row (not a 6th entry inside it) so it naturally lands at
-        # the bottom of the popup; addStretch(1) before the block right-aligns it within
-        # that row. Fixed/capped size (vs. the five columns' equal-stretch, near-full-height
-        # layout) plus a muted header keep it reading as secondary. Reuses
-        # _create_archived_button() as-is — same color bar/name/inline "↩" restore/
-        # right-click restore-or-delete-permanently as the main Projects section's own
-        # Archive mode, just presented smaller. Not wired into search_refs/
-        # on_search_text_changed below — see this method's docstring for why.
-        archive_row = QHBoxLayout()
-        archive_row.addStretch(1)
 
         archived_paths = self._gather_archived_project_paths()
-        archive_block = QWidget()
-        archive_block.setFixedWidth(220)
-        archive_block_layout = QVBoxLayout(archive_block)
-        archive_block_layout.setContentsMargins(0, 0, 0, 0)
-        archive_block_layout.setSpacing(6)
 
-        archive_header = QLabel(f"Archived ({len(archived_paths)})")
-        archive_header.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px; font-weight: bold;")
-        archive_block_layout.addWidget(archive_header)
+        def _folder_project_button(path):
+            return self._create_config_button(
+                path, is_pinned=False, draggable=False, flow_managed=True, on_select=menu.close
+            )
 
-        archive_scroll = QScrollArea()
-        archive_scroll.setWidgetResizable(True)
-        archive_scroll.setFixedHeight(120)
-        archive_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        archive_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        archive_scroll_content = QWidget()
-        archive_scroll_layout = QVBoxLayout(archive_scroll_content)
-        archive_scroll_layout.setContentsMargins(0, 0, 0, 0)
-        archive_scroll_layout.setSpacing(4)
+        add_stacked_column([
+            ("🗂 Folder Projects", None, folder_paths, _folder_project_button, True,
+             "No folder projects yet."),
+            ("👥 Shared", None, shared_paths, _folder_project_button, True,
+             "No shared projects yet."),
+            (f"🗄 Archived ({len(archived_paths)})", None, archived_paths,
+             lambda p: self._create_archived_button(p, on_select=menu.close), False,
+             "No archived projects."),
+        ])
 
-        if not archived_paths:
-            empty_label = QLabel("No archived projects.")
-            empty_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px; padding: 4px 0;")
-            archive_scroll_layout.addWidget(empty_label)
-        else:
-            for path in archived_paths:
-                archive_scroll_layout.addWidget(
-                    self._create_archived_button(path, on_select=menu.close)
-                )
-        archive_scroll_layout.addStretch(1)
-        archive_scroll.setWidget(archive_scroll_content)
-        archive_block_layout.addWidget(archive_scroll)
-
-        archive_row.addWidget(archive_block)
-        root_layout.addLayout(archive_row)
+        # Tasks placeholder — the slot freed up by combining Folder Projects/Shared/Archived
+        # above. Just an empty-state message for now (reusing add_column()'s own muted
+        # empty-state label by passing zero paths) — a stub for eventually surfacing To-Do
+        # items (see the To-Do viewer tab) across projects here; real cross-project todo.md
+        # scanning is deliberately out of scope for this pass.
+        add_column("☑ Tasks", [], "Cross-project task view — coming soon.", is_pinned=False)
 
         def on_search_text_changed(text):
             needle = text.strip().lower()
@@ -9739,6 +9790,8 @@ function filterAliases(q) {{
         # contents — we must read the projects container width instead to match Zone 2.
         _proj_layout = self.projects_layout
 
+        self.config_bar_widget._reflowing = False
+
         def _zone1_reflow(_ignored, _containers=zone1_containers, _layout=_proj_layout,
                           _cols=_cols, _spacing=_spacing):
             # This closure is called from three places that can all outlive the rebuild
@@ -9751,13 +9804,39 @@ function filterAliases(q) {{
             # RuntimeError ("wrapped C/C++ object has been deleted"), which PyQt6 treats as
             # fatal (calls abort()) if it escapes uncaught from an event/timer callback. See
             # ProjectFlowApp.resizeEvent()'s matching guard for the crash this fixes.
+            #
+            # Reentrancy guard (mirrors FlowWidget._reflow()'s own self._reflowing, just
+            # below — this closure never had the equivalent). Real-world testing showed this
+            # alone is NOT sufficient — see the effective_cols fix just below for the actual
+            # root cause — but it's still worth keeping as a legitimate second line of
+            # defense against genuine overlapping calls.
+            if getattr(self.config_bar_widget, '_reflowing', False):
+                return
+            self.config_bar_widget._reflowing = True
             try:
                 parent = _layout.parentWidget()
                 width = parent.width() if parent and parent.width() > 10 else 0
                 if not _containers or width <= 0:
                     return
-                target_cell_w = (width - (_cols - 1) * _spacing) // _cols
                 n = len(_containers)
+                # THE ACTUAL ROOT CAUSE (found via live instrumentation, 2026-09-21 — see
+                # ai/issues.md): this row never wraps (unlike FlowWidget, used elsewhere for
+                # the same purpose, which already takes min(n, target_cols, max_cols) for
+                # exactly this reason) — it's always exactly one row of `n` buttons. Dividing
+                # by the *configured* _cols (projects_per_row, default 10) instead of the
+                # *actual* n is fine when n <= _cols, but the moment n > _cols (e.g. 9 pinned
+                # projects with projects_per_row left at 8), cell_w came out sized for only
+                # _cols buttons while n buttons actually get laid out — n cells at
+                # width/_cols each need more total space than width, so the row's natural
+                # size overflows, the container grows to fit it, that larger width feeds
+                # into the *next* reflow call (still dividing by the same too-small _cols),
+                # overflowing again — an unbounded feedback loop, confirmed live growing to
+                # Qt's own QWIDGETSIZE_MAX ceiling (16777215px) in about a second. Using
+                # max(_cols, n) as the divisor whenever there are more pinned projects than
+                # the configured row length guarantees the row's actual total width can
+                # never exceed what's available, which is what actually breaks the loop.
+                effective_cols = max(_cols, n)
+                target_cell_w = (width - (effective_cols - 1) * _spacing) // effective_cols
                 cell_w = (target_cell_w if target_cell_w >= 80
                           else max(80, (width - (n - 1) * _spacing) // n))
                 fm = QFontMetrics(QApplication.font())
@@ -9770,6 +9849,11 @@ function filterAliases(q) {{
                             c._full_text, Qt.TextElideMode.ElideRight, label_w))
             except RuntimeError:
                 pass
+            finally:
+                try:
+                    self.config_bar_widget._reflowing = False
+                except RuntimeError:
+                    pass
 
         self.config_bar_widget._reflow_fn = _zone1_reflow
 
@@ -13152,20 +13236,16 @@ function filterAliases(q) {{
                     _restore_index = self.pdf_active_index if 0 <= self.pdf_active_index < len(self.pdf_tabs) else 0
                     self._activate_pdf_tab(_restore_index)
 
-                # Restore every remembered Web tab and activate whichever was active — same
-                # pattern as the PDF/Image tabs restore. _activate_web_tab() (not
-                # _open_web_tab()/_open_markdown_in_webview()) is used here deliberately: it
-                # just navigates to an existing tab, it doesn't create a new one.
-                # switch_mode=False: this is a content-sync on rebuild, not a user asking to
-                # view this tab — without it, ANY rebuild (including ones with nothing to do
-                # with the Web viewer, e.g. toggling the Projects section footer button)
-                # unconditionally forced column2_mode to "webview" whenever web_tabs was
-                # non-empty, regardless of which tab the user was actually looking at. PDF/
-                # Image tab restoration never had this problem since neither ever touches
-                # column2_mode in the first place (see _activate_pdf_tab()/_activate_image_tab()).
-                if self.web_tabs:
-                    _restore_index = self.web_active_index if 0 <= self.web_active_index < len(self.web_tabs) else 0
-                    self._activate_web_tab(_restore_index, switch_mode=False)
+                # Restore this project's remembered Web tab into the shared webview — but
+                # only if the Web tab is actually the one being shown right now. See
+                # _ensure_web_tabs_loaded()'s own docstring for why this is lazy rather than
+                # unconditional (a project's remembered web_tabs content is an arbitrary
+                # external URL, and eagerly navigating/rendering it in the background before
+                # the user has ever asked to see the Web tab has been observed to crash the
+                # whole app on at least one machine — a QtWebEngine GPU-compositor runaway
+                # resize loop, purely from that background navigation).
+                if self.column2_mode == "webview":
+                    self._ensure_web_tabs_loaded()
 
                 # Load every remembered Image tab's pixmap (reopened every rebuild, same
                 # reasoning as the PDF tabs restore above) and activate whichever was active.
@@ -13224,22 +13304,38 @@ function filterAliases(q) {{
         # actually changed since the last load (the paper CSS depends on layout_mode/
         # current_theme) — an incidental refresh (editing a launcher, etc.) just re-adds the
         # already-loaded, already-live webview to its (possibly freshly-rebuilt) container.
+        #
+        # Lazy in Focus layout — only initializes Notes' Muya session here when Notes is
+        # actually the active viewer tab; otherwise deferred to switch_to_viewer_mode()'s
+        # own "notes" branch, the same pattern _ensure_web_tabs_loaded() already uses for
+        # Web tabs. Initializing Muya was found to reliably crash the whole app on at least
+        # one machine (a fatal QtWebEngine GPU-compositor SIGILL, occurring within ~100ms of
+        # Muya's own init and independent of actual page content size — confirmed via a
+        # DOM-size probe showing normal, tiny dimensions right up to the crash) — so doing
+        # this unconditionally in the background on every project load, even when the user
+        # is looking at an entirely different tab (or none at all, e.g. Folder), was a real
+        # crash risk on that machine, not just wasted work. Standard layout's Notes column
+        # is a fixed, always-visible pane (not a tab that can be hidden), so it stays eager
+        # there — there's no "not yet looking at it" state to defer to.
         notes_reload_key = (self.current_config_file, self.layout_mode, self.current_theme)
-        notes_should_reload = getattr(self, '_notes_loaded_for', None) != notes_reload_key
-        self._notes_loaded_for = notes_reload_key
+        notes_is_active_or_fixed = self.layout_mode != "focus" or self.column2_mode == "notes"
+        notes_should_reload = notes_is_active_or_fixed and getattr(self, '_notes_loaded_for', None) != notes_reload_key
         if notes_should_reload:
+            self._notes_loaded_for = notes_reload_key
             # self.notes_tabs was already (re)built from disk in load_notes(), above — just
             # activate whichever tab was active (never _open_notes_tab(), which would create
             # a brand new one instead of restoring the existing list).
             _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
             self._activate_notes_tab(_restore_notes_index)
 
-        # Same reload-gating idea as Notes just above, simplified: no multi-tab/layout
-        # concern here, just project-or-theme change (the paper CSS depends on theme).
+        # Same reload-gating idea as Notes just above — lazy, only initializing To-Do's
+        # Muya session when it's actually the active viewer tab, for the same crash-
+        # avoidance reason (see the comment on Notes above). To-Do has no Standard-layout
+        # fixed-pane equivalent, so this is unconditionally lazy, no layout branching needed.
         todo_reload_key = (self.current_config_file, self.current_theme)
-        todo_should_reload = getattr(self, '_todo_loaded_for', None) != todo_reload_key
-        self._todo_loaded_for = todo_reload_key
+        todo_should_reload = self.column2_mode == "todo" and getattr(self, '_todo_loaded_for', None) != todo_reload_key
         if todo_should_reload:
+            self._todo_loaded_for = todo_reload_key
             self._open_todo_in_muya()
 
         # Archive/Joplin/external-editor controls — all keyed to the project's own
@@ -15990,6 +16086,23 @@ function filterAliases(q) {{
         # Load content for viewers that need it
         if mode == "help":
             self.load_help_content()
+        elif mode == "webview":
+            self._ensure_web_tabs_loaded()
+        elif mode == "notes":
+            # Lazy first-entry load — see build_main_content()'s identical notes_reload_key
+            # gate for why this is deferred rather than eager (Muya-init crash avoidance).
+            notes_reload_key = (self.current_config_file, self.layout_mode, self.current_theme)
+            if getattr(self, '_notes_loaded_for', None) != notes_reload_key:
+                self._notes_loaded_for = notes_reload_key
+                _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
+                self._activate_notes_tab(_restore_notes_index)
+        elif mode == "todo":
+            # Lazy first-entry load — see build_main_content()'s identical todo_reload_key
+            # gate for why this is deferred rather than eager (Muya-init crash avoidance).
+            todo_reload_key = (self.current_config_file, self.current_theme)
+            if getattr(self, '_todo_loaded_for', None) != todo_reload_key:
+                self._todo_loaded_for = todo_reload_key
+                self._open_todo_in_muya()
         elif mode == "folder":
             self.populate_folder_browser(self.folder_current_path)
         elif mode == "time":
@@ -16452,6 +16565,29 @@ function filterAliases(q) {{
             return os.path.basename(tab.value) or tab.value
         parsed = urllib.parse.urlparse(tab.value)
         return parsed.netloc or tab.value
+
+    def _ensure_web_tabs_loaded(self):
+        """Lazily activates this project's remembered Web tab into the shared webview, at
+        most once per project (self._web_tabs_loaded_for tracks which config this was last
+        done for, same reload-gate idea as _notes_loaded_for/_todo_loaded_for). Called both
+        when build_main_content() lands directly on the Web tab, and from
+        switch_to_viewer_mode() when the user switches into it later.
+
+        Deliberately NOT called unconditionally on every rebuild regardless of the active
+        viewer, which is what this replaced — a project's remembered web_tabs content is an
+        arbitrary external URL outside this app's control, and eagerly navigating/rendering
+        it into the persistent shared webview before the user has ever asked to see the Web
+        tab (e.g. while looking at Notes) was observed, on at least one real project/machine,
+        to crash the whole app on launch: a QtWebEngine GPU-compositor runaway resize loop
+        ("Reduced surface width" growing exponentially frame over frame, ending in a fatal
+        SIGILL) triggered purely by that background page load, with no user interaction at
+        all. Loading only once the user has actually opened the Web tab means a problematic
+        remembered URL only gets a chance to misbehave once it's genuinely being looked at,
+        not on every single app launch regardless of which tab is active."""
+        if self.web_tabs and getattr(self, '_web_tabs_loaded_for', None) != self.current_config_file:
+            _restore_index = self.web_active_index if 0 <= self.web_active_index < len(self.web_tabs) else 0
+            self._activate_web_tab(_restore_index, switch_mode=False)
+            self._web_tabs_loaded_for = self.current_config_file
 
     def _activate_web_tab(self, index, switch_mode=True):
         """Make self.web_tabs[index] the active tab. Flushes any unsaved markdown content
