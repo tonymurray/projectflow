@@ -19,6 +19,11 @@ notes/
 images
 images/
 
+# Documents directory (per-project files, optionally synced via Nextcloud — see
+# get_documents_folder()); created lazily per project, not shipped
+documents
+documents/
+
 # Shared human/AI context docs (personal working notes, not versioned)
 ai/
 

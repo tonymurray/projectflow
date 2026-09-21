@@ -2744,6 +2744,39 @@ class ProjectFlowApp(QMainWindow):
         self.save_config_to_json()
         return "Documentation"
 
+    def _ensure_notes_category(self):
+        """Return the real category name to file newly-created notes under (see
+        new_note_file()) — a plain "Notes" category, created on first use and flagged
+        into self.docs_categories (_toggle_docs_bucket_for_category()) so it renders
+        pooled into the Docs bucket alongside Documentation, but stays its own,
+        independently-editable category — deliberately distinct from Documentation,
+        which is reserved for project-folder-derived docs (Scan for Docs/Kickstart).
+        The pinned project-note synthetic entry is unaffected either way; this is only
+        for notes actually created via the "＋ New" button."""
+        for cd in self.COLUMN_1:
+            if "Notes" in cd:
+                if "Notes" not in self.docs_categories:
+                    self.docs_categories.add("Notes")
+                    self._persist_docs_categories()
+                return "Notes"
+        self.COLUMN_1.append({"Notes": []})
+        self.docs_categories.add("Notes")
+        self._persist_docs_categories()
+        self.save_config_to_json()
+        return "Notes"
+
+    def _ensure_project_files_category(self):
+        """Return the real category name to file newly-created editor files under (see
+        new_code_file()) — a plain "Project Files" category, created on first use.
+        No docs_categories flag: these are working files, not documentation, so they
+        render under Resources like any other ordinary category."""
+        for cd in self.COLUMN_1:
+            if "Project Files" in cd:
+                return "Project Files"
+        self.COLUMN_1.append({"Project Files": []})
+        self.save_config_to_json()
+        return "Project Files"
+
     def _ai_hidden_paths_key(self):
         """Absolute path of the current config — scopes ai_hidden_paths per project."""
         if getattr(self, 'current_config_file', None):
@@ -6400,6 +6433,10 @@ StartupNotify=true
                 self.config_terminal = config_data.get('terminal', None)
                 # Load project-local notes file path if specified
                 self.config_notes_file = config_data.get('notes_file', None)
+                # Load the resolved per-project documents-subfolder slug, if this project
+                # has already used the Docs/New Note/New File feature at least once —
+                # see _get_or_create_project_documents_folder().
+                self.config_documents_subfolder = config_data.get('documents_subfolder', None)
                 # Load project name if specified (for display in title bar)
                 self.config_project_name = config_data.get('project_name', None)
                 # Load per-project browser new-tab override
@@ -6501,6 +6538,7 @@ StartupNotify=true
                 self.config_terminal = None
                 self.config_browser_new_tab = None
                 self.config_notes_file = None
+                self.config_documents_subfolder = None
                 self.config_project_name = None
                 self.config_project_color = None
                 self.config_is_shared = False
@@ -6962,6 +7000,61 @@ StartupNotify=true
         location, like get_projects_directory() — symlink it to a synced folder (e.g.
         Nextcloud) if you want images to travel across devices; no separate setting."""
         return os.path.join(self.script_dir, "images")
+
+    def get_documents_folder(self):
+        """Root folder for per-project documents subfolders. Fixed location, like
+        get_images_folder()/get_projects_directory() — symlink it to a synced folder if
+        you want documents to travel across devices; no separate setting."""
+        return os.path.join(self.script_dir, "documents")
+
+    def _slugify_project_name(self, name):
+        """Lowercase, spaces/hyphens -> underscores, strip anything else that isn't
+        filesystem-safe — "Home Lab" -> "home_lab". A project name made entirely of
+        unsafe characters falls back to "project" rather than producing an empty slug."""
+        slug = re.sub(r'[\s-]+', '_', (name or '').strip().lower())
+        slug = re.sub(r'[^\w]', '', slug)
+        return slug or "project"
+
+    def _save_documents_subfolder_to_config(self, slug):
+        """Persist the resolved documents-subfolder slug into the active project's own
+        config file — same read-modify-write shape as _save_layout_mode_to_config() —
+        so a later project rename doesn't orphan the folder or its contents (see
+        _get_or_create_project_documents_folder())."""
+        if not getattr(self, 'current_config_file', None):
+            return
+        try:
+            config_data = {}
+            if os.path.exists(self.current_config_file):
+                with open(self.current_config_file, 'r') as f:
+                    config_data = json.load(f)
+            config_data['documents_subfolder'] = slug
+            with open(self.current_config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving documents_subfolder: {e}")
+
+    def _get_or_create_project_documents_folder(self):
+        """Resolve (and lazily create) the active project's own documents subfolder.
+        Reuses an already-resolved slug from config_documents_subfolder if one exists —
+        set once, the first time this is ever called for a project, so a later rename
+        doesn't silently orphan existing files under the old slug. A brand-new slug is
+        checked against what's already on disk and disambiguated with a numeric suffix
+        on collision (two different project names slugifying to the same string),
+        mirroring the existing _2/_3 snapshot-collision convention used for Backup Now."""
+        slug = getattr(self, 'config_documents_subfolder', None)
+        base = self.get_documents_folder()
+        if not slug:
+            candidate = self._slugify_project_name(self.get_project_name())
+            slug = candidate
+            n = 2
+            while os.path.isdir(os.path.join(base, slug)):
+                slug = f"{candidate}_{n}"
+                n += 1
+            self.config_documents_subfolder = slug
+            self._save_documents_subfolder_to_config(slug)
+        path = os.path.join(base, slug)
+        os.makedirs(path, exist_ok=True)
+        return path
 
     # ------------------------------------------------------------------
     # Backup
@@ -13392,6 +13485,9 @@ function filterAliases(q) {{
 
             if reply == QMessageBox.StandardButton.Yes:
                 self.switch_to_config(new_config_path)
+                # Eager documents-subfolder creation for a genuinely new project — see
+                # folder_make_project_at()'s identical call for the "Make Project" path.
+                self._get_or_create_project_documents_folder()
 
                 # Not every project here is folder-based (e.g. "file quarterly VAT
                 # return") — so unlike folder-based "Make Project" (which always has a
@@ -16343,6 +16439,12 @@ function filterAliases(q) {{
         self.code_open_btn.clicked.connect(self.open_code_file)
         toolbar_layout.addWidget(self.code_open_btn)
 
+        self.code_new_btn = QPushButton("＋ New")
+        self.code_new_btn.setStyleSheet(btn_style)
+        self.code_new_btn.setToolTip("Create a new file in this project's documents folder")
+        self.code_new_btn.clicked.connect(self.new_code_file)
+        toolbar_layout.addWidget(self.code_new_btn)
+
         self.code_filename_label = QLabel(os.path.basename(self._code_session.path) if self._code_session.path else "")
         self.code_filename_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; margin-right: 5px;")
         toolbar_layout.addWidget(self.code_filename_label)
@@ -17143,6 +17245,16 @@ function filterAliases(q) {{
             project_home_btn.clicked.connect(lambda: self._pin_current_folder_as_project_default("right"))
         toolbar_layout.addWidget(project_home_btn)
 
+        # Docs shortcut — always enabled (unlike "⌂⌂" above, a project's documents
+        # subfolder is always resolvable/creatable on click, never "unset").
+        docs_btn = QPushButton()
+        docs_btn.setIcon(self._document_icon())
+        docs_btn.setIconSize(QSize(16, 16))
+        docs_btn.setStyleSheet(btn_style)
+        docs_btn.setToolTip("Go to this project's documents folder")
+        docs_btn.clicked.connect(lambda: self.folder_go_project_documents("right"))
+        toolbar_layout.addWidget(docs_btn)
+
         # Refresh button
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(btn_style)
@@ -17276,6 +17388,14 @@ function filterAliases(q) {{
             project_home_btn.setToolTip("Set current folder as this project's default folder")
             project_home_btn.clicked.connect(lambda: self._pin_current_folder_as_project_default("left"))
         toolbar_layout.addWidget(project_home_btn)
+
+        docs_btn = QPushButton()
+        docs_btn.setIcon(self._document_icon())
+        docs_btn.setIconSize(QSize(16, 16))
+        docs_btn.setStyleSheet(mini_btn_style)
+        docs_btn.setToolTip("Go to this project's documents folder")
+        docs_btn.clicked.connect(lambda: self.folder_go_project_documents("left"))
+        toolbar_layout.addWidget(docs_btn)
 
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(mini_btn_style)
@@ -17494,6 +17614,18 @@ function filterAliases(q) {{
         icon = getattr(self, cache_attr, None)
         if icon is None:
             fname = "open-folder-dark.png" if self.current_theme == "dark" else "open-folder-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
+    def _document_icon(self):
+        """Plain single-color 'document/page' icon for the Folder Browser's "Docs"
+        shortcut button — same theme-matched light/dark PNG pair convention as
+        _open_icon()/_pin_icon(), since it sits on the same plain bg_button toolbar."""
+        cache_attr = f'_document_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "document-dark.png" if self.current_theme == "dark" else "document-light.png"
             icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
             setattr(self, cache_attr, icon)
         return icon
@@ -17877,6 +18009,15 @@ function filterAliases(q) {{
         if self.config_folder_path:
             populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
             populate(self.config_folder_path)
+
+    def folder_go_project_documents(self, side="right"):
+        """Navigate to this project's own documents subfolder, resolving/creating it on
+        first use (see _get_or_create_project_documents_folder()). side as in
+        folder_go_up(). Unlike folder_go_project_default() above, this never no-ops —
+        a documents subfolder is always derivable from the project's own name."""
+        path = self._get_or_create_project_documents_folder()
+        populate = self.populate_launcher_folder_browser if side == "left" else self.populate_folder_browser
+        populate(path)
 
     def _get_folder_location_shortcuts(self, limit=5):
         """Derive quick-jump folder shortcuts from the project's own launcher items —
@@ -18853,6 +18994,12 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.notes_open_btn.clicked.connect(self.open_note_file)
         toolbar_layout.addWidget(self.notes_open_btn)
 
+        self.notes_new_btn = QPushButton("＋ New")
+        self.notes_new_btn.setStyleSheet(btn_style)
+        self.notes_new_btn.setToolTip("Create a new note in this project's documents folder")
+        self.notes_new_btn.clicked.connect(self.new_note_file)
+        toolbar_layout.addWidget(self.notes_new_btn)
+
         self.notes_current_label = QLabel("")
         self.notes_current_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; margin-right: 5px;")
         toolbar_layout.addWidget(self.notes_current_label)
@@ -18883,6 +19030,38 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         )
         if file_path:
             self._open_note_in_notes_tab(file_path)
+
+    def new_note_file(self):
+        """Notes toolbar "＋ New" button: prompts for a filename and creates it directly
+        in this project's own documents subfolder (see
+        _get_or_create_project_documents_folder()), then opens it as a new Notes tab.
+        Also files it as a real launcher item under the "Notes" category (auto-created,
+        pooled into Docs — see _ensure_notes_category()) and refreshes any open folder
+        browser view, so the new file is immediately visible/reachable without a manual
+        Refresh click or hunting through the launcher list."""
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "New Note", "File name:", text="New Note.md")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        docs_folder = self._get_or_create_project_documents_folder()
+        target = os.path.join(docs_folder, name)
+        if os.path.exists(target):
+            QMessageBox.warning(self, "New Note", f'"{name}" already exists.')
+            return
+        try:
+            open(target, 'w').close()
+        except OSError as e:
+            QMessageBox.warning(self, "New Note", f"Could not create file: {e}")
+            return
+        category = self._ensure_notes_category()
+        stem = os.path.splitext(name)[0]
+        self._add_item_to_config(0, category, self._titleize_stem(stem), target, "default")
+        self.save_config_to_json()
+        self._open_note_in_notes_tab(target)
+        self._refresh_all_folder_views()
+        self.set_status(f"✓ Created '{name}' and added to {category}", "success")
+        self.refresh_projects()
 
     def _update_notes_toolbar(self):
         """Refreshes the Notes toolbar's filename label and the archive/"+ Add to Project"
@@ -19601,6 +19780,39 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         )
         if file_path:
             self._open_code_file_in_editor(file_path)
+
+    def new_code_file(self):
+        """Toolbar "＋ New" button: prompts for a filename and creates it directly in
+        this project's own documents subfolder (see
+        _get_or_create_project_documents_folder()), then opens it as a new Editor tab.
+        The suggested "untitled.txt" is just a starting point in an editable field —
+        typing a different extension (e.g. "page.html") is respected as-is. Also files
+        it as a real launcher item under the "Project Files" category (Resources tab,
+        auto-created — see _ensure_project_files_category()) and refreshes any open
+        folder browser view, mirroring new_note_file()'s equivalent behavior."""
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "New File", "File name:", text="untitled.txt")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        docs_folder = self._get_or_create_project_documents_folder()
+        target = os.path.join(docs_folder, name)
+        if os.path.exists(target):
+            QMessageBox.warning(self, "New File", f'"{name}" already exists.')
+            return
+        try:
+            open(target, 'w').close()
+        except OSError as e:
+            QMessageBox.warning(self, "New File", f"Could not create file: {e}")
+            return
+        category = self._ensure_project_files_category()
+        stem = os.path.splitext(name)[0]
+        self._add_item_to_config(0, category, self._titleize_stem(stem), target, "default")
+        self.save_config_to_json()
+        self._open_code_file_in_editor(target)
+        self._refresh_all_folder_views()
+        self.set_status(f"✓ Created '{name}' and added to {category}", "success")
+        self.refresh_projects()
 
     def _code_tab_title(self, tab):
         """Short display label for one Editor tab's strip button. Plain basename normally
@@ -20708,6 +20920,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.switch_to_config(projectflow_path)
+            # Eager documents-subfolder creation for a genuinely new project (see plan) —
+            # self now correctly reflects the newly-loaded project, so this is just the
+            # existing lazy resolver triggered a step earlier than its normal first use.
+            self._get_or_create_project_documents_folder()
             self._show_kickstart_dialog(folder_path=folder_path)
 
     def folder_make_project_at(self, folder_path):

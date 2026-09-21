@@ -2,6 +2,15 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-21
+
+### Added
+- **Per-project Documents folder**, mirroring the existing `images/`/`projects/` pattern: a fixed `documents/` folder (symlink it yourself to a synced location if you want it to travel across machines) with its own subfolder per project (`documents/<slug>/`, e.g. "Home Lab" → `home_lab`). The slug is resolved once and stored in the project's own config so a later rename doesn't orphan the folder.
+  - A new **Docs** shortcut button in the Folder Browser toolbar (both the main viewer and the Focus-layout Files panel), right after "⌂⌂ project folder", jumps straight to it — creating it on first click for a pre-existing project, or immediately for a brand-new one (Make Project/New Project).
+  - **"＋ New" buttons** on both the Notes and Editor toolbars create a file directly in the project's documents folder and open it — a filename prompt (pre-filled `New Note.md` / `untitled.txt`, freely editable/renamable) is all that's needed.
+  - Creating a note or file this way now also files it as a real launcher item automatically — notes go under a new **"Notes"** category (pooled into the Docs bucket, separate from Documentation, which stays reserved for project-folder-derived docs like Scan for Docs/Kickstart), files go under a new **"Project Files"** category (Resources). Both categories are auto-created on first use. Any open folder browser view also refreshes immediately, so the new file is visible without a manual Refresh click.
+  - `documents/` is git-ignored, same as `projects/`/`notes/`/`images/`.
+
 ## 2026-09-15
 
 ### Fixed
