@@ -1,3 +1,19 @@
 #!/usr/bin/env nix-shell
 #!nix-shell -i bash -p python313 python313Packages.pyqt6 python313Packages.pymupdf python313Packages.pyqt6-webengine python313Packages.qtconsole python313Packages.ipykernel libxcb-cursor ttyd
+
+# Qt's xcb platform plugin dlopen()s libxcb-cursor.so.0 at runtime rather than linking
+# it in at build time, so having libxcb-cursor as a nix-shell buildInput above isn't
+# enough on its own — it still needs to be on LD_LIBRARY_PATH for that dlopen() to find
+# it, otherwise Qt fails with "xcb-cursor0 or libxcb-cursor0 is needed" even though the
+# package is right there. nix-shell already resolves its store path into NIX_LDFLAGS
+# (as -L/nix/store/.../lib), so pull every -L path out of that instead of re-resolving
+# it separately.
+export LD_LIBRARY_PATH="$(echo "$NIX_LDFLAGS" | tr ' ' '\n' | sed -n 's/^-L//p' | tr '\n' ':')${LD_LIBRARY_PATH}"
+
+# Force xcb instead of letting Qt auto-detect and try wayland first: this project
+# doesn't declare a qtwayland dependency, so the wayland plugin reliably fails to load
+# under a Wayland session before ever falling back to xcb. KDE Plasma (and most other
+# desktops) run xcb apps fine via XWayland either way.
+export QT_QPA_PLATFORM=xcb
+
 exec "$(dirname "$0")/projectflow.py" "$@"

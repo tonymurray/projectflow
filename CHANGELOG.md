@@ -13,6 +13,8 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 
 ### Fixed
 - The new **Docs** shortcut button's icon rendered noticeably larger than its neighboring text-glyph buttons (↑/⌂/↻/⊞/A-Z) in the Folder Browser toolbar — reduced from the app's usual 16×16 icon size to 13×13 to match their visual weight.
+- **A pinned default PDF didn't show up on first load, only after switching viewer tabs.** The initial fit-to-zoom for a restored PDF tab was deferred with a 0ms `QTimer.singleShot`, which isn't long enough to guarantee the main window has actually been shown/mapped by the window manager yet — the viewport width read at that point could still be a stale pre-maximize value. Bumped to 500ms, matching the identical (and already-correct) delay the Image viewer's equivalent restore path already used.
+- **`./projectflow-nix` (and `shell.nix`) could fail to start entirely after a nixpkgs/Qt upgrade** — `qt.qpa.plugin: Could not load the Qt platform plugin "wayland"`, then `xcb-cursor0 or libxcb-cursor0 is needed`, even though `libxcb-cursor` was already a declared dependency. Root cause: Qt's xcb plugin `dlopen()`s that library at runtime rather than linking it at build time, so being a nix-shell buildInput alone isn't enough — it also needs to be on `LD_LIBRARY_PATH`. Both launchers now export it explicitly (pulled straight from `NIX_LDFLAGS`, which nix-shell already resolves it into) and force `QT_QPA_PLATFORM=xcb` to skip a doomed `wayland` attempt first (no `qtwayland` dependency is declared).
 
 ## 2026-09-15
 

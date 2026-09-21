@@ -15208,7 +15208,17 @@ function filterAliases(q) {{
         self.pdf_page_count = tab.page_count
         if tab.doc is not None:
             self.render_pdf_page()
-            QTimer.singleShot(0, self.pdf_apply_fit)
+            # 500ms, not 0ms: on the very first load (this project's pinned PDF is also
+            # its default viewer), the main window hasn't actually been shown/mapped by
+            # the window manager yet at this point in __init__, so pdf_scroll.viewport()
+            # still reports a stale/pre-maximize size no matter how soon a deferred call
+            # runs — a 0ms singleShot only defers to the next event-loop iteration, which
+            # can still fire before the WM's maximize geometry has arrived. Switching
+            # viewer tabs afterwards "fixed" it only because by then the window was
+            # already fully laid out, so switch_to_viewer_mode()'s own re-fit had a real
+            # width to work with. _activate_image_tab() already uses this same 500ms
+            # delay for the identical reason — this just brings PDF in line with it.
+            QTimer.singleShot(500, self.pdf_apply_fit)
         elif self.pdf_label is not None:
             self._set_viewer_placeholder(self.pdf_label, "pdf", f"Could not load:\n{tab.path}")
         self._rebuild_pdf_tab_strip()
