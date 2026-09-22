@@ -2,7 +2,16 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
-## 2026-09-21
+## 2026-09-22
+
+### Added
+- **`--folder`/`-d <path>` CLI flag** opens straight to the Folder viewer at that directory on launch — transient only, never written to the project's config. Powers a new **"Open Directory in ProjectFlow"** Dolphin service menu action (`utilities/open-directory-in-projectflow.sh`): right-click a folder (or a file, using its containing folder), pick an existing project, and a fresh ProjectFlow instance opens there. Always spawns a new instance rather than trying to detect/reuse an already-open window (no IPC between ProjectFlow processes). Launches via `projectflow-nix` when available, falling back to `projectflow.py` directly on a non-Nix install.
+- **"Upload to ProjectFlow Docs" Dolphin service menu action** (`utilities/upload-to-projectflow-docs.sh`) — the file-manager-side counterpart to the in-app "⬆ Upload Doc"/"⬆ Upload File" buttons below: copies the selected file(s) into a chosen project's own `documents/<slug>/` folder and files each under "Project Files". Skips (doesn't overwrite) a file whose name already exists there.
+- **"⬆ Upload Doc" / "⬆ Upload File" buttons** in the launcher column header (always shown, next to "+ Add"): pick an existing file anywhere on disk, copy it into the project's own documents folder, and file it as a launcher item — Upload Doc under Documentation, Upload File under Project Files/Resources. The file-picker-based counterpart to the Notes/Editor toolbars' "＋ New" buttons, which create a blank file instead.
+- **"⬆ Upload to Project (copy)..." on the Folder Browser's right-click file menu**, alongside the existing "Add to Documentation (link)..." (renamed for clarity) — copies the file into the chosen project's `documents/<slug>/` folder instead of just referencing it at its current location, so it's reachable from any machine that syncs that project's documents tree.
+- **Project mega-menu (☰) further consolidated**: Pinned and Recent are now one combined, stacked column (five columns total, down from six), and a new **"🔎 Within Projects"** live search sits above Tasks in the last column — searches each project's notes, documents folder (filenames always, content for text files), and launcher item names, debounced ~400ms, requiring 3+ typed characters. A pure synchronous `os.walk()` + substring scan, no index or subprocess.
+- **Kimai time viewer now defaults to a Year period** (previously Week), with a new Year option added to the period toolbar (Year/6M/3M/Month/Week).
+
 
 ### Added
 - **Per-project Documents folder**, mirroring the existing `images/`/`projects/` pattern: a fixed `documents/` folder (symlink it yourself to a synced location if you want it to travel across machines) with its own subfolder per project (`documents/<slug>/`, e.g. "Home Lab" → `home_lab`). The slug is resolved once and stored in the project's own config so a later rename doesn't orphan the folder.

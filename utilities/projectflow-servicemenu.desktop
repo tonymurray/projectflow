@@ -1,14 +1,35 @@
 [Desktop Entry]
 Type=Service
 MimeType=all/all;inode/directory;
-Actions=addToProjectFlow
+Actions=addToProjectFlow;uploadToProjectFlowDocs;openDirectoryInProjectFlow;
 
 # Installation:
 # 1. Copy this file to ~/.local/share/kio/servicemenus/
-# 2. Edit the Exec line below to point to where you installed add-projectflow-servicemenu.sh
+# 2. Edit the Exec lines below to point to where you installed the three .sh scripts
 # Example: Exec=/home/youruser/Programs/projectflow/utilities/add-projectflow-servicemenu.sh %F
 
 [Desktop Action addToProjectFlow]
 Name=Add to ProjectFlow
 Icon=preferences-desktop-icons
 Exec=add-projectflow-servicemenu.sh %F
+
+# Copies the selected file(s) INTO a project's own documents/<slug>/ folder (unlike
+# "Add to ProjectFlow" above, which just references the file at its original location)
+# and files each as a launcher item under that project's "Project Files" category — see
+# upload-to-projectflow-docs.sh.
+[Desktop Action uploadToProjectFlowDocs]
+Name=Upload to ProjectFlow Docs
+Icon=cloud-upload
+Exec=upload-to-projectflow-docs.sh %F
+
+# Opens an existing project's Folder viewer straight at the right-clicked directory
+# (or a right-clicked file's containing directory) — never creates a new project,
+# never writes anything to the chosen project's config, always spawns a fresh
+# instance (no attempt to detect/reuse an already-open window — see
+# open-directory-in-projectflow.sh for why). %F rather than %f so a stray
+# multi-selection triggers one dialog, not one per file — only the first
+# selected item is actually used.
+[Desktop Action openDirectoryInProjectFlow]
+Name=Open Directory in ProjectFlow
+Icon=folder-open
+Exec=open-directory-in-projectflow.sh %F

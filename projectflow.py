@@ -1354,10 +1354,11 @@ class ExternalLinkPage(QWebEnginePage):
 
 
 class ProjectFlowApp(QMainWindow):
-    def __init__(self, config_file_arg=None):
+    def __init__(self, config_file_arg=None, folder_arg=None):
         super().__init__()
         self.config = {}
         self.config_file_arg = config_file_arg  # Store CLI argument
+        self.folder_arg = folder_arg  # --folder CLI override, see load_notes() call site below
         self.edit_mode = False  # Track whether we're in edit mode
         self._pre_fullscreen_state = Qt.WindowState.WindowMaximized  # matches actual startup state (showMaximized())
         self._zen_mode = False  # collapses launcher/notepad columns to focus the active viewer (see toggle_zen_mode)
@@ -1625,6 +1626,16 @@ class ProjectFlowApp(QMainWindow):
         self.load_config()
         self.load_notes()
         self.load_launch_handlers()
+
+        # --folder CLI override (see "Open Directory in ProjectFlow" service menu,
+        # utilities/open-directory-in-projectflow.sh) — a transient, never-persisted
+        # override of the folder_current_path/column2_mode resolution above, applied
+        # after load_notes() (the function that actually sets column2_mode from the
+        # project's own saved/pinned state) so it isn't immediately overwritten by it.
+        if self.folder_arg:
+            self.folder_current_path = os.path.expanduser(self.folder_arg)
+            self.column2_mode = "folder"
+
         self.init_ui()
 
         # Daily backup check — must come after init_ui(), since it reports via
@@ -6810,6 +6821,102 @@ StartupNotify=true
         config_name = os.path.splitext(os.path.basename(config_path))[0]
         return os.path.join(folder, f"{config_name.replace('_', '-')}.md")
 
+    def _documents_folder_for_config(self, config_path, config_data):
+        """Standalone equivalent of _get_or_create_project_documents_folder() for an
+        ARBITRARY project's (path, parsed-json) pair — read-only, never creates
+        anything, same philosophy as _get_project_pending_tasks(). Returns None if
+        this project has never used Docs/Notes/To-Do (no documents_subfolder saved
+        yet) or the resolved folder doesn't exist."""
+        slug = config_data.get('documents_subfolder')
+        if not slug:
+            return None
+        path = os.path.join(self.get_documents_folder(), slug)
+        return path if os.path.isdir(path) else None
+
+    _WITHIN_PROJECT_TEXT_EXTENSIONS = ('.md', '.txt', '.html', '.htm', '.css', '.js', '.sh', '.csv')
+
+    def _search_snippet(self, line, needle_lower, width=70):
+        """~width-char window of `line` centered on needle_lower's first occurrence,
+        ellipsized on whichever side(s) got cut — unlike the Tasks section's own
+        start-anchored truncation, a match inside a long line needs to stay visible."""
+        if len(line) <= width:
+            return line
+        idx = line.lower().find(needle_lower)
+        if idx == -1:
+            return line[:width - 1].rstrip() + "…"
+        start = max(0, idx - width // 2)
+        end = min(len(line), start + width)
+        start = max(0, end - width)
+        snippet = line[start:end]
+        if start > 0:
+            snippet = "…" + snippet
+        if end < len(line):
+            snippet = snippet + "…"
+        return snippet
+
+    def _search_within_project(self, config_path, config_data, needle_lower):
+        """Read-only scan of ONE project's notes.md, documents/<slug>/ (filenames
+        always; content too, for _WITHIN_PROJECT_TEXT_EXTENSIONS only), and launcher
+        items (config_data['columns'][0]) for needle_lower — the live, synchronous,
+        pure os.walk()+substring scanner behind the mega-menu's "Within Projects"
+        column (see _build_project_mega_menu_content()). No index, no subprocess.
+        Never creates or writes anything.
+
+        Returns an ordered list of (icon, text) tuples: at most one notes match, then
+        document/image filename-or-content matches (deduped by file, content snippet
+        wins over bare filename when both hit), then launcher-item name matches.
+
+        errors='ignore' on every content read (not just `except OSError`) is
+        deliberate — this scanner runs on every keystroke across arbitrary
+        .sh/.csv/.html files that may not be clean UTF-8, so a malformed file must
+        never raise and break the live search."""
+        matches = []
+
+        notes_path = self._notes_file_path_for_config(config_path, config_data)
+        if notes_path and os.path.exists(notes_path):
+            try:
+                with open(notes_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    notes_content = f.read()
+            except OSError:
+                notes_content = ""
+            for line in notes_content.splitlines():
+                if needle_lower in line.lower():
+                    matches.append(("📝", f"Notes: {self._search_snippet(line.strip(), needle_lower)}"))
+                    break
+
+        docs_root = self._documents_folder_for_config(config_path, config_data)
+        if docs_root:
+            for dirpath, dirnames, filenames in os.walk(docs_root):
+                dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+                for filename in sorted(filenames):
+                    name_hit = needle_lower in filename.lower()
+                    snippet = None
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in self._WITHIN_PROJECT_TEXT_EXTENSIONS:
+                        try:
+                            with open(os.path.join(dirpath, filename), 'r',
+                                      encoding='utf-8', errors='ignore') as f:
+                                file_content = f.read()
+                        except OSError:
+                            file_content = ""
+                        if needle_lower in file_content.lower():
+                            for line in file_content.splitlines():
+                                if needle_lower in line.lower():
+                                    snippet = self._search_snippet(line.strip(), needle_lower)
+                                    break
+                    if name_hit or snippet is not None:
+                        matches.append(("📄", f"{filename}: {snippet}" if snippet else filename))
+
+        columns = config_data.get('columns', [])
+        column_1 = columns[0] if columns else []
+        for cat_dict in column_1:
+            for items in cat_dict.values():
+                for item in items:
+                    if item and item[0] and needle_lower in item[0].lower():
+                        matches.append(("⚙", item[0]))
+
+        return matches
+
     def _baloo_tag_append(self, path, tag_name):
         """Add tag_name to path's Baloo/Dolphin tags (the `user.xdg.tags` extended
         attribute) WITHOUT clobbering any tags already there — reads the current value
@@ -9160,12 +9267,16 @@ function filterAliases(q) {{
 
     def _build_project_mega_menu_content(self, menu):
         """Builds the root widget for the project mega-menu popup (see
-        _show_project_mega_menu()) — six columns (Pinned / Recent / A to Z /
-        By Color / a combined Folder Projects+Shared+Archived column / Tasks — outstanding
-        to-dos from Pinned+Recent projects, see add_tasks_column() below)
+        _show_project_mega_menu()) — five columns (a combined Pinned+Recent column /
+        A to Z / By Color / a combined Folder Projects+Shared+Archived column / a
+        combined Within Projects+Tasks column — live cross-project content search
+        stacked above outstanding to-dos from Pinned+Recent projects, see
+        add_tasks_and_search_column() below)
         plus a live search box filtering across all of them at once, mirroring the launcher
         search box's widget-visibility-toggling pattern rather than rebuilding on every
-        keystroke. Archive used to be its own small, de-emphasized block pinned to the
+        keystroke — Within Projects is the one exception, since a live disk scan can't be
+        expressed as pure visibility-toggling of pre-built widgets. Archive used to be its
+        own small, de-emphasized block pinned to the
         popup's bottom-right corner — it's now a third stacked section inside the combined
         column (see add_stacked_column() below) instead, freeing a real column slot for the
         Tasks placeholder; Archived entries are still deliberately left out of the live
@@ -9343,11 +9454,26 @@ function filterAliases(q) {{
 
         pinned_paths = [p for p in self.settings.get("pinned_projects", [])
                         if os.path.exists(p) and '/.archive/' not in p]
-        add_column("📌 Pinned", pinned_paths, "No pinned projects yet.", is_pinned=True)
 
         recent_paths = [p for p in self.settings.get("recent_projects", [])
                         if os.path.exists(p) and '/.archive/' not in p][:10]
-        add_column("🕐 Recent", recent_paths, "No recent projects yet.", is_pinned=False)
+
+        # Pinned + Recent combined into one stacked column (mirrors the Folder
+        # Projects+Shared+Archived column below) — frees a column slot so the menu
+        # reads as more compact overall, per direct user feedback. Pinned keeps its own
+        # is_pinned=True button styling (the small bottom-border underline
+        # _create_config_button() draws for pinned entries) so the two sections still
+        # look visually distinct even though they now share one scroll area.
+        add_stacked_column([
+            ("📌 Pinned", None, pinned_paths,
+             lambda p: self._create_config_button(p, is_pinned=True, draggable=False,
+                                                    flow_managed=True, on_select=menu.close),
+             True, "No pinned projects yet."),
+            ("🕐 Recent", None, recent_paths,
+             lambda p: self._create_config_button(p, is_pinned=False, draggable=False,
+                                                    flow_managed=True, on_select=menu.close),
+             True, "No recent projects yet."),
+        ])
 
         # Computed once, up front, since both "By Color" and "All Projects" derive from the
         # same full project list — By Color is just a different ordering of it.
@@ -9421,16 +9547,20 @@ function filterAliases(q) {{
         # spec, jumping straight to a specific task/the To-Do tab is left for later, not
         # wired up now. Folder Projects/Shared/Archived aren't scanned here — the spec
         # explicitly scoped this first pass to Pinned + Recent only.
-        def add_tasks_column():
+        # Tasks + Within Projects share one column now (five columns total instead of
+        # six, per direct user feedback that six-plus-search felt crowded) — Within
+        # Projects stacked ABOVE Tasks, since it's the more purposeful "I'm looking for
+        # something" action, with Tasks (an always-relevant ambient list) below it.
+        # Within Projects is entirely absent (zero reserved height, no placeholder
+        # hint) until a search actually runs (3+ characters) — once it does, it shows
+        # either real matches or a "no matches" line, and the whole column reflows to
+        # fit, since a hidden QWidget takes no space in its parent QVBoxLayout (the
+        # same mechanism every other visibility-toggled widget in this app relies on).
+        def add_tasks_and_search_column():
             col_widget = QWidget()
             col_layout = QVBoxLayout(col_widget)
             col_layout.setContentsMargins(0, 0, 0, 0)
             col_layout.setSpacing(10)
-
-            header_style = f"color: {self.t('fg_secondary')}; font-size: 13px; font-weight: bold;"
-            header = QLabel("☑ Tasks")
-            header.setStyleSheet(header_style)
-            col_layout.addWidget(header)
 
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -9441,7 +9571,122 @@ function filterAliases(q) {{
             scroll_layout.setContentsMargins(0, 0, 0, 4)
             scroll_layout.setSpacing(10)
 
-            task_label_style = f"color: {self.t('fg_secondary')}; font-size: 13px; padding-left: 4px;"
+            header_style = f"color: {self.t('fg_secondary')}; font-size: 13px; font-weight: bold;"
+            match_style = f"color: {self.t('fg_secondary')}; font-size: 13px; padding-left: 4px;"
+            muted_style = f"color: {self.t('fg_muted')}; font-size: 12px; padding: 8px 0;"
+
+            # --- Within Projects: dynamic, rebuilt on a debounced keystroke (same
+            # QTimer mechanism _alias_shadow_warning()'s callers already use elsewhere
+            # in this file), unlike every other section here which is built once. Its
+            # own sub-widget/sub-layout lets its content be cleared and repopulated in
+            # place without disturbing the static Tasks section built below it. Not
+            # registered into search_refs/column_scroll_areas — those drive the pure
+            # project-name visibility-toggle loop for statically-built content; a
+            # dynamically-rebuilt section wired into that shared list would either
+            # no-op or break on stale widget references.
+            within_results_widget = QWidget()
+            within_results_layout = QVBoxLayout(within_results_widget)
+            within_results_layout.setContentsMargins(0, 0, 0, 0)
+            within_results_layout.setSpacing(8)
+            within_results_widget.setVisible(False)
+            scroll_layout.addWidget(within_results_widget)
+
+            WITHIN_PROJECTS_LINE_CAP = 5
+            WITHIN_PROJECTS_PROJECT_CAP = 20
+
+            def _rebuild_within_projects(text):
+                while within_results_layout.count():
+                    item = within_results_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+
+                needle = text.strip()
+                if len(needle) < 3:
+                    within_results_widget.setVisible(False)
+                    return
+                within_results_widget.setVisible(True)
+                # on_search_text_changed() (wired below, fires synchronously on every
+                # keystroke) independently hides this whole column's `scroll` whenever
+                # no pinned/recent TASK-having project's NAME matches the typed text —
+                # a pre-existing rule from when this column only ever held Tasks. That
+                # evaluation happens before this debounced rebuild ever runs, and
+                # nothing re-triggers it afterward, so once real Within Projects
+                # content is ready it must re-assert the scroll's visibility itself
+                # here, rather than leaving it hidden from the earlier, now-stale
+                # evaluation.
+                scroll.setVisible(True)
+
+                within_header = QLabel("🔎 Within Projects")
+                within_header.setStyleSheet(header_style)
+                within_results_layout.addWidget(within_header)
+
+                needle_lower = needle.lower()
+                shown_projects = 0
+                total_matching = 0
+
+                for path in list(all_paths) + list(folder_paths):
+                    try:
+                        with open(path, 'r') as f:
+                            config_data = json.load(f)
+                    except Exception:
+                        continue
+                    matches = self._search_within_project(path, config_data, needle_lower)
+                    if not matches:
+                        continue
+                    total_matching += 1
+                    if shown_projects >= WITHIN_PROJECTS_PROJECT_CAP:
+                        continue
+
+                    shown_projects += 1
+                    group_widget = QWidget()
+                    group_layout = QVBoxLayout(group_widget)
+                    group_layout.setContentsMargins(0, 0, 0, 0)
+                    group_layout.setSpacing(2)
+
+                    btn_container = self._create_config_button(
+                        path, is_pinned=False, draggable=False, flow_managed=True,
+                        on_select=menu.close
+                    )
+                    group_layout.addWidget(btn_container)
+
+                    for icon, match_text in matches[:WITHIN_PROJECTS_LINE_CAP]:
+                        truncated = match_text if len(match_text) <= 70 else match_text[:69].rstrip() + "…"
+                        line_label = QLabel(f"{icon} {truncated}")
+                        line_label.setStyleSheet(match_style)
+                        line_label.setWordWrap(False)
+                        group_layout.addWidget(line_label)
+
+                    if len(matches) > WITHIN_PROJECTS_LINE_CAP:
+                        more = QLabel(f"+{len(matches) - WITHIN_PROJECTS_LINE_CAP} more")
+                        more.setStyleSheet(muted_style)
+                        group_layout.addWidget(more)
+
+                    within_results_layout.addWidget(group_widget)
+
+                if shown_projects == 0:
+                    empty = QLabel("No matches within any project.")
+                    empty.setStyleSheet(muted_style)
+                    empty.setWordWrap(True)
+                    within_results_layout.addWidget(empty)
+                elif total_matching > WITHIN_PROJECTS_PROJECT_CAP:
+                    refine = QLabel(f"+{total_matching - WITHIN_PROJECTS_PROJECT_CAP} more matching projects — refine your search.")
+                    refine.setStyleSheet(muted_style)
+                    refine.setWordWrap(True)
+                    within_results_layout.addWidget(refine)
+
+            within_projects_timer = QTimer(root)
+            within_projects_timer.setSingleShot(True)
+            within_projects_timer.setInterval(400)
+            within_projects_timer.timeout.connect(lambda: _rebuild_within_projects(search_input.text()))
+            search_input.textChanged.connect(within_projects_timer.start)
+            # No initial call needed — within_results_widget already starts hidden,
+            # matching the "nothing typed yet" state.
+
+            # --- Tasks: static, built once (same as every other column) ---
+            tasks_header = QLabel("☑ Tasks")
+            tasks_header.setStyleSheet(header_style)
+            scroll_layout.addWidget(tasks_header)
+
             column_containers = []
             seen = set()
             for path in list(pinned_paths) + list(recent_paths):
@@ -9469,7 +9714,7 @@ function filterAliases(q) {{
                 for task_text in tasks:
                     truncated = task_text if len(task_text) <= 70 else task_text[:69].rstrip() + "…"
                     task_label = QLabel(f"·  {truncated}")
-                    task_label.setStyleSheet(task_label_style)
+                    task_label.setStyleSheet(match_style)
                     task_label.setWordWrap(False)
                     group_layout.addWidget(task_label)
 
@@ -9480,7 +9725,7 @@ function filterAliases(q) {{
 
             if not column_containers:
                 empty_label = QLabel("No outstanding tasks in your pinned or recent projects.")
-                empty_label.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 12px; padding: 8px 0;")
+                empty_label.setStyleSheet(muted_style)
                 empty_label.setWordWrap(True)
                 scroll_layout.addWidget(empty_label)
 
@@ -9490,7 +9735,7 @@ function filterAliases(q) {{
             columns_row.addWidget(col_widget, 1)
             column_scroll_areas.append((scroll, column_containers))
 
-        add_tasks_column()
+        add_tasks_and_search_column()
 
         def on_search_text_changed(text):
             needle = text.strip().lower()
@@ -11573,6 +11818,28 @@ function filterAliases(q) {{
                         add_btn.setStyleSheet(add_btn_style)
                         add_btn.clicked.connect(self.quick_add_launcher)
                         header_layout.addWidget(add_btn)
+
+                        # Upload an existing file into this project's documents folder,
+                        # filed as a real launcher item — the file-picker-based counterpart
+                        # to the Notes/Editor toolbars' own "＋ New" buttons (which create a
+                        # BLANK file in the same folder). Always shown here regardless of
+                        # layout/grouping mode, since their target category (Documentation
+                        # vs Project Files) is fixed, not tied to whichever tab/bucket is
+                        # currently in view — see upload_document_to_project()/
+                        # upload_file_to_project().
+                        upload_doc_btn = QPushButton("⬆ Upload Doc")
+                        upload_doc_btn.setMinimumHeight(self.d('header_btn_height'))
+                        upload_doc_btn.setToolTip("Upload a document to the Project Documents folder")
+                        upload_doc_btn.setStyleSheet(add_btn_style)
+                        upload_doc_btn.clicked.connect(self.upload_document_to_project)
+                        header_layout.addWidget(upload_doc_btn)
+
+                        upload_file_btn = QPushButton("⬆ Upload File")
+                        upload_file_btn.setMinimumHeight(self.d('header_btn_height'))
+                        upload_file_btn.setToolTip("Upload a file to the Project Documents folder")
+                        upload_file_btn.setStyleSheet(add_btn_style)
+                        upload_file_btn.clicked.connect(self.upload_file_to_project)
+                        header_layout.addWidget(upload_file_btn)
 
                         column_layout.addLayout(header_layout)
 
@@ -14273,8 +14540,8 @@ function filterAliases(q) {{
 
         # Compute date range
         now = datetime.datetime.now()
-        period_days = {'week': 7, 'month': 30, '3m': 90, '6m': 180}.get(
-            getattr(self, '_kimai_period', 'week'), 7
+        period_days = {'week': 7, 'month': 30, '3m': 90, '6m': 180, 'year': 365}.get(
+            getattr(self, '_kimai_period', 'year'), 365
         )
         begin_dt = now - datetime.timedelta(days=period_days)
         begin_str = begin_dt.strftime('%Y-%m-%dT%H:%M:%S')
@@ -14344,8 +14611,8 @@ function filterAliases(q) {{
         # Summary label
         total_h = total_seconds // 3600
         total_m = (total_seconds % 3600) // 60
-        period_label = {'week': 'week', 'month': 'month', '3m': '3 months', '6m': '6 months'}.get(
-            getattr(self, '_kimai_period', 'week'), 'period'
+        period_label = {'week': 'week', 'month': 'month', '3m': '3 months', '6m': '6 months', 'year': 'year'}.get(
+            getattr(self, '_kimai_period', 'year'), 'period'
         )
         n = len(entries)
         if hasattr(self, '_kimai_summary_label'):
@@ -14572,15 +14839,15 @@ function filterAliases(q) {{
         # Period toolbar
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
-        self._kimai_period = 'week'
-        period_labels = [('week', 'Week'), ('month', 'Month'), ('3m', '3M'), ('6m', '6M')]
+        self._kimai_period = 'year'
+        period_labels = [('year', 'Year'), ('6m', '6M'), ('3m', '3M'), ('month', 'Month'), ('week', 'Week')]
         self._kimai_period_btns = {}
         for key, label in period_labels:
             pbtn = QPushButton(label)
             pbtn.setCheckable(True)
-            pbtn.setChecked(key == 'week')
+            pbtn.setChecked(key == 'year')
             pbtn.setStyleSheet(btn_style)
-            pbtn.setFixedWidth(48)
+            pbtn.setFixedWidth(64)
             pbtn.clicked.connect(lambda checked=False, k=key: self._kimai_set_period(k))
             toolbar.addWidget(pbtn)
             self._kimai_period_btns[key] = pbtn
@@ -20757,6 +21024,53 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.set_status(f"✓ Created '{name}' and added to {category}", "success")
         self.refresh_projects()
 
+    def _upload_file_to_documents(self, category, dialog_title):
+        """Shared implementation behind the launcher header's "⬆ Upload Doc"/"⬆ Upload
+        File" buttons (see upload_document_to_project()/upload_file_to_project()) —
+        the file-picker-based counterpart to new_note_file()/new_code_file()'s
+        create-a-blank-file pattern: prompts for an EXISTING file anywhere on disk,
+        copies it into this project's own documents subfolder (creating it on first
+        use via _get_or_create_project_documents_folder(), same as those two), and
+        files it as a real launcher item under `category` with app="default" — same
+        "create/acquire, then file, then refresh" shape both of those already use."""
+        path, _ = QFileDialog.getOpenFileName(self, dialog_title, os.path.expanduser("~"))
+        if not path:
+            return
+        docs_folder = self._get_or_create_project_documents_folder()
+        filename = os.path.basename(path)
+        target = os.path.join(docs_folder, filename)
+        if os.path.exists(target):
+            QMessageBox.warning(
+                self, dialog_title,
+                f'"{filename}" already exists in this project\'s documents folder.'
+            )
+            return
+        try:
+            shutil.copy2(path, target)
+        except OSError as e:
+            QMessageBox.warning(self, dialog_title, f"Could not copy file: {e}")
+            return
+        stem = os.path.splitext(filename)[0]
+        self._add_item_to_config(0, category, self._titleize_stem(stem), target, "default")
+        self.save_config_to_json()
+        self._refresh_all_folder_views()
+        self.set_status(f"✓ Uploaded '{filename}' and added to {category}", "success")
+        self.refresh_projects()
+
+    def upload_document_to_project(self):
+        """Launcher header "⬆ Upload Doc" button: uploads a file into this project's
+        documents folder and files it under Documentation (auto-created via
+        _ensure_documentation_category()), app="default"."""
+        category = self._ensure_documentation_category()
+        self._upload_file_to_documents(category, "Upload a document to the Project Documents folder")
+
+    def upload_file_to_project(self):
+        """Launcher header "⬆ Upload File" button: uploads a file into this project's
+        documents folder and files it under Project Files/Resources (auto-created via
+        _ensure_project_files_category()), app="default"."""
+        category = self._ensure_project_files_category()
+        self._upload_file_to_documents(category, "Upload a file to the Project Documents folder")
+
     def _code_tab_title(self, tab):
         """Short display label for one Editor tab's strip button. Plain basename normally
         (e.g. "default.txt"); when another currently-open tab shares the same basename,
@@ -21031,10 +21345,20 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         add_action = menu.addAction("Add to Project...")
         add_action.triggered.connect(lambda: self.show_add_to_project_dialog(path))
 
-        # Add to Documentation action (files only)
+        # Add to Documentation (files only) — two variants: a lightweight LINK to the
+        # file at its current location (e.g. still on this machine only), and a real
+        # COPY into the target project's own documents/<slug>/ folder (so it's
+        # actually available from any machine that syncs that folder — e.g. a file in
+        # ~/Downloads on the laptop, uploaded so it's also reachable from the
+        # desktop). Both show the same project-picker shape; only what happens after
+        # picking differs. See add_resource_to_documentation() (link) vs
+        # upload_resource_to_documentation() (copy).
         if item_type != "dir":
-            doc_action = menu.addAction("Add to Documentation...")
+            doc_action = menu.addAction("Add to Documentation (link)...")
             doc_action.triggered.connect(lambda: self.show_add_to_documentation_dialog(path))
+
+            upload_action = menu.addAction("⬆ Upload to Project (copy)...")
+            upload_action.triggered.connect(lambda: self.show_upload_to_documentation_dialog(path))
 
         # Add as To-Do (files and directories) — see _add_as_todo()/_prompt_and_add_as_todo().
         todo_action = menu.addAction("☑ Add as To-Do")
@@ -21090,7 +21414,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             open_in_viewer_action.triggered.connect(lambda checked, p=path: self.preview_in_folder_browser(p))
 
         # Rename, Copy to.../Move to... (folder-picker dialog) — available for both files
-        # and folders, unlike "Add to Documentation..." above which is files-only.
+        # and folders, unlike "Add to Documentation (link)..."/"Upload to Project (copy)..."
+        # above, which are files-only.
         menu.addSeparator()
         rename_action = menu.addAction("✏️ Rename...")
         rename_action.triggered.connect(lambda checked, p=path: self._rename_folder_item(p))
@@ -21819,6 +22144,147 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         QMessageBox.information(self, "Add to Documentation", f"Added '{display_name}' to {project_name}")
 
         if project_path == self.current_config_file:
+            self.refresh_projects()
+
+    def show_upload_to_documentation_dialog(self, file_path):
+        """Like show_add_to_documentation_dialog() above, but for the COPY-based
+        upload (see the right-click menu's "⬆ Upload to Project (copy)..." action,
+        _build_folder_context_menu()) — same project-picker shape, just calls
+        upload_resource_to_documentation() instead of add_resource_to_documentation()
+        on accept."""
+        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects = []
+
+        if os.path.isdir(projects_dir):
+            for f in os.listdir(projects_dir):
+                if f.endswith('.json'):
+                    projects.append(f[:-5])
+
+        if not projects:
+            QMessageBox.warning(self, "Upload to Project", f"No project files found in {projects_dir}")
+            return
+
+        projects.sort(key=str.lower)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Upload to Project")
+        dialog.setMinimumWidth(300)
+        layout = QVBoxLayout(dialog)
+
+        filename = os.path.basename(file_path)
+        label = QLabel(f"Upload '{filename}' (copy) to which project's documents folder?")
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.addItems(projects)
+
+        if self.current_config_file:
+            current_name = os.path.basename(self.current_config_file)
+            if current_name.endswith('.json'):
+                current_name = current_name[:-5]
+            if current_name in projects:
+                combo.setCurrentText(current_name)
+
+        layout.addWidget(combo)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_project = combo.currentText()
+            project_path = os.path.join(projects_dir, f"{selected_project}.json")
+            self.upload_resource_to_documentation(file_path, project_path)
+
+    def _documents_folder_for_config_getorcreate(self, config_path, config_data):
+        """Write-capable sibling of _documents_folder_for_config() (the read-only
+        version behind the mega-menu's Within-Projects search) — resolves this
+        ARBITRARY project's documents_subfolder slug exactly like
+        _get_or_create_project_documents_folder() does for self.current_config_file
+        (same _slugify_project_name()+collision-check logic), setting
+        config_data['documents_subfolder'] in place if it had to compute a new one
+        — the caller is responsible for writing config_data back to config_path
+        afterward, same as upload_resource_to_documentation() below does. Creates
+        the folder on disk (os.makedirs(..., exist_ok=True)) either way."""
+        slug = config_data.get('documents_subfolder')
+        base = self.get_documents_folder()
+        if not slug:
+            project_name = config_data.get('project_name') or os.path.splitext(os.path.basename(config_path))[0]
+            candidate = self._slugify_project_name(project_name)
+            slug = candidate
+            n = 2
+            while os.path.isdir(os.path.join(base, slug)):
+                slug = f"{candidate}_{n}"
+                n += 1
+            config_data['documents_subfolder'] = slug
+        path = os.path.join(base, slug)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def upload_resource_to_documentation(self, file_path, project_path):
+        """Copy file_path INTO project_path's own documents/<slug>/ folder and file
+        it under 'Documentation', app='default' — the copy-based sibling of
+        add_resource_to_documentation() above (which only references file_path at
+        its original location). This is what actually makes the file available on
+        another machine that syncs that project's documents/ tree (e.g. a file
+        downloaded on a laptop, uploaded here so it's also reachable from a desktop)
+        — a plain link only works as long as the original path still exists on
+        whichever machine opens it. Operates directly on project_path's own JSON via
+        json.load()/json.dump() (not self.COLUMN_1/save_config_to_json()), since
+        project_path isn't necessarily the currently-loaded project — same
+        arbitrary-project convention add_resource_to_documentation() already uses."""
+        try:
+            with open(project_path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read config: {e}")
+            return
+
+        docs_folder = self._documents_folder_for_config_getorcreate(project_path, data)
+        filename = os.path.basename(file_path)
+        target = os.path.join(docs_folder, filename)
+        if os.path.exists(target):
+            QMessageBox.information(
+                self, "Upload to Project",
+                f'"{filename}" already exists in this project\'s documents folder.'
+            )
+            return
+        try:
+            shutil.copy2(file_path, target)
+        except OSError as e:
+            QMessageBox.warning(self, "Upload to Project", f"Could not copy file: {e}")
+            return
+
+        if 'columns' not in data or not data['columns']:
+            data['columns'] = [[]]
+        column1 = data['columns'][0]
+
+        doc_category = None
+        for category_dict in column1:
+            if isinstance(category_dict, dict) and "Documentation" in category_dict:
+                doc_category = category_dict["Documentation"]
+                break
+        if doc_category is None:
+            doc_category = []
+            column1.append({"Documentation": doc_category})
+
+        stem = os.path.splitext(filename)[0]
+        display_name = self._titleize_stem(stem)
+        doc_category.append([display_name, target, "default"])
+
+        try:
+            with open(project_path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save config: {e}")
+            return
+
+        project_name = os.path.basename(project_path).replace('.json', '')
+        QMessageBox.information(self, "Upload to Project", f"Uploaded '{filename}' to {project_name}")
+
+        if project_path == self.current_config_file:
+            self._refresh_all_folder_views()
             self.refresh_projects()
 
     def folder_open_external(self, side="right"):
@@ -23052,6 +23518,13 @@ Examples:
         nargs='?',
         help='Path to configuration file (relative or absolute)'
     )
+    parser.add_argument(
+        '--folder', '-d',
+        default=None,
+        help='Open straight to the Folder viewer at this directory (transient — '
+             'never written to the project config). Used by the "Open Directory in '
+             'ProjectFlow" service menu.'
+    )
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
@@ -23083,7 +23556,7 @@ Examples:
     if not icon.isNull():
         app.setWindowIcon(icon)
 
-    window = ProjectFlowApp(config_file_arg=args.config)
+    window = ProjectFlowApp(config_file_arg=args.config, folder_arg=args.folder)
     window.showMaximized()
     #window.show()
 
