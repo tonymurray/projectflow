@@ -4,9 +4,14 @@ MimeType=all/all;inode/directory;
 Actions=addToProjectFlow;uploadToProjectFlowDocs;openDirectoryInProjectFlow;
 
 # Installation:
-# 1. Copy this file to ~/.local/share/kio/servicemenus/
-# 2. Edit the Exec lines below to point to where you installed the three .sh scripts
-# Example: Exec=/home/youruser/Programs/projectflow/utilities/add-projectflow-servicemenu.sh %F
+# Run utilities/install-servicemenu.sh — it copies this file to
+# ~/.local/share/kio/servicemenus/ and rewrites the Exec lines below to this
+# checkout's actual absolute path automatically (also safe to re-run later, e.g.
+# after a `git pull` changes this file).
+#
+# To install by hand instead: copy this file to ~/.local/share/kio/servicemenus/,
+# then edit each Exec line below to the absolute path of that script, e.g.:
+# Exec=/home/youruser/Programs/projectflow/utilities/add-projectflow-servicemenu.sh %F
 
 [Desktop Action addToProjectFlow]
 Name=Add to ProjectFlow

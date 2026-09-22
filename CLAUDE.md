@@ -231,10 +231,9 @@ Files and folders can be associated with a config in two ways:
 
 To install the service menu:
 ```bash
-mkdir -p ~/.local/share/kio/servicemenus
-cp utilities/projectflow-servicemenu.desktop ~/.local/share/kio/servicemenus/
-chmod +x utilities/add-projectflow-servicemenu.sh utilities/upload-to-projectflow-docs.sh utilities/open-directory-in-projectflow.sh
+./utilities/install-servicemenu.sh
 ```
+`install-servicemenu.sh` copies `projectflow-servicemenu.desktop` to `~/.local/share/kio/servicemenus/` and rewrites its `Exec=` lines to this checkout's actual absolute path (`sed`-substituting the bare script names the tracked file ships with — see below) — the tracked file has no machine-specific path baked in (per Code Cleanup Guidelines), so a plain `cp` alone leaves `Exec=` lines that only resolve if `utilities/` happens to be on `$PATH`, producing a "could not find the program" error from Dolphin. Also `chmod +x`'s the three scripts. Safe to re-run any time, e.g. after a `git pull` changes this file, or to fix an installed copy that was `cp`'d by hand without the path edit. No `kbuildsycoca` rebuild or Dolphin restart needed either way — service menus are read live from `~/.local/share/kio/servicemenus/`, not cached.
 
 ### Notes Storage
 
