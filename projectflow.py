@@ -2113,7 +2113,8 @@ class ProjectFlowApp(QMainWindow):
         if self.detect_desktop_environment() == 'kde':
             servicemenu_btn = QPushButton("Install Dolphin Service Menu")
             servicemenu_btn.setStyleSheet(action_btn_style)
-            servicemenu_btn.setToolTip("Install 'Add to ProjectFlow' right-click menu in Dolphin")
+            servicemenu_btn.setToolTip("Install the 'Add to ProjectFlow' / 'Upload to ProjectFlow Docs' / "
+                                        "'Open Directory in ProjectFlow' right-click actions in Dolphin")
             servicemenu_btn.clicked.connect(self.install_kde_servicemenu)
             actions_layout.addWidget(servicemenu_btn)
 
@@ -23283,49 +23284,76 @@ Project created: {date_str}
         return "unknown"
 
     def install_kde_servicemenu(self):
-        """Install the KDE Dolphin service menu for 'Add to ProjectFlow' functionality"""
-        try:
-            # Source files
-            servicemenu_src = os.path.join(self.script_dir, "utilities", "projectflow-servicemenu.desktop")
-            script_src = os.path.join(self.script_dir, "utilities", "add-projectflow-servicemenu.sh")
+        """Install the KDE Dolphin service menu — Add to ProjectFlow, Upload to
+        ProjectFlow Docs, and Open Directory in ProjectFlow (see CLAUDE.md's Adding
+        Resources section) — all three actions defined in one shared
+        projectflow-servicemenu.desktop.
 
-            # Check source files exist
+        Real bug fixed here (2026-09-22): this method used to rewrite the Exec line
+        for ONLY the original addToProjectFlow action, via a single hardcoded
+        str.replace() call written back when that was the only action that existed.
+        When uploadToProjectFlowDocs/openDirectoryInProjectFlow were added later,
+        this method was never updated — clicking this button left those two
+        actions' Exec lines as the bare script names the tracked .desktop file ships
+        with (see below), which only resolve if utilities/ happens to be on $PATH,
+        so both newer actions silently failed with Dolphin's "could not find the
+        program" error while the original action kept working. Now generalized to a
+        regex substitution covering every "Exec=<script>.sh %F" line, matching the
+        exact same pattern utilities/install-servicemenu.sh's own sed command
+        uses — kept in sync so this GUI button and that shell script always produce
+        an identical result, regardless of how many actions the .desktop file ends
+        up defining in the future."""
+        try:
+            servicemenu_src = os.path.join(self.script_dir, "utilities", "projectflow-servicemenu.desktop")
+            utilities_dir = os.path.join(self.script_dir, "utilities")
+            scripts = [
+                "add-projectflow-servicemenu.sh",
+                "upload-to-projectflow-docs.sh",
+                "open-directory-in-projectflow.sh",
+            ]
+
             if not os.path.exists(servicemenu_src):
                 QMessageBox.warning(self, "Install Service Menu",
                     f"Service menu file not found:\n{servicemenu_src}")
                 return
-            if not os.path.exists(script_src):
+            missing = [s for s in scripts if not os.path.exists(os.path.join(utilities_dir, s))]
+            if missing:
                 QMessageBox.warning(self, "Install Service Menu",
-                    f"Service menu script not found:\n{script_src}")
+                    "Service menu script(s) not found:\n" + "\n".join(missing))
                 return
 
             # Destination directory
             servicemenu_dir = os.path.expanduser("~/.local/share/kio/servicemenus")
             os.makedirs(servicemenu_dir, exist_ok=True)
 
-            # Read and modify the desktop file to point to the correct script path
             with open(servicemenu_src, 'r') as f:
                 content = f.read()
 
-            # Update the Exec line to use the absolute path
-            content = content.replace(
-                "Exec=add-projectflow-servicemenu.sh %F",
-                f"Exec={script_src} %F"
+            # Rewrite every bare "Exec=<script>.sh %F" line to that script's
+            # absolute path in THIS checkout (an already-absolute Exec line, e.g.
+            # from a previous install, is left untouched — the pattern only matches
+            # a plain filename right after "Exec=").
+            content = re.sub(
+                r'^Exec=([A-Za-z0-9_.-]+\.sh)((?: .*)?)$',
+                lambda m: f"Exec={os.path.join(utilities_dir, m.group(1))}{m.group(2)}",
+                content, flags=re.MULTILINE
             )
 
-            # Write to destination
             servicemenu_dest = os.path.join(servicemenu_dir, "projectflow-servicemenu.desktop")
             with open(servicemenu_dest, 'w') as f:
                 f.write(content)
 
-            # Make both script and desktop file executable (KDE security requirement)
-            os.chmod(script_src, 0o755)
+            # Make every script and the desktop file executable (KDE security requirement)
+            for script in scripts:
+                os.chmod(os.path.join(utilities_dir, script), 0o755)
             os.chmod(servicemenu_dest, 0o755)
 
             QMessageBox.information(self, "Install Service Menu",
                 "Service menu installed successfully!\n\n"
-                "You can now right-click files/folders in Dolphin\n"
-                "and select 'Add to ProjectFlow'.")
+                "Right-click files/folders in Dolphin for:\n"
+                "• Add to ProjectFlow\n"
+                "• Upload to ProjectFlow Docs\n"
+                "• Open Directory in ProjectFlow")
 
         except Exception as e:
             QMessageBox.warning(self, "Install Service Menu", f"Installation failed:\n{str(e)}")
