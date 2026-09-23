@@ -19,6 +19,11 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 - Long project names in the All Projects picker were wrapping to an illegible second line — now truncate to a single line with an ellipsis (a `min-width: 0` flexbox fix was needed for the truncation to actually take effect).
 - Minor layout polish: the 📋 Paste button moved from the crowded header into the bottom nav (between Notes and the theme toggle), and the ≡ All Projects button got a larger tap target.
 
+## 2026-09-23 (Desktop)
+
+### Changed
+- **Folder Browser "Project Home"/"Docs" redundancy cleaned up.** The shortcuts row above the folder toolbar already had a spelled-out "Project Home" button; the toolbar row directly below it separately had an icon-only "⌂⌂" button pointing at the exact same folder, plus an icon-only "Docs" button for the project's documents folder — effectively two ways to reach "Project Home" sitting one row apart. Removed both icon buttons from `create_folder_toolbar()`/`_build_launcher_folder_panel()`, and added a new spelled-out **"Project Files"** shortcut to the row above (right next to "Project Home"), taking over the Docs button's exact job — same lazy get-or-create-on-click behavior, never creating anything just from the toolbar rendering. The get-or-create logic itself was refactored to share its slug/collision resolution (`_resolve_project_documents_slug()`) with a new non-mutating preview used only for the new shortcut's tooltip/highlight, so the two can't quietly diverge. One minor behavior note: the Focus-layout launcher panel's own toolbar has no 📌 pin-default button of its own, so "⌂⌂"'s old secondary job — pinning the currently-browsed folder as the project's default while unpinned — is no longer reachable from that specific panel (still available via the main Folder viewer's own 📌 button, or the Project Settings viewer's "Folder Start Path" field). The now-orphaned `_document_icon()` helper was removed as dead code.
+
 ## 2026-09-22
 
 ### Added

@@ -7174,28 +7174,50 @@ StartupNotify=true
         except Exception as e:
             print(f"Error saving documents_subfolder: {e}")
 
-    def _get_or_create_project_documents_folder(self):
-        """Resolve (and lazily create) the active project's own documents subfolder.
-        Reuses an already-resolved slug from config_documents_subfolder if one exists —
-        set once, the first time this is ever called for a project, so a later rename
-        doesn't silently orphan existing files under the old slug. A brand-new slug is
-        checked against what's already on disk and disambiguated with a numeric suffix
-        on collision (two different project names slugifying to the same string),
-        mirroring the existing _2/_3 snapshot-collision convention used for Backup Now."""
+    def _resolve_project_documents_slug(self):
+        """Slug/collision resolution shared by _get_or_create_project_documents_folder()
+        and _preview_project_documents_path() below — reuses an already-resolved slug
+        from config_documents_subfolder if one exists; a brand-new slug is checked
+        against what's already on disk and disambiguated with a numeric suffix on
+        collision (two different project names slugifying to the same string), mirroring
+        the existing _2/_3 snapshot-collision convention used for Backup Now. The
+        collision check itself is a read-only os.path.isdir(), so this whole method is
+        always safe to call with no side effects — only the caller decides whether to
+        persist a newly-computed slug and create the directory."""
         slug = getattr(self, 'config_documents_subfolder', None)
+        if slug:
+            return slug
         base = self.get_documents_folder()
-        if not slug:
-            candidate = self._slugify_project_name(self.get_project_name())
-            slug = candidate
-            n = 2
-            while os.path.isdir(os.path.join(base, slug)):
-                slug = f"{candidate}_{n}"
-                n += 1
+        candidate = self._slugify_project_name(self.get_project_name())
+        slug = candidate
+        n = 2
+        while os.path.isdir(os.path.join(base, slug)):
+            slug = f"{candidate}_{n}"
+            n += 1
+        return slug
+
+    def _get_or_create_project_documents_folder(self):
+        """Resolve (and lazily create) the active project's own documents subfolder. A
+        newly-resolved slug (project had none yet) is persisted so a later rename
+        doesn't silently orphan existing files under the old slug — set once, the first
+        time this is ever called for a project."""
+        base = self.get_documents_folder()
+        slug = self._resolve_project_documents_slug()
+        if not getattr(self, 'config_documents_subfolder', None):
             self.config_documents_subfolder = slug
             self._save_documents_subfolder_to_config(slug)
         path = os.path.join(base, slug)
         os.makedirs(path, exist_ok=True)
         return path
+
+    def _preview_project_documents_path(self):
+        """Non-mutating peek at where _get_or_create_project_documents_folder() would
+        resolve to — used only for the "Project Files" folder-shortcut button's tooltip
+        and highlight-matching (_build_folder_shortcuts_row), never to decide whether to
+        create anything. Safe to call on every toolbar rebuild since
+        _resolve_project_documents_slug()'s own collision check is read-only and this
+        never touches config_documents_subfolder or the filesystem."""
+        return os.path.join(self.get_documents_folder(), self._resolve_project_documents_slug())
 
     # A brand-new todo.md is seeded with exactly this line (see _get_or_create_todo_file())
     # rather than left blank. Also used by _open_todo_in_muya() to compute where the
@@ -18162,47 +18184,13 @@ function filterAliases(q) {{
         home_btn.clicked.connect(lambda: self.folder_go_home("right"))
         toolbar_layout.addWidget(home_btn)
 
-        # Project default folder button — always shown, greyed out (but still clickable)
-        # when this project has no folder_path pinned yet. Clicking it while greyed pins
-        # the currently browsed folder as the project default; once pinned, it switches to
-        # its active style and navigates there instead (see _pin_current_folder_as_project_default).
-        project_home_btn = QPushButton("⌂⌂")
-        if self.config_folder_path:
-            project_home_btn.setStyleSheet(btn_style)
-            project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
-            project_home_btn.clicked.connect(lambda: self.folder_go_project_default("right"))
-        else:
-            project_home_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.t('bg_button')};
-                    color: {self.t('border')};
-                    border: 1px solid {self.t('border')};
-                    border-radius: 3px;
-                    padding: 4px 8px;
-                    font-size: 12px;
-                    min-width: 28px;
-                }}
-                QPushButton:hover {{
-                    background-color: {self.t('bg_button_hover')};
-                    color: {self.t('fg_on_dark')};
-                }}
-            """)
-            project_home_btn.setToolTip("Set current folder as this project's default folder")
-            project_home_btn.clicked.connect(lambda: self._pin_current_folder_as_project_default("right"))
-        toolbar_layout.addWidget(project_home_btn)
-
-        # Docs shortcut — always enabled (unlike "⌂⌂" above, a project's documents
-        # subfolder is always resolvable/creatable on click, never "unset").
-        docs_btn = QPushButton()
-        docs_btn.setIcon(self._document_icon())
-        # Smaller than the app's usual 16x16 icon convention — this toolbar's other
-        # buttons are plain text glyphs at the style's 12px font-size, so a full-size
-        # icon read as noticeably larger/heavier than its neighbors.
-        docs_btn.setIconSize(QSize(13, 13))
-        docs_btn.setStyleSheet(btn_style)
-        docs_btn.setToolTip("Go to this project's documents folder")
-        docs_btn.clicked.connect(lambda: self.folder_go_project_documents("right"))
-        toolbar_layout.addWidget(docs_btn)
+        # The old "⌂⌂ project folder" and icon-only "Docs" buttons that used to sit here
+        # were removed — both are now covered by the spelled-out "Project Home"/"Project
+        # Files" shortcuts in the row above (_build_folder_shortcuts_row), which made
+        # having both a redundant, confusing duplicate. The "pin current folder as this
+        # project's default" action "⌂⌂" also used to provide while unpinned is still
+        # available via the 📌 button at the end of this toolbar (set_viewer_as_default())
+        # or the Project Settings viewer's "Folder Start Path" field.
 
         # Refresh button
         refresh_btn = QPushButton("↻")
@@ -18311,40 +18299,13 @@ function filterAliases(q) {{
         home_btn.clicked.connect(lambda: self.folder_go_home("left"))
         toolbar_layout.addWidget(home_btn)
 
-        # Always shown; greyed out (but still clickable) when no folder_path is pinned yet
-        # — see create_folder_toolbar's matching button for the full explanation.
-        project_home_btn = QPushButton("⌂⌂")
-        if self.config_folder_path:
-            project_home_btn.setStyleSheet(mini_btn_style)
-            project_home_btn.setToolTip(f"Go to project folder: {self.config_folder_path}")
-            project_home_btn.clicked.connect(lambda: self.folder_go_project_default("left"))
-        else:
-            project_home_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.t('bg_button')};
-                    color: {self.t('border')};
-                    border: 1px solid {self.t('border')};
-                    border-radius: 3px;
-                    padding: 4px 8px;
-                    font-size: 12px;
-                    min-width: 28px;
-                }}
-                QPushButton:hover {{
-                    background-color: {self.t('bg_button_hover')};
-                    color: {self.t('fg_on_dark')};
-                }}
-            """)
-            project_home_btn.setToolTip("Set current folder as this project's default folder")
-            project_home_btn.clicked.connect(lambda: self._pin_current_folder_as_project_default("left"))
-        toolbar_layout.addWidget(project_home_btn)
-
-        docs_btn = QPushButton()
-        docs_btn.setIcon(self._document_icon())
-        docs_btn.setIconSize(QSize(13, 13))
-        docs_btn.setStyleSheet(mini_btn_style)
-        docs_btn.setToolTip("Go to this project's documents folder")
-        docs_btn.clicked.connect(lambda: self.folder_go_project_documents("left"))
-        toolbar_layout.addWidget(docs_btn)
+        # The old "⌂⌂ project folder" and icon-only "Docs" buttons that used to sit here
+        # were removed — both are now covered by the spelled-out "Project Home"/"Project
+        # Files" shortcuts in the row above (_build_folder_shortcuts_row). Note: unlike
+        # create_folder_toolbar's main toolbar, this panel has no equivalent 📌
+        # pin-default button of its own — "pin current folder as this project's default"
+        # while unpinned is still reachable via the main Folder viewer's own 📌 button or
+        # the Project Settings viewer's "Folder Start Path" field, just not from here.
 
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(mini_btn_style)
@@ -18567,17 +18528,6 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
-    def _document_icon(self):
-        """Plain single-color 'document/page' icon for the Folder Browser's "Docs"
-        shortcut button — same theme-matched light/dark PNG pair convention as
-        _open_icon()/_pin_icon(), since it sits on the same plain bg_button toolbar."""
-        cache_attr = f'_document_icon_cache_{self.current_theme}'
-        icon = getattr(self, cache_attr, None)
-        if icon is None:
-            fname = "document-dark.png" if self.current_theme == "dark" else "document-light.png"
-            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
-            setattr(self, cache_attr, icon)
-        return icon
 
     def _pin_icon(self):
         """Plain single-color 'pin' icon for pin buttons that sit on a plain, theme-dependent
@@ -19022,8 +18972,17 @@ function filterAliases(q) {{
     def _build_folder_shortcuts_row(self, parent_layout, side):
         """Adds a row of quick-jump buttons for _get_folder_location_shortcuts()'s result,
         one per candidate folder location, directly above the caller's own toolbar (called
-        as the first line of create_folder_toolbar()/_build_launcher_folder_panel()). Adds
-        nothing if there are no candidates — no empty row, no placeholder.
+        as the first line of create_folder_toolbar()/_build_launcher_folder_panel()) — plus
+        an always-present "Project Files" button, added right after "Project Home" (or
+        first, if there's no folder_path pinned yet so "Project Home" doesn't appear at
+        all). "Project Files" used to be a separate icon-only "Docs" button lower down in
+        the toolbar itself; moved up here per user feedback that having both a spelled-out
+        "Project Home" shortcut in this row AND a redundant icon-only "⌂⌂" duplicate of it
+        in the toolbar below was confusing. Unlike every other candidate in this row,
+        "Project Files" doesn't come from _get_folder_location_shortcuts() and is never
+        skipped — a documents subfolder is always resolvable/creatable on click, never
+        "unset" (see _get_or_create_project_documents_folder()) — so this row is now never
+        fully empty either, unlike before.
 
         Each button is checkable and highlighted (see the QPushButton:checked rule, the
         same convention create_code_editor_toolbar's wrap-toggle button uses) whenever it
@@ -19032,15 +18991,13 @@ function filterAliases(q) {{
         after every navigation, since navigating (Up/Home/another shortcut) re-renders the
         folder view in place without rebuilding this toolbar. Button/path pairs are stashed
         in self._folder_shortcut_button_refs[side] for that refresh to find; reset here on
-        every rebuild (including the empty-shortcuts case) so a stale reference from a
-        previous build is never left behind for that side."""
+        every rebuild so a stale reference from a previous build is never left behind for
+        that side."""
         if not hasattr(self, '_folder_shortcut_button_refs'):
             self._folder_shortcut_button_refs = {}
         self._folder_shortcut_button_refs[side] = []
 
         shortcuts = self._get_folder_location_shortcuts()
-        if not shortcuts:
-            return
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
@@ -19073,15 +19030,27 @@ function filterAliases(q) {{
         current_path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
         normalized_current = os.path.normpath(os.path.expanduser(current_path)) if current_path else None
 
-        for name, path in shortcuts:
+        def add_shortcut_button(name, path, on_click):
             btn = QPushButton(name)
             btn.setStyleSheet(btn_style)
             btn.setToolTip(path)
             btn.setCheckable(True)
             btn.setChecked(os.path.normpath(path) == normalized_current)
-            btn.clicked.connect(lambda checked=False, p=path, s=side: self._jump_to_folder_shortcut(p, s))
+            btn.clicked.connect(on_click)
             row_layout.addWidget(btn)
             self._folder_shortcut_button_refs[side].append((btn, path))
+
+        inserted_project_files = False
+        for name, path in shortcuts:
+            add_shortcut_button(name, path, lambda checked=False, p=path, s=side: self._jump_to_folder_shortcut(p, s))
+            if name == "Project Home" and not inserted_project_files:
+                add_shortcut_button("Project Files", self._preview_project_documents_path(),
+                                     lambda checked=False, s=side: self.folder_go_project_documents(s))
+                inserted_project_files = True
+        if not inserted_project_files:
+            add_shortcut_button("Project Files", self._preview_project_documents_path(),
+                                 lambda checked=False, s=side: self.folder_go_project_documents(s))
+
         row_layout.addStretch()
 
         parent_layout.addWidget(row_widget)
