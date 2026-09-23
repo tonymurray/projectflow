@@ -2,6 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-23 (Desktop, Editor tab dedup fix)
+
+### Fixed
+- **Editor tabs opened duplicates for a file that was already open**, most noticeably after switching away from a project and back: the restored Editor tabs stayed open, but clicking a launcher/folder-browser item for one of those same files silently opened a *second* tab on it instead of activating the existing one. `_open_code_tab()` had inherited PDF/Web/Image's "always open a new tab" policy, which is legitimate there (a second PDF tab at a different page is a real use case) but wrong for a code file, which has exactly one editable document. Fixed to reuse an already-open tab for the same path instead — the same convention Notes tabs already followed (`_open_notes_tab()`), which is why this bug was Editor-only.
+
 ## 2026-09-23 (Mobile)
 
 ### Added

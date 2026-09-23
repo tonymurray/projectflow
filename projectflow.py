@@ -21424,11 +21424,29 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self._update_code_editor_buttons()
 
     def _open_code_tab(self, path):
-        """Open `path` as a new Editor tab and make it active — always-new-tab policy,
-        mirroring _open_pdf_tab()/_open_web_tab()/_open_notes_tab(). Unlike the pre-tab
-        _open_code_file_in_editor(), opening a different file while the current tab has
-        unsaved changes no longer needs a discard confirmation — that tab's content gets
-        cached instead of destroyed (see _activate_code_tab())."""
+        """Open `path` as an Editor tab and make it active.
+
+        Reuses an already-open tab for the same file instead of piling up duplicates —
+        same reasoning as _open_notes_tab(), and NOT the "always new tab" policy PDF/Web/
+        Image tabs use (a second tab on the identical file serves no purpose for a single
+        editable document). This matters especially across a project switch: restoring a
+        project's saved code_tabs on reopen, then clicking a launcher/folder-browser item
+        for a file that was already restored, used to silently open a second tab on that
+        same file rather than just activating the existing one — reported directly as
+        "I close the project, reopen it, click to edit a file, and it's now open twice."
+        `path` is expanduser()'d before comparing so a '~'-prefixed launcher path and an
+        absolute file-picker path pointing at the same file still match as the same tab.
+
+        Opening a different file while the current tab has unsaved changes needs no
+        discard confirmation either way — that tab's content gets cached instead of
+        destroyed (see _activate_code_tab())."""
+        path = os.path.expanduser(path)
+        for i, tab in enumerate(self.code_tabs):
+            if tab.path == path:
+                if self.column2_mode != "code":
+                    self.switch_to_viewer_mode("code")
+                self._activate_code_tab(i)
+                return
         language = self._code_editor_language_for(path)
         self.code_tabs.append(CodeTabState(path, language))
         if self.column2_mode != "code":
@@ -21529,9 +21547,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def _open_code_file_in_editor(self, path=None):
         """Stable public entry point for opening a file in the internal code editor — used
-        by all click-routing call sites. Always opens as a new tab (see _open_code_tab());
-        no discard-guard needed anymore since opening a different file no longer destroys
-        the current tab's unsaved content (it's cached, see _activate_code_tab())."""
+        by all click-routing call sites. Reuses an already-open tab for the same file
+        rather than duplicating it (see _open_code_tab()); no discard-guard needed either
+        way since opening a different file no longer destroys the current tab's unsaved
+        content (it's cached, see _activate_code_tab())."""
         path = path or self._code_session.path
         if not path:
             return
