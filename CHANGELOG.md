@@ -2,6 +2,15 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-23 (Desktop, Folder Icon Pack)
+
+### Added
+- **Settings → Icons → "Folder Icon Pack"**: opt-in choice between the app's own hand-drawn blue folder icon (default, unchanged) and an installed system icon theme's own folder icon (Breeze, Oxygen, Papirus, whatever's actually installed) — dynamically enumerated by scanning `QIcon.themeSearchPaths()` for `index.theme` files, filtering out non-pack junk (default/hicolor/locolor, cursor themes) and verifying each candidate actually resolves a real folder icon before listing it, so a broken/incomplete theme never shows up as a selectable option. Applies everywhere the folder icon appears (toolbar, menus, both Folder Browser panels), since every call site already shares one function. The app's long-standing "never use the system theme's folder icon" rule (it renders yellow/manila on many themes) stays the *default* — this is purely opt-in.
+
+### Fixed
+- **Folder icon-grid zoom stopped scaling past ~1.3x zoom**: folder and generic file-type icons sat centered in an increasingly empty cell instead of filling it, since `QIcon` never scales a pixmap up past its native resolution, only down, and the folder icon was drawn at a fixed 64px regardless of zoom. Fixed by rendering it at the same oversized base already used for image thumbnails (`THUMBNAIL_BASE_PX`), with proportions scaled up to match; the identical fix applied to system file-type icons pulled from `QFileIconProvider`.
+- **Real bug found immediately after shipping the icon-pack feature above**: picking a pack (e.g. Papirus) never visibly changed anything — the folder icon always silently fell back to the system's actual default theme regardless of selection. Root cause: `QIcon.fromTheme()` doesn't return frozen icon data — it's a lazy icon engine that re-resolves against whatever the *global* icon theme is at paint time, not when it was fetched. The original "set theme → fetch icon → immediately restore theme" pattern therefore always ended up resolving against the already-restored (wrong) theme by the time anything was actually painted on screen. Confirmed via a standalone reproduction: two icons built from two different themes came out pixel-identical once the global theme was restored. Fixed by capturing real pixmap data into a fresh, self-contained `QIcon` *before* restoring the theme name, so the result no longer depends on global theme state at all.
+
 ## 2026-09-23 (Desktop, Editor tab dedup fix)
 
 ### Fixed

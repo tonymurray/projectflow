@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
 import re
+import configparser
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -4727,6 +4728,65 @@ class ProjectFlowApp(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(20, 20, 20, 20)
 
+        # Folder Icon Pack — separate mechanism from the per-app icon_preferences.json list
+        # below (that one only ever stores an emoji or a bundled asset path, never a system
+        # icon-theme lookup). Sourced fresh every time this tab is built, so a newly-installed
+        # pack (e.g. Papirus) just appears next time Settings is opened — see
+        # _discover_icon_themes()/_folder_theme_icon() for the actual lookup/fallback logic.
+        input_style = f"""
+            QComboBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+            QComboBox:focus {{
+                border-color: {self.t('bg_category')};
+            }}
+        """
+        label_style = f"color: {self.t('fg_primary')}; font-size: 13px;"
+
+        folder_pack_form = QFormLayout()
+        folder_pack_label = QLabel("Folder Icon Pack:")
+        folder_pack_label.setStyleSheet(label_style)
+        self._settings_folder_icon_pack = QComboBox()
+        self._settings_folder_icon_pack.addItem("Current (default)", "")
+        current_pack = self.settings.get("folder_icon_pack", "")
+        found_current = current_pack == ""
+        for folder_name, display_name in self._discover_icon_themes():
+            self._settings_folder_icon_pack.addItem(display_name, folder_name)
+            if folder_name == current_pack:
+                found_current = True
+        if not found_current:
+            # Saved pack isn't installed on this machine right now — keep it selected (so
+            # Apply without touching this field doesn't silently discard the choice) but
+            # flag it via the warning label below, same "don't lose a value, but say so"
+            # convention as the ttyd/Monaco backend warnings just above this tab.
+            self._settings_folder_icon_pack.addItem(f"{current_pack} (not found)", current_pack)
+        idx = self._settings_folder_icon_pack.findData(current_pack)
+        self._settings_folder_icon_pack.setCurrentIndex(idx if idx >= 0 else 0)
+        self._settings_folder_icon_pack.setStyleSheet(input_style)
+        self._settings_folder_icon_pack.setToolTip(
+            "Icon used for folders throughout the app (Folder Browser, toolbar, menus). "
+            "\"Current\" is a hand-drawn icon chosen to render consistently everywhere — "
+            "picking an installed system icon theme instead uses that theme's own folder icon."
+        )
+        folder_pack_form.addRow(folder_pack_label, self._settings_folder_icon_pack)
+        layout.addLayout(folder_pack_form)
+
+        folder_pack_missing_label = QLabel(
+            f"⚠ \"{current_pack}\" isn't installed on this machine right now — falling back "
+            "to the default folder icon until it's found again."
+        )
+        folder_pack_missing_label.setWordWrap(True)
+        folder_pack_missing_label.setStyleSheet(
+            f"color: {self.t('status_warning')}; font-size: 11px; font-weight: bold;"
+        )
+        folder_pack_missing_label.setVisible(not found_current)
+        layout.addWidget(folder_pack_missing_label)
+
         # List widget for icons
         self._icons_list = QListWidget()
         self._icons_list.setStyleSheet(f"""
@@ -5619,6 +5679,14 @@ class ProjectFlowApp(QMainWindow):
                 self.settings["code_editor_backend"] = code_editor_backend
             elif "code_editor_backend" in self.settings:
                 del self.settings["code_editor_backend"]  # codemirror is the implicit default
+
+            folder_icon_pack = self._settings_folder_icon_pack.currentData()
+            if folder_icon_pack:
+                self.settings["folder_icon_pack"] = folder_icon_pack
+            elif "folder_icon_pack" in self.settings:
+                del self.settings["folder_icon_pack"]  # the hand-drawn default is implicit
+            if hasattr(self, '_folder_theme_icon_cache'):
+                self._folder_theme_icon_cache = {}  # pack changed — old cached icon is stale
 
             notes_folder = self._settings_notes_folder.text().strip()
             if notes_folder:
@@ -18584,21 +18652,36 @@ function filterAliases(q) {{
 
     def _folder_icon(self, color_hex):
         """Hand-drawn flat folder icon in the given color — used instead of the system theme's
-        folder icon (which renders yellow/manila on many setups) so it looks consistent everywhere."""
+        folder icon (which renders yellow/manila on many setups) so it looks consistent everywhere.
+
+        Rendered at THUMBNAIL_BASE_PX, not just enough for a plain small toolbar button — real
+        bug found via a user screenshot at max folder icon-grid zoom: QIcon only ever scales a
+        pixmap DOWN to fit a requested icon size, never UP past its native resolution, so a
+        pixmap drawn at a small fixed size renders tiny and centered in a mostly-empty cell once
+        the grid's zoomed icon size grows past it, instead of filling it. Same reasoning
+        THUMBNAIL_BASE_PX's own docstring already documents for image thumbnails — reused here
+        rather than a second size constant, since both need the same "big enough to only ever
+        downscale, even at max zoom" property. Proportions are scaled from the original 64px
+        design so the drawn shape doesn't just end up small-in-the-corner of a bigger canvas."""
         cache = self._folder_icon_cache if hasattr(self, '_folder_icon_cache') else {}
         if not hasattr(self, '_folder_icon_cache'):
             self._folder_icon_cache = cache
         if color_hex in cache:
             return cache[color_hex]
-        size = 64
+        size = self.THUMBNAIL_BASE_PX
+        scale = size / 64
         pixmap = QPixmap(size, size)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(color_hex))
-        painter.drawRoundedRect(QRect(8, 16, 24, 10), 2, 2)
-        painter.drawRoundedRect(QRect(8, 22, 48, 30), 4, 4)
+        painter.drawRoundedRect(
+            QRect(round(8 * scale), round(16 * scale), round(24 * scale), round(10 * scale)),
+            round(2 * scale), round(2 * scale))
+        painter.drawRoundedRect(
+            QRect(round(8 * scale), round(22 * scale), round(48 * scale), round(30 * scale)),
+            round(4 * scale), round(4 * scale))
         painter.end()
         icon = QIcon(pixmap)
         cache[color_hex] = icon
@@ -18607,9 +18690,117 @@ function filterAliases(q) {{
     def _blue_folder_icon(self):
         return self._folder_icon("#3498db")
 
+    # Non-selectable pseudo-themes (base/fallback, not real icon packs) and the substring
+    # that flags a cursor theme — neither belongs in a "pick a folder icon pack" dropdown.
+    _ICON_THEME_JUNK_NAMES = {"default", "hicolor", "locolor"}
+
+    def _discover_icon_themes(self):
+        """Scans QIcon.themeSearchPaths() for installed icon themes, returning a list of
+        (folder_name, display_name) pairs — only for themes actually confirmed to provide a
+        working "folder" icon (see _folder_theme_icon()'s own docstring for why this
+        verification step matters: QIcon.fromTheme() has a documented history of resolving
+        to nothing on some desktop environments/Nix setups in this codebase). Used to
+        populate the Settings -> Icons "Folder Icon Pack" dropdown, scanned fresh every time
+        that tab is built so a newly-installed pack (e.g. Papirus) just appears next time
+        Settings is opened — nothing to hardcode or update in code for a new pack."""
+        found = {}  # folder_name -> display_name, first match wins (search-path priority)
+        for base in QIcon.themeSearchPaths():
+            if not os.path.isdir(base):
+                continue
+            try:
+                entries = os.listdir(base)
+            except OSError:
+                continue
+            for folder_name in entries:
+                if folder_name in found or folder_name in self._ICON_THEME_JUNK_NAMES:
+                    continue
+                if "cursor" in folder_name.lower():
+                    continue
+                index_path = os.path.join(base, folder_name, "index.theme")
+                if not os.path.isfile(index_path):
+                    continue
+                cp = configparser.ConfigParser(strict=False)
+                try:
+                    cp.read(index_path, encoding="utf-8")
+                    if cp.getboolean("Icon Theme", "Hidden", fallback=False):
+                        continue
+                    display_name = cp.get("Icon Theme", "Name", fallback=folder_name)
+                except (configparser.Error, OSError, UnicodeDecodeError):
+                    continue
+                found[folder_name] = display_name
+
+        # Verify each candidate actually resolves a usable folder icon before offering it —
+        # bracketed so this probing never leaves Qt's global icon theme pointed somewhere
+        # unexpected (see _folder_theme_icon()'s identical bracket-and-restore reasoning).
+        previous_theme = QIcon.themeName()
+        working = []
+        for folder_name, display_name in found.items():
+            QIcon.setThemeName(folder_name)
+            probe = QIcon.fromTheme("folder")
+            if not probe.isNull() and probe.availableSizes():
+                working.append((folder_name, display_name))
+        QIcon.setThemeName(previous_theme)
+
+        working.sort(key=lambda pair: pair[1].lower())
+        return working
+
     def _folder_theme_icon(self):
-        """Folder icon shared by all folder browser views (tree, icon grid, launcher panel)."""
-        return self._blue_folder_icon()
+        """Folder icon shared by all folder browser views (tree, icon grid, launcher panel) —
+        the hand-drawn blue default, or an installed system icon-theme's own folder icon when
+        the user has opted into one via Settings -> Icons -> Folder Icon Pack.
+
+        This app deliberately never used QIcon.fromTheme("folder") for the DEFAULT rendering
+        (see _folder_icon()'s own docstring/_blue_folder_icon()'s call sites) — it renders
+        yellow/manila on many system icon themes and was inconsistent across setups. That
+        concern doesn't apply here: this is an explicit, informed, opt-in choice by the user
+        picking a specific named pack they already know the look of, not a silent default.
+
+        Cached per pack choice (self._folder_theme_icon_cache) so the temporary global
+        QIcon.setThemeName() override below only ever runs once per pack per session, not on
+        every call — QIcon.setThemeName() is process-wide/static, so leaving it permanently
+        pointed at the chosen folder pack would silently affect unrelated QIcon.fromTheme()
+        lookups elsewhere in the app (e.g. _theme_icon()'s Apps-tab icons); bracketing the
+        mutation as tightly as possible and restoring the previous theme name immediately
+        avoids that.
+
+        Real bug, found via a live user report (picking a pack never visibly changed
+        anything, always showing what turned out to be the system's actual default theme
+        regardless of which pack was selected) and confirmed with a standalone reproduction:
+        `QIcon.fromTheme()` does NOT return a fully-resolved icon — it's a lazy icon engine
+        that re-resolves against whatever `QIcon.themeName()` is CURRENT at paint time, not
+        at the time `fromTheme()` was called. Two icons built from two different themes,
+        both later painted after the global theme name had been restored, came out
+        pixel-identical — proving the original "set -> fetch -> immediately restore" version
+        of this method was fetching a live reference bound to the (already-restored, wrong)
+        global theme, not a snapshot. Fixed by materializing real QPixmap data for every
+        available size into a fresh QIcon *before* restoring the theme name — a plain
+        QIcon built from `addPixmap()` calls holds static bitmap data with no further
+        dependency on global theme state, so restoring the theme afterward is safe."""
+        pack = self.settings.get("folder_icon_pack", "")
+        if not hasattr(self, '_folder_theme_icon_cache'):
+            self._folder_theme_icon_cache = {}
+        if pack in self._folder_theme_icon_cache:
+            return self._folder_theme_icon_cache[pack]
+
+        icon = None
+        if pack:
+            previous_theme = QIcon.themeName()
+            QIcon.setThemeName(pack)
+            candidate = QIcon.fromTheme("folder")
+            if not candidate.isNull():
+                sizes = candidate.availableSizes()
+                if sizes:
+                    materialized = QIcon()
+                    for size in sizes:
+                        materialized.addPixmap(candidate.pixmap(size))
+                    icon = materialized
+            QIcon.setThemeName(previous_theme)
+
+        if icon is None:
+            icon = self._blue_folder_icon()
+
+        self._folder_theme_icon_cache[pack] = icon
+        return icon
 
     # Discrete zoom steps for the folder icon-grid views, modeled on Dolphin's own zoom
     # slider/Ctrl+scroll — applied as a multiplier against each side's own base icon size
@@ -18832,6 +19023,30 @@ function filterAliases(q) {{
                 item.setForeground(1, QColor(self.t('fg_secondary')))
             tree.addTopLevelItem(item)
 
+    def _scaled_generic_file_icon(self, icon, icon_px):
+        """Composites a QFileIconProvider system icon onto an icon_px-square transparent
+        canvas, centered — the same fix _folder_icon() needed, for the same reason: a system
+        icon's native resolution is commonly far smaller than icon_px at high folder
+        icon-grid zoom, and QIcon never scales a pixmap up past its native size to fill a
+        larger requested icon size, only down. Mirrors _get_image_thumbnail_icon()'s own
+        square-canvas compositing (needed there for the same reason, plus to keep
+        setUniformItemSizes() happy with non-square source images). No-ops (returns the icon
+        unchanged) when the native pixmap already fills the cell, so this never re-blurs an
+        icon that was already big enough."""
+        source = icon.pixmap(QSize(icon_px, icon_px))
+        if source.width() >= icon_px and source.height() >= icon_px:
+            return icon
+        scaled = source.scaled(
+            icon_px, icon_px,
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        )
+        canvas = QPixmap(icon_px, icon_px)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.drawPixmap((icon_px - scaled.width()) // 2, (icon_px - scaled.height()) // 2, scaled)
+        painter.end()
+        return QIcon(canvas)
+
     def _render_folder_icons(self, entries, target=None):
         """Render scanned entries into an icon grid — self.folder_icon_view by default,
         or the given target widget (e.g. the launcher-column mini panel)."""
@@ -18853,7 +19068,7 @@ function filterAliases(q) {{
             elif show_images and os.path.splitext(e['full_path'])[1].lower() in self._IMAGE_LAUNCHER_EXTENSIONS:
                 icon = self._get_image_thumbnail_icon(e['full_path'], e['mtime'], icon_px)
             if icon is None:
-                icon = icon_provider.icon(QFileInfo(e['full_path']))
+                icon = self._scaled_generic_file_icon(icon_provider.icon(QFileInfo(e['full_path'])), icon_px)
             item = QListWidgetItem(icon, e['display_name'])
             # Full name as a tooltip — the grid cell wraps long names but still elides past a
             # couple of lines, so this is the reliable way to always see the whole filename.
