@@ -89,11 +89,11 @@
   }
 
   .name-btn {
-    flex: 1; background: none; border: none;
+    flex: 1; min-width: 0; background: none; border: none;
     color: var(--t-sec); font-size: 0.85rem;
     padding: 10px 6px 10px 12px;
     text-align: left; line-height: 1.3;
-    word-break: break-word;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     display: flex; align-items: center;
   }
   .row.pinned .name-btn { color: var(--t-active); }

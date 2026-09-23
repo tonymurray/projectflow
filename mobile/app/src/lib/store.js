@@ -1,7 +1,8 @@
 import { writable, derived, get } from 'svelte/store';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Network } from '@capacitor/network';
-import { setConfig, listProjects, loadProject, saveProjectConfig, loadNote, saveNote, notesFilename, resolveToNextcloudRelPath, isOfflineish, NetworkError } from './webdav.js';
+import { setConfig, listProjects, loadProject, saveProjectConfig, loadNote, saveNote, notesFilename, resolveToNextcloudRelPath, uploadDocumentToProject, isOfflineish, NetworkError } from './webdav.js';
+import { cacheProject, getCachedProject, cacheNote, getCachedNote } from './cache.js';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -42,9 +43,24 @@ const STORAGE_KEY = 'pf_config';
 function loadStoredConfig() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return migrateConfig(JSON.parse(raw));
   } catch {}
   return null;
+}
+
+// Migrates the old single localAlias/nextcloudAlias pair (pre-Settings-screen) into the
+// new repeatable nextcloudLocations list, so an existing user's saved alias keeps working
+// without having to re-enter it. The legacy fields are left in place but unused once this
+// has run — nextcloudLocations (even as []) is authoritative from here on.
+function migrateConfig(cfg) {
+  if (!cfg) return cfg;
+  if (!cfg.nextcloudLocations) {
+    cfg.nextcloudLocations = (cfg.localAlias && cfg.nextcloudAlias)
+      ? [{ local: cfg.localAlias, remote: cfg.nextcloudAlias }]
+      : [];
+  }
+  if (!cfg.openMethod) cfg.openMethod = 'browser';
+  return cfg;
 }
 
 export const config = writable(loadStoredConfig());
@@ -78,6 +94,11 @@ export const activeConfig = writable(null);
 export const loading = writable(false);
 export const error = writable(null);
 export const offline = writable(false); // "can we currently reach the WebDAV server"
+
+// Set by selectProject() whenever the active project/note is showing a locally cached
+// fallback copy rather than a fresh network response — see cache.js. null = showing live
+// data (or nothing loaded yet).
+export const usingCachedCopy = writable(null); // { projectFilename, cachedAt } | null
 
 function clearStatus() {
   error.set(null);
@@ -248,15 +269,27 @@ export function initNetworkWatcher() {
   });
 }
 
-// Projects to show in the bar: pinned first, then recent (deduplicated), max 8 total
+// Projects to show in the bar: pinned first, then recent (deduplicated), max 8 total.
+// "aliases.json" is deliberately excluded here regardless of pinned/recent state — it's a
+// desktop-only utility file (shell alias definitions; every launcher item in it is a
+// desktop-specific handler), not a real project someone opens day-to-day on mobile. Same
+// special-case the desktop app itself already applies elsewhere (e.g.
+// _bulk_create_baloo_tags() skips it too), not a new rule invented here. Still fully
+// reachable via the ≡ All Projects picker, which reads $projects directly and isn't
+// filtered by this at all — so it stays available to open/review, just not cluttering the
+// quick-access bar.
+const ALIASES_FILENAME = 'aliases.json';
 export const orderedProjects = derived(
   [projects, pinnedProjects, recentProjects],
   ([$projects, $pinned, $recent]) => {
     const byFilename = Object.fromEntries($projects.map(p => [p.filename, p]));
-    const pinnedList = $pinned.map(f => byFilename[f]).filter(Boolean);
-    const pinnedSet  = new Set($pinned);
+    const pinnedList = $pinned
+      .filter(f => f !== ALIASES_FILENAME)
+      .map(f => byFilename[f])
+      .filter(Boolean);
+    const pinnedSet = new Set($pinned);
     const recentList = $recent
-      .filter(f => !pinnedSet.has(f))
+      .filter(f => f !== ALIASES_FILENAME && !pinnedSet.has(f))
       .map(f => byFilename[f])
       .filter(Boolean)
       .slice(0, 8 - pinnedList.length);
@@ -287,20 +320,68 @@ export async function selectProject(project) {
   activeConfig.set(null);
   activeNote.set('');
   noteSaved.set(true);
+  usingCachedCopy.set(null);
   loading.set(true);
   clearStatus();
+  const nf = notesFilename(project.filename);
+  let projectLoadedFresh = false;
   try {
     const cfg = await loadProject(project.filename);
     activeConfig.set(cfg);
-    // Load notes for this project
-    const nf = notesFilename(project.filename);
+    cacheProject(project.filename, cfg); // fire-and-forget, never blocks the UI
+    projectLoadedFresh = true;
+
     const note = await loadNote(nf);
     activeNote.set(note);
+    cacheNote(nf, note);
   } catch (e) {
+    // Only fall back to a cached copy for a genuine "can't reach the server" failure —
+    // a real error (404, auth failure, etc.) means something actually changed and should
+    // surface as an error, not silently paper over it with stale content.
+    if (isOfflineish(e)) {
+      const cachedProject = projectLoadedFresh ? null : await getCachedProject(project.filename);
+      const cachedNote = await getCachedNote(nf);
+      if (cachedProject || cachedNote || projectLoadedFresh) {
+        if (cachedProject) activeConfig.set(cachedProject.data);
+        if (!projectLoadedFresh || cachedNote) activeNote.set(cachedNote ? cachedNote.data : '');
+        usingCachedCopy.set({
+          projectFilename: project.filename,
+          cachedAt: (cachedProject ?? cachedNote)?.cachedAt ?? null,
+        });
+        clearStatus();
+        loading.set(false);
+        return;
+      }
+    }
     handleFailure(e);
   } finally {
     loading.set(false);
   }
+}
+
+// Fetches and caches every known project's config + notes in one pass, so they're all
+// available offline afterward — not just whichever ones happen to have been opened this
+// session. Sequential rather than parallel, deliberately: this is a manual, occasional
+// "get ready to go offline" action (triggered from Settings), not something latency-
+// sensitive, and sequential avoids firing a burst of concurrent requests at the server.
+// Skips past any individual project's failure and keeps going with the rest.
+export async function precacheAllProjects() {
+  const list = get(projects);
+  let succeeded = 0;
+  let failed = 0;
+  for (const project of list) {
+    try {
+      const cfg = await loadProject(project.filename);
+      await cacheProject(project.filename, cfg);
+      const nf = notesFilename(project.filename);
+      const note = await loadNote(nf);
+      await cacheNote(nf, note);
+      succeeded++;
+    } catch {
+      failed++;
+    }
+  }
+  return { succeeded, failed, total: list.length };
 }
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
@@ -343,18 +424,18 @@ export const activeTab = writable('launchers'); // 'launchers' | 'notes'
 
 const ADDED_RESOURCES_CATEGORY = 'Added Resources';
 
-export const pendingShare = writable(null); // { text, subject } | null
+export const pendingShare = writable(null); // { text, subject } | { fileUri, fileName, mimeType } | null
 
 export function initShareReceiver() {
   if (!Capacitor.isNativePlatform()) return;
   const ShareReceiver = registerPlugin('ShareReceiver');
 
   ShareReceiver.getSharedData().then(data => {
-    if (data && data.text) pendingShare.set(data);
+    if (data && (data.text || data.fileUri)) pendingShare.set(data);
   });
 
   ShareReceiver.addListener('shareReceived', data => {
-    if (data && data.text) pendingShare.set(data);
+    if (data && (data.text || data.fileUri)) pendingShare.set(data);
   });
 }
 
@@ -392,20 +473,68 @@ export async function addTextToProjectNote(project, text) {
   const nf = notesFilename(project.filename);
   const existing = await loadNote(nf);
   const separator = '-'.repeat(30);
-  // The blank line before the closing separator is load-bearing, not cosmetic: a line of
+  // The blank line before EACH separator below is load-bearing, not cosmetic: a line of
   // "---" immediately below a text line (no blank line between) is Markdown's SETEXT
   // HEADING underline syntax, not a horizontal rule — a real Markdown renderer (verified
-  // against the actual synced note content) swallows that closing separator into a
-  // heading for the date/time line instead of showing it as its own divider. The opening
-  // separator doesn't need this — it's always prepended at the very top of the file, so
-  // there's never text directly above it to become a heading out of.
-  const block = `${separator}\n${shareTimestampHeader()}\n\n${separator}\n\n${text}\n\n`;
-  const newContent = existing ? `${block}\n${existing}` : block;
+  // against the actual synced note content) swallows a closing separator into a heading
+  // for whatever text sits directly above it instead of showing it as its own divider.
+  // The opening separator doesn't need this — it's always prepended at the very top of
+  // the file, so there's never text directly above it to become a heading out of. The
+  // closing separator (after `text`, before the old content) does need it, for the same
+  // reason — added so the shared block reads as fully closed-off rather than running
+  // straight into whatever note content already existed.
+  const block = `${separator}\n${shareTimestampHeader()}\n\n${separator}\n\n${text}\n\n${separator}\n\n`;
+  const newContent = existing ? `${block}${existing}` : block;
 
   await saveNote(nf, newContent);
 
   if (get(activeProject)?.filename === project.filename) {
     activeNote.set(newContent);
+  }
+}
+
+const PROJECT_FILES_CATEGORY = 'Project Files';
+
+// Uploads a file shared from another app (via the Android share sheet) into the chosen
+// project's documents folder, then either references it as a plain note line or files it
+// as a real launcher item — the user picks which, in ShareTarget.svelte, mirroring how a
+// URL vs. plain text share already gets different treatment above.
+//
+// Deliberately never queued for offline retry, unlike addLinkToProject()/
+// addTextToProjectNote() — the pending queue is a small localStorage-backed list of plain-
+// text intents; a base64-encoded file body would bloat it far beyond what that mechanism
+// was designed for. A genuine offline failure here just surfaces as an error to retry
+// manually once reconnected.
+export async function addFileToProject(project, fileUri, fileName, mimeType, asNote) {
+  const ShareReceiver = registerPlugin('ShareReceiver');
+  const { base64 } = await ShareReceiver.readSharedFile({ uri: fileUri });
+
+  const cfg = await loadProject(project.filename);
+  const relPath = await uploadDocumentToProject(cfg.documents_subfolder, fileName, base64, mimeType);
+
+  if (asNote) {
+    await addTextToProjectNote(project, `📎 Uploaded: ${fileName}`);
+    return;
+  }
+
+  // ~/Nextcloud/ is the same zero-config prefix resolveToNextcloudRelPath() always
+  // recognizes regardless of configured Nextcloud Locations, so the resulting launcher
+  // item shows up as NC↗ immediately without depending on the user having a location row
+  // that happens to match `documentsRoot`.
+  const localPath = `~/Nextcloud/${relPath}`;
+  if (!cfg.columns) cfg.columns = [[]];
+  if (!cfg.columns[0]) cfg.columns[0] = [];
+  let entry = cfg.columns[0].find(cat => Object.keys(cat)[0] === PROJECT_FILES_CATEGORY);
+  if (!entry) {
+    entry = { [PROJECT_FILES_CATEGORY]: [] };
+    cfg.columns[0].push(entry);
+  }
+  entry[PROJECT_FILES_CATEGORY].push([fileName, localPath, 'default']);
+
+  await saveProjectConfig(project.filename, cfg);
+
+  if (get(activeProject)?.filename === project.filename) {
+    activeConfig.set(cfg);
   }
 }
 
@@ -420,7 +549,7 @@ const DESKTOP_ONLY = new Set([
 ]);
 
 export function isMobileLauncher(handler, path) {
-  if (typeof path === 'string' && /&&|\|\|;|^cd /.test(path)) return false;
+  if (typeof path === 'string' && /&&|\|\||;|^cd /.test(path)) return false;
   if (resolveToNextcloudRelPath(path)) return true; // accessible via Nextcloud web
   if (DESKTOP_ONLY.has(handler)) return false;
   return true;

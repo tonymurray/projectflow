@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(android.os.Bundle savedInstanceState) {
         registerPlugin(WebDavPlugin.class);
         registerPlugin(ShareReceiverPlugin.class);
+        registerPlugin(NextcloudAppPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

@@ -23,6 +23,16 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
+            <!-- Separate filter (rather than widening the one above to */*) so the
+                 original, already-verified text/link share path is untouched — this one
+                 additionally surfaces the app in the share sheet for arbitrary files
+                 (images, PDFs, documents), handled via EXTRA_STREAM in
+                 ShareReceiverPlugin.extract(). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <provider
@@ -33,6 +43,14 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
     </application>
+
+    <!-- Package visibility (Android 11+): without this, PackageManager.queryIntentActivities()
+         in NextcloudAppPlugin silently returns an empty list for com.nextcloud.client even
+         when it's genuinely installed — the app is invisible to us without being declared
+         here first, regardless of setPackage() targeting it explicitly. -->
+    <queries>
+        <package android:name="com.nextcloud.client" />
+    </queries>
 
     <!-- Permissions -->
 

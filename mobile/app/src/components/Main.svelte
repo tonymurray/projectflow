@@ -1,11 +1,12 @@
 <script>
   import { get } from 'svelte/store';
-  import { orderedProjects, pinnedProjects, activeProject, activeConfig, activeTab, loading, error, offline, pendingQueue, queueFeedback, fetchProjects, selectProject, retryConnection, flushQueue, theme, pendingShare, initShareReceiver, initNetworkWatcher } from '../lib/store.js';
+  import { orderedProjects, pinnedProjects, activeProject, activeConfig, activeTab, loading, error, offline, pendingQueue, queueFeedback, usingCachedCopy, fetchProjects, selectProject, retryConnection, flushQueue, theme, pendingShare, initShareReceiver, initNetworkWatcher } from '../lib/store.js';
   import Launchers from './Launchers.svelte';
   import Notes from './Notes.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
   import ShareTarget from './ShareTarget.svelte';
   import PasteText from './PasteText.svelte';
+  import Settings from './Settings.svelte';
 
   fetchProjects();
   initShareReceiver();
@@ -18,9 +19,20 @@
 
   let showPicker = false;
   let showPaste = false;
+  let showSettings = false;
 
   function toggleTheme() {
     theme.update(t => t === 'dark' ? 'light' : 'dark');
+  }
+
+  function timeAgo(ts) {
+    if (!ts) return 'unknown time';
+    const mins = Math.round((Date.now() - ts) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.round(hours / 24)}d ago`;
   }
 </script>
 
@@ -54,7 +66,6 @@
         📤 {$pendingQueue.length} pending · Retry
       </button>
     {/if}
-    <button class="all-btn" on:click={() => showPaste = true} title="Paste text or link into a note/launcher">📋</button>
     <button class="all-btn" on:click={() => showPicker = true} title="All projects">≡</button>
   </header>
 
@@ -65,12 +76,22 @@
     </div>
   {/if}
 
+  {#if $usingCachedCopy && $usingCachedCopy.projectFilename === $activeProject?.filename}
+    <div class="cache-banner">
+      📦 Showing cached copy from {timeAgo($usingCachedCopy.cachedAt)} — offline
+    </div>
+  {/if}
+
   {#if showPicker}
     <ProjectPicker on:close={() => showPicker = false} />
   {/if}
 
   {#if showPaste}
     <PasteText on:close={() => showPaste = false} />
+  {/if}
+
+  {#if showSettings}
+    <Settings on:close={() => showSettings = false} />
   {/if}
 
   {#if $pendingShare}
@@ -102,9 +123,11 @@
   <nav>
     <button class:active={$activeTab === 'launchers'} on:click={() => activeTab.set('launchers')}>🚀 Resources</button>
     <button class:active={$activeTab === 'notes'}    on:click={() => activeTab.set('notes')}>📝 Notes</button>
-    <button class="theme-btn" on:click={toggleTheme} title="Toggle theme">
+    <button class="icon-btn" on:click={() => showPaste = true} title="Paste text or link into a note/launcher">📋</button>
+    <button class="icon-btn" on:click={toggleTheme} title="Toggle theme">
       {$theme === 'dark' ? '☀️' : '🌙'}
     </button>
+    <button class="icon-btn" on:click={() => showSettings = true} title="Settings">⚙</button>
   </nav>
 </div>
 
@@ -136,7 +159,7 @@
     flex-shrink: 0;
     background: none; border: 1px solid var(--bd);
     border-radius: 8px; color: var(--t-muted);
-    font-size: 1.1rem; padding: 4px 10px; line-height: 1;
+    font-size: 1.1rem; padding: 8px 20px; line-height: 1;
   }
   .all-btn:hover { background: var(--bg-hover); }
 
@@ -161,6 +184,13 @@
     flex-shrink: 0;
     background: none; border: none; color: var(--t-unsaved);
     font-size: 1rem; padding: 2px 4px; line-height: 1;
+  }
+
+  .cache-banner {
+    flex-shrink: 0;
+    background: var(--bg-card); border-bottom: 1px solid var(--accent);
+    color: var(--accent); font-size: 0.8rem; line-height: 1.35;
+    padding: 8px 12px;
   }
 
   main { flex: 1; overflow-y: auto; }
@@ -192,15 +222,16 @@
     padding: 12px 4px 10px; font-size: 0.78rem;
   }
   nav button.active { color: var(--accent-hi); border-top: 2px solid var(--accent); }
-  .theme-btn { flex: 0 !important; padding: 12px 14px 10px; font-size: 1rem; }
+  .icon-btn { flex: 0 !important; padding: 12px 14px 10px; font-size: 1rem; }
 
   @media (min-width: 550px) {
     nav button { font-size: 1.2rem; padding: 18px 8px 16px; }
-    .theme-btn { font-size: 1.5rem; padding: 18px 20px 16px; }
+    .icon-btn { font-size: 1.5rem; padding: 18px 20px 16px; }
     .proj-btn  { font-size: 1.05rem; padding: 8px 20px; border-radius: 20px; }
     .hint      { font-size: 1.05rem; }
     header     { padding: 10px 10px 10px 14px; }
-    .all-btn   { font-size: 1.4rem; padding: 6px 14px; }
+    .all-btn   { font-size: 1.4rem; padding: 12px 28px; }
     .queue-banner { font-size: 0.95rem; padding: 10px 16px; }
+    .cache-banner { font-size: 0.95rem; padding: 10px 16px; }
   }
 </style>

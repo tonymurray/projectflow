@@ -1,16 +1,17 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { get } from 'svelte/store';
-  import { projects, activeProject, offline, addLinkToProject, addTextToProjectNote, queueOperation } from '../lib/store.js';
+  import { projects, activeProject, offline, addLinkToProject, addTextToProjectNote, addFileToProject, queueOperation } from '../lib/store.js';
   import { isOfflineish, NetworkError } from '../lib/webdav.js';
 
-  export let share; // { text, subject }
+  export let share; // { text, subject } | { fileUri, fileName, mimeType }
 
   const dispatch = createEventDispatcher();
 
+  $: isFile = !!share.fileUri;
   $: sorted = [...$projects].sort((a, b) => a.name.localeCompare(b.name));
   $: trimmed = (share.text || '').trim();
-  $: isUrl = /^https?:\/\/\S+$/.test(trimmed);
+  $: isUrl = !isFile && /^https?:\/\/\S+$/.test(trimmed);
   $: preview = trimmed.length > 220 ? trimmed.slice(0, 220) + '…' : trimmed;
 
   let selected = $activeProject;
@@ -18,6 +19,7 @@
   let done = false;
   let queued = false;
   let errorMsg = null;
+  let asNote = false; // file shares only: false = add as a launcher, true = reference in note
 
   function onBackdrop(e) {
     if (e.target === e.currentTarget && !busy) dispatch('close');
@@ -27,6 +29,24 @@
     if (!selected || busy) return;
     busy = true;
     errorMsg = null;
+
+    if (isFile) {
+      try {
+        // Already known offline — skip the doomed attempt and fail fast with a clear
+        // message. Unlike link/text shares, a file upload is never queued for later retry
+        // (see addFileToProject()'s own comment on why) — just try again once reconnected.
+        if (get(offline)) throw new NetworkError('offline');
+        await addFileToProject(selected, share.fileUri, share.fileName || 'shared-file', share.mimeType, asNote);
+        done = true;
+      } catch (e) {
+        errorMsg = e.message;
+      } finally {
+        busy = false;
+      }
+      if (done) setTimeout(() => dispatch('close'), 900);
+      return;
+    }
+
     const op = isUrl
       ? { type: 'link', projectFilename: selected.filename, projectName: selected.name, url: trimmed, title: share.subject }
       : { type: 'note', projectFilename: selected.filename, projectName: selected.name, text: trimmed };
@@ -58,21 +78,31 @@
 <div class="backdrop" on:click={onBackdrop}>
   <div class="panel">
     <div class="panel-header">
-      <span class="title">{isUrl ? 'Add Link' : 'Add to Note'}</span>
+      <span class="title">{isFile ? 'Add Shared File' : isUrl ? 'Add Link' : 'Add to Note'}</span>
       <button class="close-btn" on:click={() => dispatch('close')} disabled={busy}>✕</button>
     </div>
 
     <div class="content">
-      <div class="preview" class:link={isUrl}>{preview || '(empty)'}</div>
+      <div class="preview" class:link={isUrl}>
+        {isFile ? `📎 ${share.fileName || 'Shared file'}` : (preview || '(empty)')}
+      </div>
 
       {#if done}
-        <div class="status ok">Added ✓</div>
+        <div class="status ok">{isFile ? 'Uploaded ✓' : 'Added ✓'}</div>
       {:else if queued}
         <div class="status queued">📤 Queued — will send when back online</div>
       {:else}
-        <div class="hint">
-          {isUrl ? 'Adds as a launcher in "Added Resources"' : 'Prepended to the project note'} for:
-        </div>
+        {#if isFile}
+          <div class="hint">Uploads to the project's documents folder, then:</div>
+          <div class="file-mode-toggle">
+            <label><input type="radio" bind:group={asNote} value={false} disabled={busy} /> Add as a launcher</label>
+            <label><input type="radio" bind:group={asNote} value={true} disabled={busy} /> Reference in note</label>
+          </div>
+        {:else}
+          <div class="hint">
+            {isUrl ? 'Adds as a launcher in "Added Resources"' : 'Prepended to the project note'} for:
+          </div>
+        {/if}
         <div class="grid">
           {#each sorted as project}
             <button
@@ -91,7 +121,7 @@
         <div class="actions">
           <button class="cancel-btn" on:click={() => dispatch('close')} disabled={busy}>Cancel</button>
           <button class="add-btn" on:click={add} disabled={!selected || busy}>
-            {busy ? 'Adding…' : 'Add'}
+            {busy ? (isFile ? 'Uploading…' : 'Adding…') : (isFile ? 'Upload' : 'Add')}
           </button>
         </div>
       {/if}
@@ -140,6 +170,15 @@
   .hint {
     font-size: 0.78rem; color: var(--t-ghost);
     margin-bottom: 8px;
+  }
+
+  .file-mode-toggle {
+    display: flex; gap: 16px;
+    font-size: 0.85rem; color: var(--t-sec);
+    margin-bottom: 12px;
+  }
+  .file-mode-toggle label {
+    display: flex; align-items: center; gap: 6px;
   }
 
   .grid {

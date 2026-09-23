@@ -59,6 +59,12 @@ public class WebDavPlugin extends Plugin {
         final String url = call.getString("url");
         final JSObject headers = call.getObject("headers", new JSObject());
         final String body = call.getString("body");
+        // Base64-encoded binary body (document/image uploads) — kept as a separate param
+        // from `body` rather than trying to detect binary-vs-text from one string field,
+        // since a plain String can't safely round-trip arbitrary bytes across the JS
+        // bridge (JSON/UTF-16 string handling isn't byte-preserving) the way it can for
+        // the JSON/markdown bodies `body` already handles fine.
+        final String bodyBase64 = call.getString("bodyBase64");
 
         if (method == null) { call.reject("method required"); return; }
         if (url == null)    { call.reject("url required"); return; }
@@ -75,7 +81,12 @@ public class WebDavPlugin extends Plugin {
                 }
 
                 RequestBody reqBody = null;
-                if (body != null) {
+                if (bodyBase64 != null) {
+                    byte[] bytes = android.util.Base64.decode(bodyBase64, android.util.Base64.NO_WRAP);
+                    String contentType = headers.has("Content-Type")
+                        ? headers.getString("Content-Type") : "application/octet-stream";
+                    reqBody = RequestBody.create(bytes, MediaType.parse(contentType));
+                } else if (body != null) {
                     reqBody = RequestBody.create(body, MediaType.parse("text/plain; charset=utf-8"));
                 } else if ("PUT".equals(method) || "POST".equals(method)) {
                     reqBody = RequestBody.create(new byte[0]);

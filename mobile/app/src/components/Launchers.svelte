@@ -1,6 +1,9 @@
 <script>
-  import { activeConfig, isMobileLauncher, getLaunchUrl } from '../lib/store.js';
-  import { resolveToNextcloudRelPath, nextcloudWebUrl } from '../lib/webdav.js';
+  import { Capacitor, registerPlugin } from '@capacitor/core';
+  import { activeConfig, isMobileLauncher, getLaunchUrl, config } from '../lib/store.js';
+  import { resolveToNextcloudRelPath, nextcloudWebUrl, getNextcloudFileId } from '../lib/webdav.js';
+
+  const NextcloudApp = Capacitor.isNativePlatform() ? registerPlugin('NextcloudApp') : null;
 
   $: categories = $activeConfig?.columns?.[0] ?? [];
   $: viewerUrl = $activeConfig?.webview_url || null;
@@ -10,11 +13,35 @@
     return { name, items };
   }).filter(c => c.items.length > 0);
 
-  function launch(item) {
+  // Best-effort: builds a Nextcloud "direct link" (https://server/f/{fileid}) from the
+  // file's WebDAV oc:fileid and hands it to the native plugin, which targets the Nextcloud
+  // app explicitly by package (see NextcloudAppPlugin.java for why — no nc:// scheme is
+  // actually involved). Returns false on ANY failure — missing file ID, app not installed,
+  // anything — so the caller falls straight through to the normal, always-working browser
+  // open. This experimental path must never be able to leave a tap dead.
+  async function tryOpenInNextcloudApp(fileId) {
+    if (!NextcloudApp || !fileId) return false;
+    const directUrl = `${$config.server}/f/${fileId}`;
+    try {
+      const { opened } = await NextcloudApp.openUri({ uri: directUrl });
+      return !!opened;
+    } catch {
+      return false;
+    }
+  }
+
+  async function launch(item) {
     const url = getLaunchUrl(item[1], item[2]);
     if (url) { window.open(url, '_blank'); return; }
     const ncRel = resolveToNextcloudRelPath(item[1]);
-    if (ncRel) window.open(nextcloudWebUrl(ncRel), '_blank');
+    if (!ncRel) return;
+    // Looked up once and shared by both paths below: the file's own Nextcloud web page
+    // deep-links straight to it (not just its containing folder) when the ID is known, and
+    // the same ID is what the experimental Nextcloud-app path needs too — no reason to
+    // fetch it twice if that path is tried first and falls through to the browser.
+    const fileId = await getNextcloudFileId(ncRel);
+    if ($config?.openMethod === 'nextcloud-app' && await tryOpenInNextcloudApp(fileId)) return;
+    window.open(nextcloudWebUrl(ncRel, fileId), '_blank');
   }
 </script>
 

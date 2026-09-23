@@ -2,6 +2,23 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-23 (Mobile)
+
+### Added
+- **Settings screen (revisit setup)**: the mobile app's first-run connection form was previously a one-way trip — no in-app way to change server/credentials/paths afterward. Extracted into a shared `SettingsForm.svelte` used by both first-run `Setup.svelte` and a new closable `Settings.svelte` modal, reachable via a `⚙` button in the bottom nav bar.
+- **Configurable Nextcloud Locations** (Settings → Advanced): replaces the old single local-path/Nextcloud-path alias with a repeatable list, so more than one synced folder (e.g. the desktop app's own `documents/`/`images/` folders) can be registered — broadening how many launcher items resolve to "Open in Nextcloud" instead of "desktop only". Existing single-alias configs migrate automatically.
+- **File-scoped Nextcloud links**: opening an NC↗ item now looks up the file's real Nextcloud file ID (`oc:fileid` via a targeted WebDAV `PROPFIND`) and deep-links straight to it (`{server}/apps/files/files/{fileid}?dir=...`) instead of just its containing folder, falling back to the old folder-only link if the lookup fails.
+- **"Open in Nextcloud App"** (Settings → Advanced → File opening method): an alternative to always opening files in the browser, explicitly targeting the real Nextcloud Android app package (`com.nextcloud.client`) via an Android intent — with a working browser fallback on any failure, so it's safe to leave on. Getting this working end-to-end on a real device surfaced three real, non-obvious Android bugs: an assumed `nc://` file-opening scheme that doesn't actually exist in the current app (confirmed via `dumpsys`); `Intent.resolveActivity()` silently requiring `category.DEFAULT`, which Android App Links don't declare; and Android 11+ package-visibility rules requiring an explicit `<queries>` manifest entry before the app can even see that Nextcloud is installed.
+- **Offline read cache** (new `lib/cache.js`, `@capacitor/filesystem` dependency): project configs and notes are now cached to app-private storage (no permissions needed) on every successful load, with automatic fallback to the cached copy — shown with a "📦 cached copy, offline" banner — when the network genuinely isn't reachable. A "⬇ Cache all projects now" button (Settings → Advanced → Offline Cache) pre-loads everything in one go. Deliberately scoped to project/note content only, not arbitrary documents, for this first pass.
+- **Share a file into a project**: the Android share sheet now also accepts arbitrary files (images, PDFs, documents), not just text/links. Uploads into the project's `documents/<slug>/` folder (resolved from a new "Documents folder" Settings field plus the project's own `documents_subfolder`, written by the desktop app's Documents Folder feature) and, per your choice, either files it as a real launcher item ("Project Files" category) or references it with a line in the project note. Required extending the native WebDAV plugin to support real binary bodies (base64-encoded across the bridge, decoded to raw bytes before the PUT) alongside its existing text/JSON path. Never queued for offline retry, unlike link/text shares — a genuine offline failure here just surfaces as an error to retry manually.
+
+### Fixed
+- A shared-text note prepend only had a separator line *before* the added text, not after — it now closes the block off with a matching separator on both sides before the old note content.
+- The desktop-only launcher filter's shell-metachar regex was missing a `|`, so a bare `;` in a path wasn't being rejected like `&&`/`||` already were.
+- The `aliases.json` project (desktop-only shell alias definitions — nothing in it is meaningful on mobile) no longer clutters the pinned/recent quick-access bar, matching a special-case the desktop app already applies to that file elsewhere; it's still fully reachable via the ≡ All Projects picker.
+- Long project names in the All Projects picker were wrapping to an illegible second line — now truncate to a single line with an ellipsis (a `min-width: 0` flexbox fix was needed for the truncation to actually take effect).
+- Minor layout polish: the 📋 Paste button moved from the crowded header into the bottom nav (between Notes and the theme toggle), and the ≡ All Projects button got a larger tap target.
+
 ## 2026-09-22
 
 ### Added
