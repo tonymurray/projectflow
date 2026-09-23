@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton
+    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton, QSlider
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
@@ -613,6 +613,37 @@ class DraggableFolderList(QListWidget):
         super().__init__(parent)
         self.app = app
         self.side = side
+
+    def wheelEvent(self, event):
+        """Ctrl+scroll zooms the icon grid (mirrors Dolphin) — falls through to normal
+        scrolling for a plain wheel event. Tree/list view (DraggableFolderTree) has no
+        equivalent zoom concept, so this is only overridden here, not there."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = 1 if event.angleDelta().y() > 0 else -1
+            self.app._adjust_folder_icon_zoom(delta)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def keyPressEvent(self, event):
+        """Ctrl+/Ctrl- zoom the icon grid, Ctrl+0 resets — same convention as browsers/
+        most apps' zoom shortcuts. Key_Equal is bound alongside Key_Plus since on most
+        keyboard layouts the "+" character requires Shift, so the physical key actually
+        sent for a bare Ctrl+ (no Shift) is "="."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+                self.app._adjust_folder_icon_zoom(1)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Minus:
+                self.app._adjust_folder_icon_zoom(-1)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_0:
+                self.app._reset_folder_icon_zoom()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def mimeData(self, items):
         md = QMimeData()
@@ -1562,6 +1593,14 @@ class ProjectFlowApp(QMainWindow):
 
         # Folder browser view mode: "tree" (details) or "icons" (Dolphin-style grid) — per-machine preference
         self.folder_view_mode = self.settings.get("folder_view_mode", "tree")
+        # Show real image thumbnails (vs. the generic system icon) in icon-grid view —
+        # off by default, since generating/caching thumbnails for a folder full of large
+        # photos is real work a plain file-type icon doesn't need.
+        self.folder_show_images = self.settings.get("folder_show_images", False)
+        # Icon-grid zoom level — an index into ICON_ZOOM_FACTORS, shared by both
+        # folder-browsing surfaces like folder_view_mode/folder_sort_mode above (a
+        # per-machine display preference, not something that needs per-side independence).
+        self.folder_icon_zoom_index = self.settings.get("folder_icon_zoom_index", self.ICON_ZOOM_DEFAULT_INDEX)
         # Folder browser sort mode: "name" (A-Z, default) or "date" (most recent first) —
         # per-machine preference, shared by both folder-browsing surfaces like folder_view_mode.
         self.folder_sort_mode = self.settings.get("folder_sort_mode", "name")
@@ -1845,6 +1884,8 @@ class ProjectFlowApp(QMainWindow):
                     "launcher_tab_order": [],  # user-ordered list of launcher tab ids (docs/resources/files/apps)
                     "viewer_tab_order": [],  # user-ordered list of viewer tab ids (notes/code/console/webview/pdf/image/time)
                     "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
+                    "folder_show_images": False,  # Show image thumbnails in folder icon-grid view
+                    "folder_icon_zoom_index": self.ICON_ZOOM_DEFAULT_INDEX,  # Index into ICON_ZOOM_FACTORS
                     "folder_sort_mode": "name",  # Folder browser sort: "name" (A-Z) or "date" (most recent first)
                     "show_projects_section": True,  # Show the always-visible Projects section below the columns
                 }
@@ -13480,8 +13521,12 @@ function filterAliases(q) {{
                 self.folder_icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
                 self.folder_icon_view.setMovement(QListWidget.Movement.Static)
                 self.folder_icon_view.setWrapping(True)
-                self.folder_icon_view.setIconSize(QSize(48, 48))
-                self.folder_icon_view.setGridSize(QSize(96, 112))
+                # Computed from the persisted zoom level (default 1.0x = 48px/96x112,
+                # matching the original hardcoded values) rather than fixed here — see
+                # _current_folder_icon_size()/_apply_folder_icon_zoom().
+                _right_icon_px = self._current_folder_icon_size("right")
+                self.folder_icon_view.setIconSize(QSize(_right_icon_px, _right_icon_px))
+                self.folder_icon_view.setGridSize(QSize(_right_icon_px * 2, _right_icon_px + self.FOLDER_GRID_TEXT_PAD["right"]))
                 self.folder_icon_view.setSpacing(4)
                 self.folder_icon_view.setWordWrap(True)
                 self.folder_icon_view.setUniformItemSizes(True)
@@ -13515,7 +13560,7 @@ function filterAliases(q) {{
                 self.folder_view_stack.setCurrentIndex(1 if self.folder_view_mode == "icons" else 0)
                 folder_container_layout.addWidget(self.folder_view_stack)
 
-                self.folder_filter_input = self._build_folder_filter_bar(folder_container_layout)
+                self.folder_filter_input = self._build_folder_filter_bar(folder_container_layout, side="right")
 
                 fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
                 folder_container_layout.addWidget(
@@ -16599,9 +16644,14 @@ function filterAliases(q) {{
             lambda name, path, app: path.lower().endswith('.pdf')
         )
 
-    # Same extension set _build_folder_context_menu() already uses to offer "Open
-    # in Image Viewer" for a right-clicked file — reused here rather than a second,
-    # separately-maintained list.
+    # The one shared "is this file an image" extension set — this comment used to claim
+    # _build_folder_context_menu() already reused this, but it (and three other call
+    # sites: _open_path_in_best_viewer(), the folder-item context menu's own "Open in
+    # Image Viewer" check, and the Focus-layout inversion block's image-vs-app-name
+    # check) had each quietly kept their own separate bare-tuple copy instead. All five
+    # now genuinely point at this one constant (found while adding the folder icon-grid's
+    # image-thumbnail feature, which needed the same check and would otherwise have been
+    # a sixth copy).
     _IMAGE_LAUNCHER_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp')
 
     def _project_has_image_launcher(self):
@@ -18208,6 +18258,33 @@ function filterAliases(q) {{
         self.folder_view_toggle_btn.clicked.connect(self._toggle_folder_view_mode)
         toolbar_layout.addWidget(self.folder_view_toggle_btn)
 
+        # Show Images toggle (real thumbnails for image files in icon-grid view, off by
+        # default) — checkable rather than a glyph-swap like the two toggles above, since
+        # this reads more naturally as a persistent on/off switch than "click to switch
+        # to X". Has no visible effect in tree view, but stays visible/togglable
+        # regardless of the current view mode, same as the sort toggle below it.
+        show_images_btn_style = btn_style + f"""
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+        # Icon, not text/emoji — an emoji ("🖼") rendered at a visibly different height
+        # than its plain-text/monochrome-glyph neighbors (↑/⌂/↻/☰/A-Z), confirmed via a
+        # real screenshot, since Qt substitutes a color emoji font whose natural line
+        # metrics don't match the button's configured 12px text font. A plain "Img" text
+        # label fixed the height but read less clearly than an actual picture glyph.
+        self.folder_show_images_btn = QPushButton()
+        self.folder_show_images_btn.setIcon(self._image_icon())
+        self.folder_show_images_btn.setIconSize(QSize(13, 13))
+        self.folder_show_images_btn.setStyleSheet(show_images_btn_style)
+        self.folder_show_images_btn.setToolTip("Show image thumbnails in icon grid view")
+        self.folder_show_images_btn.setCheckable(True)
+        self.folder_show_images_btn.setChecked(self.folder_show_images)
+        self.folder_show_images_btn.clicked.connect(self._toggle_folder_show_images)
+        toolbar_layout.addWidget(self.folder_show_images_btn)
+
         # Sort mode toggle (A-Z vs. most-recent-first) — button shows the icon/label for
         # whichever mode a click would switch INTO, matching the view-toggle button above.
         self.folder_sort_toggle_btn = QPushButton("Date" if self.folder_sort_mode == "name" else "A-Z")
@@ -18323,6 +18400,24 @@ function filterAliases(q) {{
         self.launcher_folder_view_toggle_btn.clicked.connect(self._toggle_folder_view_mode)
         toolbar_layout.addWidget(self.launcher_folder_view_toggle_btn)
 
+        # See create_folder_toolbar's matching button for the full explanation.
+        mini_show_images_btn_style = mini_btn_style + f"""
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+        self.launcher_folder_show_images_btn = QPushButton()
+        self.launcher_folder_show_images_btn.setIcon(self._image_icon())
+        self.launcher_folder_show_images_btn.setIconSize(QSize(13, 13))
+        self.launcher_folder_show_images_btn.setStyleSheet(mini_show_images_btn_style)
+        self.launcher_folder_show_images_btn.setToolTip("Show image thumbnails in icon grid view")
+        self.launcher_folder_show_images_btn.setCheckable(True)
+        self.launcher_folder_show_images_btn.setChecked(self.folder_show_images)
+        self.launcher_folder_show_images_btn.clicked.connect(self._toggle_folder_show_images)
+        toolbar_layout.addWidget(self.launcher_folder_show_images_btn)
+
         self.launcher_folder_sort_toggle_btn = QPushButton("Date" if self.folder_sort_mode == "name" else "A-Z")
         self.launcher_folder_sort_toggle_btn.setStyleSheet(mini_btn_style)
         self.launcher_folder_sort_toggle_btn.setToolTip(
@@ -18380,8 +18475,10 @@ function filterAliases(q) {{
         self.launcher_folder_icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.launcher_folder_icon_view.setMovement(QListWidget.Movement.Static)
         self.launcher_folder_icon_view.setWrapping(True)
-        self.launcher_folder_icon_view.setIconSize(QSize(40, 40))
-        self.launcher_folder_icon_view.setGridSize(QSize(80, 96))
+        # See folder_icon_view's own matching comment above.
+        _left_icon_px = self._current_folder_icon_size("left")
+        self.launcher_folder_icon_view.setIconSize(QSize(_left_icon_px, _left_icon_px))
+        self.launcher_folder_icon_view.setGridSize(QSize(_left_icon_px * 2, _left_icon_px + self.FOLDER_GRID_TEXT_PAD["left"]))
         self.launcher_folder_icon_view.setSpacing(4)
         self.launcher_folder_icon_view.setWordWrap(True)
         self.launcher_folder_icon_view.setUniformItemSizes(True)
@@ -18416,7 +18513,7 @@ function filterAliases(q) {{
         self.launcher_folder_view_stack.setCurrentIndex(1 if self.folder_view_mode == "icons" else 0)
         column_layout.addWidget(self.launcher_folder_view_stack, 1)
 
-        self.launcher_folder_filter_input = self._build_folder_filter_bar(column_layout)
+        self.launcher_folder_filter_input = self._build_folder_filter_bar(column_layout, side="left")
 
         fm_name = os.path.basename(self.get_configured_file_manager()).capitalize()
         column_layout.addWidget(
@@ -18514,6 +18611,77 @@ function filterAliases(q) {{
         """Folder icon shared by all folder browser views (tree, icon grid, launcher panel)."""
         return self._blue_folder_icon()
 
+    # Discrete zoom steps for the folder icon-grid views, modeled on Dolphin's own zoom
+    # slider/Ctrl+scroll — applied as a multiplier against each side's own base icon size
+    # (FOLDER_ICON_BASE) rather than one shared absolute pixel size, so the two grids'
+    # relative proportions stay the same at every zoom level.
+    ICON_ZOOM_FACTORS = [0.5, 0.65, 0.85, 1.0, 1.3, 1.7, 2.2, 3.0, 3.75, 4.5]
+    ICON_ZOOM_DEFAULT_INDEX = 3  # 1.0x — matches the original hardcoded 48px/40px sizes
+    FOLDER_ICON_BASE = {"right": 48, "left": 40}
+    # Extra vertical space reserved per grid cell for the (up to 2-line) filename label
+    # below the icon — deliberately NOT scaled by zoom, since the label's own font size
+    # stays fixed regardless of icon size; only the icon portion of each cell grows/
+    # shrinks. Matches the original hardcoded grid heights: 112-48=64, 96-40=56.
+    FOLDER_GRID_TEXT_PAD = {"right": 64, "left": 56}
+
+    # Largest zoom factor (4.5) applied to the larger base size (48) is 216px — rounded
+    # up to give a cached thumbnail enough resolution to scale down cleanly even at
+    # maximum zoom, rather than visibly softening when scaled up from a smaller cache.
+    THUMBNAIL_BASE_PX = 240
+
+    def _get_image_thumbnail_icon(self, full_path, mtime, icon_size):
+        """Cached thumbnail QIcon for an image file, used by _render_folder_icons() when
+        "Show Images" is on. Cached by (path, mtime) at a fixed base resolution larger
+        than either folder icon-grid's configured icon size (right/main = 48px,
+        left/launcher panel = 40px — see the two setIconSize() calls in
+        create_folder_toolbar()/_build_launcher_folder_panel()'s widget setup), then
+        scaled down per-call from that one cached pixmap — avoids re-decoding the same
+        image from disk twice just because both grids want a differently-sized icon.
+        A failed load (corrupt/unreadable/unsupported file) is cached too (as `False`,
+        distinct from "not yet looked up") so a bad file doesn't get re-attempted on
+        every single render; returns None in that case so the caller falls back to the
+        generic system icon instead of a broken one. No cache size limit — this is a
+        per-session, in-memory dict, and the intended use (a project's documents/images
+        folder, not a giant photo archive) keeps it well within a reasonable footprint.
+
+        Real bugs found via a live screenshot, both traced to the same root cause: the
+        per-call result used to be returned straight from .scaled(..., KeepAspectRatio)
+        with no further compositing — for any non-square image (the overwhelmingly common
+        case) this produces a non-square pixmap, e.g. 48x27 for a landscape photo in a
+        48px grid. That (1) visibly renders far smaller/thinner than the square generic
+        file-type icons sitting right next to it, and (2) — worse — confused
+        setUniformItemSizes(True)'s own per-grid cell-size calculation once even one item
+        had a differently-shaped icon, cutting off filenames on OTHER, non-image items in
+        the same grid. Fixed by always compositing onto a fixed icon_size x icon_size
+        transparent square, centered, so every icon in the grid — thumbnail or generic —
+        has identical pixel dimensions."""
+        if not hasattr(self, '_image_thumbnail_cache'):
+            self._image_thumbnail_cache = {}
+        cache_key = (full_path, mtime)
+        cached = self._image_thumbnail_cache.get(cache_key)
+        if cached is None:
+            pixmap = QPixmap(full_path)
+            if pixmap.isNull():
+                self._image_thumbnail_cache[cache_key] = False
+                return None
+            cached = pixmap.scaled(
+                self.THUMBNAIL_BASE_PX, self.THUMBNAIL_BASE_PX,
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+            )
+            self._image_thumbnail_cache[cache_key] = cached
+        if cached is False:
+            return None
+        scaled = cached.scaled(
+            icon_size, icon_size,
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        )
+        canvas = QPixmap(icon_size, icon_size)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.drawPixmap((icon_size - scaled.width()) // 2, (icon_size - scaled.height()) // 2, scaled)
+        painter.end()
+        return QIcon(canvas)
+
     def _open_icon(self):
         """Plain single-color 'open folder' icon for Open-file buttons (Code/Notes 'Open',
         PDF/Image/Terminal 'Open' toolbar buttons) — replaces the 📂/📤 emoji, which render
@@ -18528,6 +18696,22 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
+    def _image_icon(self):
+        """Plain single-color 'image/picture' icon (frame + sun + mountain, the standard
+        flat glyph for "this is a picture") for the Folder Browser's "Show Images" toggle
+        button — same theme-matched light/dark PNG pair convention as _open_icon()/
+        _pin_icon(), since it sits on the same plain bg_button toolbar. Replaces an
+        earlier plain-text "Img" label, which itself replaced an emoji ("🖼") that
+        rendered at a visibly different height than its neighbors — this SVG-sourced icon
+        avoids both problems (an actual image glyph, not text, and no emoji-font metrics
+        to fight with)."""
+        cache_attr = f'_image_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "image-dark.png" if self.current_theme == "dark" else "image-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
 
     def _pin_icon(self):
         """Plain single-color 'pin' icon for pin buttons that sit on a plain, theme-dependent
@@ -18659,9 +18843,17 @@ function filterAliases(q) {{
         grid.setWrapping(True)
         icon_provider = QFileIconProvider()
         folder_icon = self._folder_theme_icon()
+        show_images = getattr(self, 'folder_show_images', False)
+        icon_px = grid.iconSize().width()
 
         for e in entries:
-            icon = folder_icon if e['kind'] == 'dir' else icon_provider.icon(QFileInfo(e['full_path']))
+            icon = None
+            if e['kind'] == 'dir':
+                icon = folder_icon
+            elif show_images and os.path.splitext(e['full_path'])[1].lower() in self._IMAGE_LAUNCHER_EXTENSIONS:
+                icon = self._get_image_thumbnail_icon(e['full_path'], e['mtime'], icon_px)
+            if icon is None:
+                icon = icon_provider.icon(QFileInfo(e['full_path']))
             item = QListWidgetItem(icon, e['display_name'])
             # Full name as a tooltip — the grid cell wraps long names but still elides past a
             # couple of lines, so this is the reliable way to always see the whole filename.
@@ -18849,11 +19041,21 @@ function filterAliases(q) {{
         if icons is not None:
             self._render_folder_icons(entries, target=icons)
 
-    def _build_folder_filter_bar(self, parent_layout):
+    def _build_folder_filter_bar(self, parent_layout, side="right"):
         """Build a Dolphin-style filter bar: a text box that live-filters the current folder's
-        entries by substring match against the display name. Returns the QLineEdit — callers
-        store their own ref since the main viewer and launcher panel each need their own widget
-        instance, kept in sync via self.folder_filter_text / _on_folder_filter_changed()."""
+        entries by substring match against the display name, plus the icon-grid zoom slider
+        to its right — moved here (from the toolbar above) per user feedback that the main
+        toolbar had no room left for it, which also happens to match Dolphin's own placement
+        (its zoom control lives in the status bar at the bottom, not the toolbar). Returns the
+        QLineEdit — callers store their own ref since the main viewer and launcher panel each
+        need their own widget instance, kept in sync via self.folder_filter_text /
+        _on_folder_filter_changed(); the slider is stored as self.folder_zoom_slider /
+        self.launcher_folder_zoom_slider by `side`, same pattern as the filter input."""
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(5)
+
         filter_input = QLineEdit()
         filter_input.setPlaceholderText("Filter...")
         filter_input.setClearButtonEnabled(True)
@@ -18872,7 +19074,26 @@ function filterAliases(q) {{
             }}
         """)
         filter_input.textChanged.connect(self._on_folder_filter_changed)
-        parent_layout.addWidget(filter_input)
+        row_layout.addWidget(filter_input, 1)
+
+        # Icon zoom slider — mirrors Dolphin's own, alongside Ctrl+scroll wheel or
+        # Ctrl+/Ctrl-/Ctrl+0 while an icon-grid widget has focus (see
+        # DraggableFolderList.wheelEvent()/keyPressEvent()). Has no visible effect in
+        # tree/list view (only the icon grid has a variable icon size), but stays
+        # visible regardless of the current view mode, same as the toggles above it.
+        zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        zoom_slider.setRange(0, len(self.ICON_ZOOM_FACTORS) - 1)
+        zoom_slider.setValue(self.folder_icon_zoom_index)
+        zoom_slider.setFixedWidth(80 if side == "right" else 60)
+        zoom_slider.setToolTip("Zoom icon size (Ctrl+scroll, or Ctrl+/Ctrl-/Ctrl+0, also work)")
+        zoom_slider.valueChanged.connect(self._set_folder_icon_zoom_index)
+        row_layout.addWidget(zoom_slider)
+        if side == "left":
+            self.launcher_folder_zoom_slider = zoom_slider
+        else:
+            self.folder_zoom_slider = zoom_slider
+
+        parent_layout.addWidget(row_widget)
         return filter_input
 
     def _on_folder_filter_changed(self, text):
@@ -19185,7 +19406,7 @@ function filterAliases(q) {{
             'npm', 'directorydev', 'dolphin_tabs',
             'rsync_backup', 'rsync_backup_id', 'rsync_backup_id_port',
         }
-        IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg')
+        IMAGE_EXTS = self._IMAGE_LAUNCHER_EXTENSIONS
 
         # A resolved binary name isn't always a valid theme-icon name too — VS Code's
         # package binary is "code" but its icon is usually registered as "vscode" (or the
@@ -19393,6 +19614,77 @@ function filterAliases(q) {{
         if getattr(self, 'launcher_folder_current_path', None):
             self._render_folder_view_side("left")
 
+    def _toggle_folder_show_images(self):
+        """Toggle "Show Images" (real thumbnails for image files in icon-grid view, off
+        by default) — applies to both the main Folder viewer and the launcher-column mini
+        panel, whichever exist. Only changes how the icon grid's items are drawn, not
+        which widget is visible, so — like _toggle_folder_sort_mode() — a pure re-render
+        from the already-cached scan is enough, no re-scan needed."""
+        self.folder_show_images = not self.folder_show_images
+        self.settings["folder_show_images"] = self.folder_show_images
+        self.save_settings()
+        if getattr(self, 'folder_show_images_btn', None) is not None:
+            self.folder_show_images_btn.setChecked(self.folder_show_images)
+        if getattr(self, 'launcher_folder_show_images_btn', None) is not None:
+            self.launcher_folder_show_images_btn.setChecked(self.folder_show_images)
+        if getattr(self, 'folder_current_path', None):
+            self._render_folder_view_side("right")
+        if getattr(self, 'launcher_folder_current_path', None):
+            self._render_folder_view_side("left")
+
+    def _current_folder_icon_size(self, side):
+        """Current icon pixel size for this side's folder icon-grid, given the shared
+        zoom-level index (self.folder_icon_zoom_index) applied against that side's own
+        base size — see ICON_ZOOM_FACTORS/FOLDER_ICON_BASE."""
+        base = self.FOLDER_ICON_BASE[side]
+        factor = self.ICON_ZOOM_FACTORS[self.folder_icon_zoom_index]
+        return max(16, round(base * factor))
+
+    def _apply_folder_icon_zoom(self):
+        """Applies the current zoom index to both folder icon-grid widgets (whichever
+        exist), keeps both zoom sliders in sync (blockSignals to avoid a redundant
+        re-trigger through valueChanged), and re-renders from the already-cached scan —
+        no re-scan needed, same as _toggle_folder_show_images()/_toggle_folder_sort_mode()."""
+        for side, attr in (("right", "folder_icon_view"), ("left", "launcher_folder_icon_view")):
+            grid = getattr(self, attr, None)
+            if grid is None:
+                continue
+            icon_size = self._current_folder_icon_size(side)
+            grid.setIconSize(QSize(icon_size, icon_size))
+            grid.setGridSize(QSize(icon_size * 2, icon_size + self.FOLDER_GRID_TEXT_PAD[side]))
+        for attr in ("folder_zoom_slider", "launcher_folder_zoom_slider"):
+            slider = getattr(self, attr, None)
+            if slider is None:
+                continue
+            slider.blockSignals(True)
+            slider.setValue(self.folder_icon_zoom_index)
+            slider.blockSignals(False)
+        if getattr(self, 'folder_current_path', None):
+            self._render_folder_view_side("right")
+        if getattr(self, 'launcher_folder_current_path', None):
+            self._render_folder_view_side("left")
+
+    def _set_folder_icon_zoom_index(self, index):
+        """Absolute zoom-level set, clamped to the valid range — used by the slider
+        widgets directly (connected to valueChanged) and by the relative
+        adjust/reset helpers below."""
+        index = max(0, min(len(self.ICON_ZOOM_FACTORS) - 1, index))
+        if index == self.folder_icon_zoom_index:
+            return
+        self.folder_icon_zoom_index = index
+        self.settings["folder_icon_zoom_index"] = index
+        self.save_settings()
+        self._apply_folder_icon_zoom()
+
+    def _adjust_folder_icon_zoom(self, delta):
+        """Relative zoom-level change by `delta` steps — used by Ctrl+scroll wheel and
+        Ctrl+/Ctrl- on the folder icon-grid widgets (see DraggableFolderList)."""
+        self._set_folder_icon_zoom_index(self.folder_icon_zoom_index + delta)
+
+    def _reset_folder_icon_zoom(self):
+        """Ctrl+0 on the folder icon-grid widgets — back to the original 1.0x sizes."""
+        self._set_folder_icon_zoom_index(self.ICON_ZOOM_DEFAULT_INDEX)
+
     def _handle_folder_item_activation(self, path, item_type):
         """Open/navigate to a folder-browser entry — shared by the tree and icon views."""
         if not path:
@@ -19435,7 +19727,7 @@ function filterAliases(q) {{
     def _open_path_in_best_viewer(self, path):
         """Open a file in whichever built-in viewer matches its extension, else xdg-open."""
         ext = os.path.splitext(path)[1].lower()
-        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp'):
+        if ext in self._IMAGE_LAUNCHER_EXTENSIONS:
             self.preview_in_image_viewer(path)
         elif ext == '.pdf':
             self.preview_in_pdf_viewer(path)
@@ -21355,7 +21647,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # Open in a specific built-in viewer (files only, when a matching viewer exists)
         if item_type == "file":
             ext = os.path.splitext(path)[1].lower()
-            if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp'):
+            if ext in self._IMAGE_LAUNCHER_EXTENSIONS:
                 viewer_action = menu.addAction("🖼️ Open in Image Viewer")
                 viewer_action.triggered.connect(lambda: self.preview_in_image_viewer(path))
             elif ext == '.pdf':
@@ -22986,7 +23278,7 @@ Project created: {date_str}
                     else:
                         self.preview_in_webview(path)
                     return
-                if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp') or app in ("gwenview", "gimp", "krita"):
+                if ext in self._IMAGE_LAUNCHER_EXTENSIONS or app in ("gwenview", "gimp", "krita"):
                     self.preview_in_image_viewer(expanded_path)
                     return
                 if ext == ".pdf":

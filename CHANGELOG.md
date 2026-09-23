@@ -19,6 +19,15 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
 - Long project names in the All Projects picker were wrapping to an illegible second line — now truncate to a single line with an ellipsis (a `min-width: 0` flexbox fix was needed for the truncation to actually take effect).
 - Minor layout polish: the 📋 Paste button moved from the crowded header into the bottom nav (between Notes and the theme toggle), and the ≡ All Projects button got a larger tap target.
 
+## 2026-09-23 (Desktop, Folder Browser images/zoom)
+
+### Added
+- **Image thumbnails in the Folder Browser icon grid**, behind a new "Show Images" toggle (off by default — scoped for viewing a project's own documents/images folder, not for browsing a large personal photo archive). Thumbnails are cached by `(path, mtime)` and composited onto a fixed square canvas so a non-square source image never distorts the grid's uniform cell sizing (a real bug: an initial version let a landscape/portrait thumbnail's natural aspect ratio through unpadded, which visibly shrank that one icon and confused `setUniformItemSizes(True)`'s cell-size calculation enough to cut off filenames on *other*, unrelated items in the same grid). The toggle itself uses a proper SVG-sourced, theme-matched icon (`assets/icons/image.svg` → `_image_icon()`, same convention as the app's other `_open_icon()`/`_pin_icon()` icons) rather than an emoji — a color emoji glyph rendered at a visibly different height than its plain-text toolbar neighbors. Krita's `.kra` format is deliberately excluded (it's a zip container, not natively decodable by `QPixmap` — a real preview would need extracting its embedded preview PNG separately).
+- **Icon zoom for the Folder Browser's icon grid**, modeled on Dolphin's own zoom slider + Ctrl+scroll: a slider (in the bottom filter-bar row, next to the filter box — matching Dolphin's actual placement, not the top toolbar, which had no room left for it), Ctrl+scroll wheel, and Ctrl+/Ctrl-/Ctrl+0 keyboard shortcuts, all converging on one shared, persisted zoom level (10 discrete steps, 0.5x–4.5x) applied proportionally to both the main Folder viewer's and the Focus-layout launcher panel's icon grids.
+
+### Fixed
+- Consolidated five separate inline copies of the image-extension tuple (scattered across the app icon detection, the folder-browser context menu, and the Apps tab) onto the single pre-existing `_IMAGE_LAUNCHER_EXTENSIONS` constant, which already existed but wasn't actually being reused anywhere despite a comment claiming it was.
+
 ## 2026-09-23 (Desktop)
 
 ### Changed
