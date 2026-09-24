@@ -11762,7 +11762,8 @@ function filterAliases(q) {{
                             color: {self.t('fg_on_dark')};
                             font-weight: bold;
                             border-radius: 3px;
-                            padding: 5px;
+                            padding: 5px 8px;
+                            font-size: 11px;
                         }}
                         QPushButton:hover {{
                             background-color: {self.t('tab_launcher_active')};
@@ -11954,24 +11955,38 @@ function filterAliases(q) {{
                         # Upload an existing file into this project's documents folder,
                         # filed as a real launcher item — the file-picker-based counterpart
                         # to the Notes/Editor toolbars' own "＋ New" buttons (which create a
-                        # BLANK file in the same folder). Always shown here regardless of
-                        # layout/grouping mode, since their target category (Documentation
-                        # vs Project Files) is fixed, not tied to whichever tab/bucket is
-                        # currently in view — see upload_document_to_project()/
-                        # upload_file_to_project().
-                        upload_doc_btn = QPushButton("⬆ Upload Doc")
-                        upload_doc_btn.setMinimumHeight(self.d('header_btn_height'))
-                        upload_doc_btn.setToolTip("Upload a document to the Project Documents folder")
-                        upload_doc_btn.setStyleSheet(add_btn_style)
-                        upload_doc_btn.clicked.connect(self.upload_document_to_project)
-                        header_layout.addWidget(upload_doc_btn)
+                        # BLANK file in the same folder). Upload Doc files under Documentation,
+                        # Upload File under Project Files/Resources — see
+                        # upload_document_to_project()/upload_file_to_project().
+                        #
+                        # In Focus layout, Docs and Resources are separate tabs with a real
+                        # "currently viewing this bucket" concept (self.active_launcher_tab),
+                        # so showing both buttons on both tabs was a real point of confusion
+                        # reported live — seeing "Upload File" while looking at Docs, with no
+                        # indication it files into the OTHER bucket. Only the button matching
+                        # the active tab shows there now. Standard layout (flat list, or
+                        # Group-by-Type's Docs/Resources shown as sections within one scrolled
+                        # view rather than separate tabs) has no single "current bucket" to key
+                        # off, so both stay shown there, same as before — just with clearer
+                        # tooltips, since that ambiguity was real there too.
+                        focus_docs_tab = self.layout_mode == "focus" and self.active_launcher_tab == "docs"
+                        focus_resources_tab = self.layout_mode == "focus" and self.active_launcher_tab == "resources"
 
-                        upload_file_btn = QPushButton("⬆ Upload File")
-                        upload_file_btn.setMinimumHeight(self.d('header_btn_height'))
-                        upload_file_btn.setToolTip("Upload a file to the Project Documents folder")
-                        upload_file_btn.setStyleSheet(add_btn_style)
-                        upload_file_btn.clicked.connect(self.upload_file_to_project)
-                        header_layout.addWidget(upload_file_btn)
+                        if not focus_resources_tab:
+                            upload_doc_btn = QPushButton("⬆ Upload Doc")
+                            upload_doc_btn.setMinimumHeight(self.d('header_btn_height'))
+                            upload_doc_btn.setToolTip("Upload a file into this project — gets added to Docs")
+                            upload_doc_btn.setStyleSheet(add_btn_style)
+                            upload_doc_btn.clicked.connect(self.upload_document_to_project)
+                            header_layout.addWidget(upload_doc_btn)
+
+                        if not focus_docs_tab:
+                            upload_file_btn = QPushButton("⬆ Upload File")
+                            upload_file_btn.setMinimumHeight(self.d('header_btn_height'))
+                            upload_file_btn.setToolTip("Upload a file into this project — gets added to Resources")
+                            upload_file_btn.setStyleSheet(add_btn_style)
+                            upload_file_btn.clicked.connect(self.upload_file_to_project)
+                            header_layout.addWidget(upload_file_btn)
 
                         column_layout.addLayout(header_layout)
 
@@ -19489,6 +19504,20 @@ function filterAliases(q) {{
 
         row_layout.addStretch()
 
+        # "⬆ Add File..." — requested directly: while browsing a folder here (e.g. "Project
+        # Home", often a project's own working folder), there was no way to pull an external
+        # file IN except dragging from a real file manager or right-clicking the file at its
+        # SOURCE location elsewhere. Opposite the shortcut buttons (after the stretch above)
+        # since it's an action, not a navigation target. Copies into whichever folder this
+        # side is CURRENTLY browsing and also files it as a launcher item under Project
+        # Files/Resources — same copy-then-file behavior as "⬆ Upload File", just targeting
+        # the browsed folder instead of always the fixed documents/<slug>/ folder.
+        add_file_btn = QPushButton("⬆ Add File...")
+        add_file_btn.setStyleSheet(btn_style)
+        add_file_btn.setToolTip("Copy a file from elsewhere into this folder, and add it to Project Files/Resources")
+        add_file_btn.clicked.connect(lambda checked=False, s=side: self._add_file_to_current_folder(s))
+        row_layout.addWidget(add_file_btn)
+
         parent_layout.addWidget(row_widget)
         # Immersive mode hides every per-viewer toolbar built this way (see _apply_zen_mode()).
         self._immersive_hide_widgets.append(row_widget)
@@ -21534,6 +21563,45 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.set_status(f"✓ Uploaded '{filename}' and added to {category}", "success")
         self.refresh_projects()
 
+    def _add_file_to_current_folder(self, side):
+        """"⬆ Add File..." button in the folder-shortcuts row (_build_folder_shortcuts_row)
+        — prompts for an existing file anywhere on disk, copies it into whichever folder
+        this side is CURRENTLY browsing (unlike _upload_file_to_documents(), which always
+        targets the fixed documents/<slug>/ folder regardless of what's on screen), and
+        files it as a launcher item under Project Files/Resources — same copy-then-file
+        shape, just a variable destination tied to wherever you're actually looking.
+        Requested directly for browsing a project's own working folder (e.g. "Project
+        Home"), where pulling in a file from elsewhere had no convenient path short of
+        dragging from a real file manager or right-clicking the file at its source
+        location instead of here."""
+        current_path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
+        if not current_path or not os.path.isdir(os.path.expanduser(current_path)):
+            QMessageBox.warning(self, "Add File", "Navigate to a real folder first.")
+            return
+        current_path = os.path.expanduser(current_path)
+
+        path, _ = QFileDialog.getOpenFileName(self, "Add a file to this folder", os.path.expanduser("~"))
+        if not path:
+            return
+        filename = os.path.basename(path)
+        target = os.path.join(current_path, filename)
+        if os.path.exists(target):
+            QMessageBox.warning(self, "Add File", f'"{filename}" already exists in this folder.')
+            return
+        try:
+            shutil.copy2(path, target)
+        except OSError as e:
+            QMessageBox.warning(self, "Add File", f"Could not copy file: {e}")
+            return
+
+        category = self._ensure_project_files_category()
+        stem = os.path.splitext(filename)[0]
+        self._add_item_to_config(0, category, self._titleize_stem(stem), target, "default")
+        self.save_config_to_json()
+        self._refresh_all_folder_views()
+        self.set_status(f"✓ Added '{filename}' to this folder and {category}", "success")
+        self.refresh_projects()
+
     def upload_document_to_project(self):
         """Launcher header "⬆ Upload Doc" button: uploads a file into this project's
         documents folder and files it under Documentation (auto-created via
@@ -21847,14 +21915,20 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # actually available from any machine that syncs that folder — e.g. a file in
         # ~/Downloads on the laptop, uploaded so it's also reachable from the
         # desktop). Both show the same project-picker shape; only what happens after
-        # picking differs. See add_resource_to_documentation() (link) vs
-        # upload_resource_to_documentation() (copy).
+        # picking differs — and, per direct user feedback, which category the item
+        # lands in: Link stays targeted at Documentation (it's literally what it's
+        # for), but Upload/copy files under "Project Files" instead — a generic
+        # "add this file to the project" action reads more like Upload File/New File
+        # (also "Project Files") than like something documentation-specific, and it's
+        # just as easy to move afterward (drag, or "Move to category") if it turns out
+        # to belong in Documentation for a given file. See add_resource_to_documentation()
+        # (link) vs upload_resource_to_project_files() (copy).
         if item_type != "dir":
             doc_action = menu.addAction("Add to Documentation (link)...")
             doc_action.triggered.connect(lambda: self.show_add_to_documentation_dialog(path))
 
             upload_action = menu.addAction("⬆ Upload to Project (copy)...")
-            upload_action.triggered.connect(lambda: self.show_upload_to_documentation_dialog(path))
+            upload_action.triggered.connect(lambda: self.show_upload_resource_dialog(path))
 
         # Add as To-Do (files and directories) — see _add_as_todo()/_prompt_and_add_as_todo().
         todo_action = menu.addAction("☑ Add as To-Do")
@@ -22642,12 +22716,13 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if project_path == self.current_config_file:
             self.refresh_projects()
 
-    def show_upload_to_documentation_dialog(self, file_path):
+    def show_upload_resource_dialog(self, file_path):
         """Like show_add_to_documentation_dialog() above, but for the COPY-based
         upload (see the right-click menu's "⬆ Upload to Project (copy)..." action,
         _build_folder_context_menu()) — same project-picker shape, just calls
-        upload_resource_to_documentation() instead of add_resource_to_documentation()
-        on accept."""
+        upload_resource_to_project_files() instead of add_resource_to_documentation()
+        on accept. Files under "Project Files", not Documentation — see the calling
+        menu's own comment for why."""
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
         projects = []
 
@@ -22691,7 +22766,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             selected_project = combo.currentText()
             project_path = os.path.join(projects_dir, f"{selected_project}.json")
-            self.upload_resource_to_documentation(file_path, project_path)
+            self.upload_resource_to_project_files(file_path, project_path)
 
     def _documents_folder_for_config_getorcreate(self, config_path, config_data):
         """Write-capable sibling of _documents_folder_for_config() (the read-only
@@ -22701,7 +22776,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         (same _slugify_project_name()+collision-check logic), setting
         config_data['documents_subfolder'] in place if it had to compute a new one
         — the caller is responsible for writing config_data back to config_path
-        afterward, same as upload_resource_to_documentation() below does. Creates
+        afterward, same as upload_resource_to_project_files() below does. Creates
         the folder on disk (os.makedirs(..., exist_ok=True)) either way."""
         slug = config_data.get('documents_subfolder')
         base = self.get_documents_folder()
@@ -22718,9 +22793,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         os.makedirs(path, exist_ok=True)
         return path
 
-    def upload_resource_to_documentation(self, file_path, project_path):
+    def upload_resource_to_project_files(self, file_path, project_path):
         """Copy file_path INTO project_path's own documents/<slug>/ folder and file
-        it under 'Documentation', app='default' — the copy-based sibling of
+        it under 'Project Files', app='default' — the copy-based sibling of
         add_resource_to_documentation() above (which only references file_path at
         its original location). This is what actually makes the file available on
         another machine that syncs that project's documents/ tree (e.g. a file
@@ -22729,7 +22804,14 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         whichever machine opens it. Operates directly on project_path's own JSON via
         json.load()/json.dump() (not self.COLUMN_1/save_config_to_json()), since
         project_path isn't necessarily the currently-loaded project — same
-        arbitrary-project convention add_resource_to_documentation() already uses."""
+        arbitrary-project convention add_resource_to_documentation() already uses.
+
+        Files under "Project Files" rather than "Documentation", unlike the link
+        variant above — a generic "copy this file into the project" action reads
+        more like Upload File/New File (also "Project Files") than something
+        documentation-specific; moving an individual item to Documentation
+        afterward (drag, or the right-click "Move to category" menu) is just as
+        easy as it would be the other way around."""
         try:
             with open(project_path, 'r') as f:
                 data = json.load(f)
@@ -22756,18 +22838,18 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             data['columns'] = [[]]
         column1 = data['columns'][0]
 
-        doc_category = None
+        files_category = None
         for category_dict in column1:
-            if isinstance(category_dict, dict) and "Documentation" in category_dict:
-                doc_category = category_dict["Documentation"]
+            if isinstance(category_dict, dict) and "Project Files" in category_dict:
+                files_category = category_dict["Project Files"]
                 break
-        if doc_category is None:
-            doc_category = []
-            column1.append({"Documentation": doc_category})
+        if files_category is None:
+            files_category = []
+            column1.append({"Project Files": files_category})
 
         stem = os.path.splitext(filename)[0]
         display_name = self._titleize_stem(stem)
-        doc_category.append([display_name, target, "default"])
+        files_category.append([display_name, target, "default"])
 
         try:
             with open(project_path, 'w') as f:

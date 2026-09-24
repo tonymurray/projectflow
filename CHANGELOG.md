@@ -2,6 +2,18 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-24 (Desktop, Docs/Resources upload polish)
+
+### Added
+- **"⬆ Add File..." button** in the folder-shortcuts row (both the launcher panel's Files tab and the main Folder viewer — shared infrastructure, so it appears in both for free): prompts for an existing file anywhere on disk, copies it into whichever folder is *currently browsed* (unlike "⬆ Upload File", which always targets the fixed `documents/<slug>/` folder), and also files it as a launcher item under Project Files/Resources. Fills a real gap — pulling an external file into a browsed folder (e.g. a project's own working folder) previously meant dragging it in from a real file manager or right-clicking the file at its *source* location instead of here.
+
+### Changed
+- **"⬆ Upload Doc"/"⬆ Upload File" are now contextual in Focus layout**: they used to always show together regardless of which launcher tab was active, so seeing "Upload File" while looking at the Docs tab — with no indication it files into the *other* bucket — was a real reported point of confusion. Now the Docs tab shows only Upload Doc, the Resources tab shows only Upload File. Standard layout (no single "current tab" to key off) keeps both, with clearer tooltips ("gets added to Docs"/"gets added to Resources") instead of the near-identical old wording.
+- **"⬆ Upload to Project (copy)..." (right-click a file → upload into a chosen project) now files under Project Files instead of Documentation**, matching direct feedback that a generic "copy this file into the project" action reads more like Upload File/New File than something documentation-specific — moving an individual item to Documentation afterward (drag, or "Move to category") is no harder than the other way around. The sibling "Add to Documentation (link)..." action is unchanged. Renamed `upload_resource_to_documentation()`/`show_upload_to_documentation_dialog()` to `upload_resource_to_project_files()`/`show_upload_resource_dialog()` to match.
+
+### Fixed
+- The header's "+ Add"/"⬆ Upload Doc"/"⬆ Upload File" buttons (and the per-category "+") rendered visibly larger than their neighboring launcher-tab-row buttons despite sharing the same blue color family — both were bold, but only the tab row buttons had an explicit `font-size: 11px`; the add/upload buttons had none and inherited a larger default. Fixed by matching the tab row's font-size/padding exactly, rather than the first attempt (dropping bold entirely), which looked inconsistent in the other direction.
+
 ## 2026-09-23 (Desktop, Folder Icon Pack)
 
 ### Added
