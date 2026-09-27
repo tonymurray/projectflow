@@ -2,6 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-27 (Desktop, menu-entry fix)
+
+### Fixed
+- **"Create Menu Entry" (Project Settings → Integrations) failed with `[Errno 2] No such file or directory` on a fresh profile** — `regenerate_desktop_file()` wrote straight to `~/.local/share/applications/projectflow-<project>.desktop` without first ensuring that directory exists, unlike `ensure_desktop_file_installed()` right above it, which already does. On a brand-new install (nothing has ever written to `~/.local/share/applications/` yet — e.g. a fresh NixOS/KDE profile), the directory doesn't exist and the write fails outright. Since `ensure_desktop_file_installed()` deliberately skips on KDE (it's meant only for GNOME/COSMIC dock-icon matching), this button is KDE's *only* path to a real `.desktop` file — so the bug meant no menu entry could ever be created on a fresh KDE machine, and searching for the app in KRunner only ever matched the bare executable on `PATH` (no icon, not listed in the actual application menu). Fixed by adding the same `os.makedirs(..., exist_ok=True)` call before writing.
+
 ## 2026-09-24 (Desktop, Docs/Resources upload polish)
 
 ### Added

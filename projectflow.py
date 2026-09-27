@@ -24085,6 +24085,7 @@ StartupWMClass=ProjectFlow-{project_id}
 
         # Write file
         try:
+            os.makedirs(os.path.dirname(desktop_file), exist_ok=True)
             with open(desktop_file, 'w') as f:
                 f.write(content)
 
