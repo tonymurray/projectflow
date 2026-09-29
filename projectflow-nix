@@ -10,10 +10,21 @@
 # it separately.
 export LD_LIBRARY_PATH="$(echo "$NIX_LDFLAGS" | tr ' ' '\n' | sed -n 's/^-L//p' | tr '\n' ':')${LD_LIBRARY_PATH}"
 
-# Force xcb instead of letting Qt auto-detect and try wayland first: this project
-# doesn't declare a qtwayland dependency, so the wayland plugin reliably fails to load
-# under a Wayland session before ever falling back to xcb. KDE Plasma (and most other
-# desktops) run xcb apps fine via XWayland either way.
-export QT_QPA_PLATFORM=xcb
+# Prefer xcb whenever an X11 display is actually reachable — this covers every
+# previously-validated setup, including Plasma's own Wayland session, which runs xcb
+# apps fine via XWayland. Deliberately NOT switching to native wayland just because
+# $WAYLAND_DISPLAY is set (i.e. for every Wayland session in general): a prior
+# investigation (see ai/issues.md) found the QtWebEngine GPU-compositor crash bug
+# reproduces under native wayland too — if anything faster than under xcb — so
+# blanket-preferring wayland would trade a working default for a differently-broken
+# one. Only fall back to wayland when xcb genuinely has nothing to connect to (no
+# $DISPLAY at all — e.g. a minimal Wayland compositor like Niri that doesn't start
+# XWayland by default), where xcb was previously a hard "could not connect to
+# display" failure and wayland is the only platform with any chance of working.
+if [ -n "$DISPLAY" ]; then
+  export QT_QPA_PLATFORM=xcb
+else
+  export QT_QPA_PLATFORM=wayland
+fi
 
 exec "$(dirname "$0")/projectflow.py" "$@"

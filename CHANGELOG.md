@@ -2,6 +2,11 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-29 (Desktop, Nix launcher fix — Niri/Wayland-without-XWayland support)
+
+### Fixed
+- **`projectflow-nix` (and `shell.nix`'s equivalent dev-shell hook) failed to start at all under the Niri compositor** with `qt.qpa.xcb: could not connect to display` — both unconditionally forced `QT_QPA_PLATFORM=xcb`, which only works when XWayland is actually running. That's true for KDE Plasma (started automatically) and most other desktops, but not guaranteed for a minimal Wayland compositor like Niri, which doesn't start XWayland by default. Fixed by preferring `xcb` only when `$DISPLAY` is actually reachable, falling back to native `wayland` otherwise — verified empirically that the `wayland` QPA platform plugin already loads cleanly with this project's existing dependency list (no new package needed; it ships inside `qtbase` itself). Zero behavior change for Plasma or any other desktop that already provides XWayland. Deliberately *not* implemented as "prefer wayland whenever `$WAYLAND_DISPLAY` is set" (which would also switch Plasma's own Wayland session over to native Wayland) — a prior investigation into this app's QtWebEngine GPU-compositor crash bug (see `ai/issues.md`) found that bug reproduces under native Wayland too, if anything faster than under `xcb`, so blanket-preferring Wayland would trade one working default for a differently-fragile one. The same fix was also applied to the `projectflow` fast-launch wrapper package in the local NixOS config (`nixconfig`'s `common-packages.nix`), which mirrors this logic for the same reason.
+
 ## 2026-09-27 (Desktop, menu-entry fix)
 
 ### Fixed
