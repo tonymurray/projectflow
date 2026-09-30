@@ -2,10 +2,64 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-09-30 (Desktop, Windows port merged to master)
+
+### Changed
+- **`windows-port` merged into `master`** — real Windows 11 hardware (not a VM) has now confirmed
+  the core app, all `QWebEngineView`-backed viewers (Notes/Web/Editor/Help), the launcher system,
+  and the taskbar-icon-identity fix all working correctly. The 2026-09-28 entry below is left
+  as-is as an accurate record of what was verified on that date (a VM); this entry is the
+  supersede-with-real-hardware confirmation. Now pushed publicly (GitHub + Gitea) for the first
+  time — previously restricted to the internal Gitea remote pending this validation.
+
 ## 2026-09-29 (Desktop, Nix launcher fix — Niri/Wayland-without-XWayland support)
 
 ### Fixed
 - **`projectflow-nix` (and `shell.nix`'s equivalent dev-shell hook) failed to start at all under the Niri compositor** with `qt.qpa.xcb: could not connect to display` — both unconditionally forced `QT_QPA_PLATFORM=xcb`, which only works when XWayland is actually running. That's true for KDE Plasma (started automatically) and most other desktops, but not guaranteed for a minimal Wayland compositor like Niri, which doesn't start XWayland by default. Fixed by preferring `xcb` only when `$DISPLAY` is actually reachable, falling back to native `wayland` otherwise — verified empirically that the `wayland` QPA platform plugin already loads cleanly with this project's existing dependency list (no new package needed; it ships inside `qtbase` itself). Zero behavior change for Plasma or any other desktop that already provides XWayland. Deliberately *not* implemented as "prefer wayland whenever `$WAYLAND_DISPLAY` is set" (which would also switch Plasma's own Wayland session over to native Wayland) — a prior investigation into this app's QtWebEngine GPU-compositor crash bug (see `ai/issues.md`) found that bug reproduces under native Wayland too, if anything faster than under `xcb`, so blanket-preferring Wayland would trade one working default for a differently-fragile one. The same fix was also applied to the `projectflow` fast-launch wrapper package in the local NixOS config (`nixconfig`'s `common-packages.nix`), which mirrors this logic for the same reason.
+
+## 2026-09-28 (Desktop, Windows port — work in progress, `windows-port` branch only)
+
+**Not merged to `master` / not released — kept on this branch and pushed only to the internal
+Gitea remote until validated on real Windows hardware.** First-pass groundwork for running
+ProjectFlow on Windows, alongside the existing Linux/KDE-first codebase (see `ai/mac_windows.md`
+for the original portability assessment this builds on).
+
+### Added
+- **New `os_integration.py` module** — the one place in the codebase allowed to branch on
+  `sys.platform`. Every Linux-specific external-process/filesystem convention this app relied on
+  inline (`xdg-open`, desktop-environment/terminal/editor/file-manager auto-detection, terminal
+  CLI-argument conventions, app-data storage paths, `.desktop`-entry base directory) now lives
+  here, with the Linux behavior kept byte-identical to what it replaced (verified call site by
+  call site) and Windows implementations added alongside. `projectflow.py`'s own methods became
+  thin delegating wrappers, so no other caller in the 24k-line file needed to change.
+- **Windows taskbar identity fix** (`os_integration.set_windows_taskbar_identity()`): a PyQt app
+  launched via `python script.py` (not a frozen `.exe`) otherwise shows Windows' generic
+  `python.exe` icon in the taskbar instead of the app's own icon — fixed by setting the
+  process's Application User Model ID before `QApplication` is constructed.
+- **Windows-appropriate launcher palette**: the "Application" dropdown now hides KDE-only
+  entries (`dolphin`, `dolphin_tabs`, `kate`, `konsole`, `okular`, `rsync_backup`) when running
+  on Windows (Linux is unaffected — still suggests all of them; the field stays free-text either
+  way, so nothing is actually blocked). Added `notepad`/`mspaint`/`explorer`/`cmd`/`wt` as
+  Windows-appropriate suggestions in `icon_preferences.json` — all reliably invocable by bare
+  name on any Windows install, unlike Office apps, which aren't on `PATH` by default and are
+  better served by the existing `default` (file-association / `os.startfile()`) handler instead
+  of a hardcoded app name.
+
+### Validated so far (real Windows 11 VM, from-source run, no packaging yet)
+Core app, window, viewers (Notes/Web/Editor/Help — all `QWebEngineView`-backed), and the
+`os.startfile()`-based launcher path all confirmed working. Known-unfinished: KDE-only features
+(Baloo, ttyd terminal backend, Dolphin service menu, `.desktop`/`.lnk` menu-entry creation) have
+no Windows implementation yet — expected, not a regression. A cosmetic window-resize "jump"
+during full-UI-rebuild operations (project switch, settings apply, theme toggle) was observed,
+most likely explained by the VM's software-rendered graphics rather than a real cross-platform
+bug — not yet confirmed on real (non-VM) Windows hardware.
+
+### Explicitly deferred
+PyInstaller packaging spike (Phase 0's real go/no-go gate on bundling QtWebEngine), a proper
+Start Menu `.lnk` writer (needs `pywin32` + real hardware to verify — a genuinely different file
+format from the `.desktop` writer, not just a different path), and the Windows branches of the
+new terminal-command builders (written per-design but explicitly flagged unverified pending real
+hardware access).
 
 ## 2026-09-27 (Desktop, menu-entry fix)
 

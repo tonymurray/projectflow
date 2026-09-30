@@ -127,6 +127,26 @@
     "icon": "\ud83c\udd43",
     "name": "Typora"
   },
+  "notepad": {
+    "icon": "\ud83d\udcdd",
+    "name": "Notepad"
+  },
+  "mspaint": {
+    "icon": "\ud83c\udfa8",
+    "name": "Paint"
+  },
+  "explorer": {
+    "icon": "\ud83d\udcc1",
+    "name": "File Explorer"
+  },
+  "cmd": {
+    "icon": "\ud83d\udcdf",
+    "name": "Command Prompt"
+  },
+  "wt": {
+    "icon": "\ud83d\udcdf",
+    "name": "Windows Terminal"
+  },
   ".md": {
     "icon": "\ud83c\udd43",
     "name": "Markdown files"

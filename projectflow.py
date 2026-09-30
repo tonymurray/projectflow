@@ -41,18 +41,41 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile, QWebEnginePage
 from PyQt6.QtCore import QUrl
 from themes import get_theme, detect_system_theme, THEMES, get_dimensions
+import os_integration
 
 
-# Built-in smart default handlers using xdg-open
+# Built-in smart default handlers using the OS's own default-open mechanism
+# (xdg-open on Linux, os.startfile on Windows — see os_integration.py).
 # These cannot be overridden by user handlers
 BUILTIN_HANDLERS = {
-    "browser": lambda path: ["xdg-open", path],
-    "file_manager": lambda path: ["xdg-open", path],
-    "editor": lambda path: ["xdg-open", path],
-    "default": lambda path: ["xdg-open", path],
+    "browser": lambda path: os_integration.open_path_default(path),
+    "file_manager": lambda path: os_integration.open_path_default(path),
+    "editor": lambda path: os_integration.open_path_default(path),
+    "default": lambda path: os_integration.open_path_default(path),
     # Note: "konsole" and "terminal" are handled dynamically in open_in_app()
     # to use the configured terminal emulator
 }
+
+
+def _get_script_dir():
+    """Base directory assets/help/examples/icon_preferences.json/
+    launch_handlers.py are all resolved relative to (see self.script_dir).
+
+    Deliberately not in os_integration.py — this is a frozen-vs-source-run
+    distinction (relevant to a future PyInstaller-packaged build on any OS),
+    not a sys.platform one, which is that module's whole charter.
+
+    __file__ doesn't point where you'd expect once packaged: a onefile
+    PyInstaller build's bundled data (assets/, help/, etc. — added via
+    --add-data) is unpacked into a temp directory at sys._MEIPASS; a onedir
+    build's bundled data sits alongside sys.executable itself. Both are
+    reached via the standard `sys.frozen` flag PyInstaller sets, so this
+    stays a no-op (falls through to the existing __file__-based resolution)
+    for every current, non-frozen, run-from-source use.
+    """
+    if getattr(sys, 'frozen', False):
+        return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 class DraggableConfigButton(QPushButton):
@@ -1413,7 +1436,7 @@ class ProjectFlowApp(QMainWindow):
         # *named* QWebEngineProfile: self.web_profile, explicitly assigned to
         # self.webview/self.notes_webview via setPage() below, since a plain
         # QWebEngineView() always binds itself to defaultProfile() otherwise.
-        webengine_profile_dir = os.path.expanduser("~/.local/share/ProjectFlow/webengine-profile")
+        webengine_profile_dir = os.path.join(os_integration.app_data_dir("ProjectFlow"), "webengine-profile")
         os.makedirs(webengine_profile_dir, exist_ok=True)
         self.web_profile = QWebEngineProfile("projectflow", self)
         self.web_profile.setPersistentStoragePath(webengine_profile_dir)
@@ -1553,8 +1576,9 @@ class ProjectFlowApp(QMainWindow):
         self._alias_write_timer.setInterval(800)
         self._alias_write_timer.timeout.connect(self._flush_pending_alias_write)
 
-        # Get the directory where this script is located
-        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Get the directory where this script (or, once packaged, its bundled
+        # data) is located — see _get_script_dir()'s docstring.
+        self.script_dir = _get_script_dir()
 
         # Settings file to store user preferences (machine-specific, not synced)
         self.settings_file = os.path.join(self.script_dir, ".projectflow_settings.json")
@@ -6124,6 +6148,27 @@ class ProjectFlowApp(QMainWindow):
             if os.path.exists(example_note):
                 shutil.copy(example_note, os.path.join(notes_dir, "projectflow.md"))
 
+    def _resolve_launch_script_path(self):
+        """Resolve the best command for a .desktop Exec= line to launch a fresh
+        ProjectFlow instance, in order of preference:
+        1. A `projectflow` command on PATH — e.g. a NixOS system package that
+           wraps python313.withPackages(...)+ttyd with the needed env vars
+           baked in, so launching doesn't pay nix-shell's per-launch evaluation
+           overhead (see projectflow-nix's own doc comment for what that
+           overhead is and why it exists).
+        2. The git-tracked projectflow-nix nix-shell wrapper, if present in
+           this checkout — works anywhere Nix is installed, just slower.
+        3. projectflow.py itself — assumes dependencies are already available
+           to plain python3 (uv/pip install, or a venv already active).
+        """
+        fast_wrapper = shutil.which("projectflow")
+        if fast_wrapper:
+            return fast_wrapper
+        nix_wrapper = os.path.join(self.script_dir, "projectflow-nix")
+        if os.path.exists(nix_wrapper):
+            return nix_wrapper
+        return os.path.join(self.script_dir, "projectflow.py")
+
     def ensure_desktop_file_installed(self):
         """Install base .desktop file for GNOME/COSMIC dock icon matching.
 
@@ -6131,7 +6176,7 @@ class ProjectFlowApp(QMainWindow):
         On GNOME/COSMIC, the app_id must match an installed .desktop file
         for the dock to show the correct icon.
         """
-        desktop_file = os.path.expanduser("~/.local/share/applications/projectflow.desktop")
+        desktop_file = os.path.join(os_integration.applications_dir(), "projectflow.desktop")
 
         # Skip if already installed
         if os.path.exists(desktop_file):
@@ -6803,7 +6848,7 @@ StartupNotify=true
         names |= set(BUILTIN_HANDLERS.keys())
         names |= set(getattr(self, 'launch_handlers', {}).keys())
         names |= set(getattr(self, 'complex_handlers', {}).keys())
-        return sorted(names)
+        return os_integration.filter_unsupported_app_names(sorted(names))
 
     def load_icon_preferences(self):
         """Load icon preferences from shared icon_preferences.json file"""
@@ -8521,103 +8566,21 @@ function filterAliases(q) {{
         self.launch_handlers = {**self.builtin_handlers, **self.custom_handlers}
 
     def detect_desktop_environment(self):
-        """Detect the current desktop environment.
-
-        Returns one of: 'kde', 'gnome', 'xfce', 'cosmic', 'mate', 'cinnamon',
-        'lxqt', 'lxde', or 'unknown'
-        """
-        desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-
-        if 'kde' in desktop or 'plasma' in desktop:
-            return 'kde'
-        elif 'gnome' in desktop or 'ubuntu' in desktop:
-            return 'gnome'
-        elif 'xfce' in desktop:
-            return 'xfce'
-        elif 'cosmic' in desktop:
-            return 'cosmic'
-        elif 'mate' in desktop:
-            return 'mate'
-        elif 'cinnamon' in desktop:
-            return 'cinnamon'
-        elif 'lxqt' in desktop:
-            return 'lxqt'
-        elif 'lxde' in desktop:
-            return 'lxde'
-        return 'unknown'
+        """Detect the current desktop environment. See os_integration.py for
+        the actual logic and the full list of returned values."""
+        return os_integration.detect_desktop_environment()
 
     def detect_default_browser(self):
-        """Detect the system default browser. Returns a friendly name like 'firefox'."""
-        try:
-            result = subprocess.run(
-                ['xdg-settings', 'get', 'default-web-browser'],
-                capture_output=True, text=True, timeout=2
-            )
-            desktop = result.stdout.strip().lower()
-            for name in ('firefox', 'chromium', 'chrome', 'epiphany', 'opera', 'brave', 'vivaldi', 'konqueror'):
-                if name in desktop:
-                    return name
-        except Exception:
-            pass
-        if shutil.which('firefox'):
-            return 'firefox'
-        if shutil.which('chromium'):
-            return 'chromium'
-        return 'browser'
+        """Detect the system default browser. See os_integration.py."""
+        return os_integration.detect_default_browser()
 
     def detect_default_terminal(self):
-        """Detect appropriate terminal based on desktop environment."""
-        # Prefer xdg-terminal-exec if available (freedesktop standard, respects user's default)
-        if shutil.which('xdg-terminal-exec'):
-            return 'xdg-terminal-exec'
-
-        de = self.detect_desktop_environment()
-
-        terminal_map = {
-            'kde': 'konsole',
-            'gnome': 'gnome-terminal',
-            'xfce': 'xfce4-terminal',
-            'cosmic': 'cosmic-term',
-            'mate': 'mate-terminal',
-            'cinnamon': 'gnome-terminal',
-            'lxqt': 'qterminal',
-            'lxde': 'lxterminal',
-        }
-
-        if de in terminal_map:
-            return terminal_map[de]
-
-        # Fallback: check what's installed
-        for term in ['konsole', 'gnome-terminal', 'xfce4-terminal', 'alacritty', 'kitty', 'xterm']:
-            if shutil.which(term):
-                return term
-
-        return 'xterm'  # Ultimate fallback
+        """Detect appropriate terminal based on desktop environment. See os_integration.py."""
+        return os_integration.detect_default_terminal(self.detect_desktop_environment())
 
     def detect_default_editor(self):
-        """Detect appropriate editor based on desktop environment."""
-        de = self.detect_desktop_environment()
-
-        editor_map = {
-            'kde': 'kate',
-            'gnome': 'gedit',
-            'xfce': 'mousepad',
-            'cosmic': 'cosmic-edit',
-            'mate': 'pluma',
-            'cinnamon': 'xed',
-            'lxqt': 'featherpad',
-            'lxde': 'leafpad',
-        }
-
-        if de in editor_map and shutil.which(editor_map[de]):
-            return editor_map[de]
-
-        # Fallback: check what's installed
-        for editor in ['code', 'kate', 'gedit', 'nano']:
-            if shutil.which(editor):
-                return editor
-
-        return 'xdg-open'  # Ultimate fallback
+        """Detect appropriate editor based on desktop environment. See os_integration.py."""
+        return os_integration.detect_default_editor(self.detect_desktop_environment())
 
     def get_configured_editor(self):
         """Get the configured editor, with auto-detection fallback."""
@@ -8627,29 +8590,8 @@ function filterAliases(q) {{
         return editor
 
     def detect_default_file_manager(self):
-        """Detect appropriate file manager based on desktop environment."""
-        de = self.detect_desktop_environment()
-
-        fm_map = {
-            'kde': 'dolphin',
-            'gnome': 'nautilus',
-            'xfce': 'thunar',
-            'cosmic': 'cosmic-files',
-            'mate': 'caja',
-            'cinnamon': 'nemo',
-            'lxqt': 'pcmanfm-qt',
-            'lxde': 'pcmanfm',
-        }
-
-        if de in fm_map and shutil.which(fm_map[de]):
-            return fm_map[de]
-
-        # Fallback: check what's installed
-        for fm in ['dolphin', 'nautilus', 'thunar', 'pcmanfm']:
-            if shutil.which(fm):
-                return fm
-
-        return 'xdg-open'  # Ultimate fallback
+        """Detect appropriate file manager based on desktop environment. See os_integration.py."""
+        return os_integration.detect_default_file_manager(self.detect_desktop_environment())
 
     def get_configured_file_manager(self):
         """Get the configured file manager, with auto-detection fallback."""
@@ -8707,80 +8649,14 @@ function filterAliases(q) {{
         return backend
 
     def _get_terminal_command(self, shell_cmd, hold=False, interactive=False):
-        """Build terminal command based on configured terminal emulator"""
+        """Build terminal command based on configured terminal emulator. See os_integration.py."""
         terminal = self.get_configured_terminal()
-
-        # Terminal-specific argument patterns
-        # Format: (hold_flag, execute_separator, needs_shell_wrapper)
-        terminal_configs = {
-            "xdg-terminal-exec": (None, [], True),  # command passed directly as args
-            "konsole": ("--hold", ["-e"], True),
-            "gnome-terminal": (None, ["--"], True),  # gnome-terminal doesn't have hold
-            "xfce4-terminal": ("--hold", ["-e"], True),
-            "terminator": ("--hold", ["-e"], True),
-            "tilix": ("--hold", ["-e"], True),
-            "alacritty": ("--hold", ["-e"], True),
-            "kitty": ("--hold", [], True),  # kitty just appends command
-            "wezterm": (None, ["start", "--"], True),  # wezterm start -- cmd
-            "foot": ("--hold", [], True),  # foot just appends command
-            "xterm": ("-hold", ["-e"], True),
-            "urxvt": ("-hold", ["-e"], True),
-            "ghostty": (None, ["-e"], True),
-            "hyper": (None, ["-e"], True),
-            "tabby": (None, ["run"], True),
-            "guake": (None, ["-e"], True),
-            "tilda": (None, ["-c"], True),
-            "warp-terminal": (None, [], True),
-        }
-
-        config = terminal_configs.get(terminal, ("--hold", ["-e"], True))
-        hold_flag, exec_sep, needs_shell = config
-
-        terminal_cmd = [terminal]
-
-        # Add hold flag if requested and supported
-        if hold and hold_flag:
-            terminal_cmd.append(hold_flag)
-
-        # Add execute separator
-        terminal_cmd.extend(exec_sep)
-
-        # Add the shell command
-        if needs_shell:
-            bash_flags = ["-i", "-c"] if interactive else ["-c"]
-            terminal_cmd.extend(["bash"] + bash_flags + [shell_cmd])
-        else:
-            terminal_cmd.append(shell_cmd)
-
-        return terminal_cmd
+        return os_integration.build_terminal_shell_cmd(terminal, shell_cmd, hold=hold, interactive=interactive)
 
     def _get_terminal_workdir_command(self, path):
-        """Build command to open terminal at specified directory."""
+        """Build command to open terminal at specified directory. See os_integration.py."""
         terminal = self.get_configured_terminal()
-
-        # Terminal-specific workdir argument patterns
-        workdir_args = {
-            "xdg-terminal-exec": ["bash", "-c", "cd " + shlex.quote(path) + " && exec $SHELL"],
-            "konsole": ["--workdir", path],
-            "gnome-terminal": ["--working-directory=" + path],
-            "xfce4-terminal": ["--working-directory=" + path],
-            "terminator": ["--working-directory=" + path],
-            "tilix": ["--working-directory=" + path],
-            "alacritty": ["--working-directory", path],
-            "kitty": ["--directory", path],
-            "wezterm": ["start", "--cwd", path],
-            "foot": ["--working-directory=" + path],
-            "xterm": ["-e", "cd " + shlex.quote(path) + " && exec $SHELL"],
-            "urxvt": ["-cd", path],
-            "ghostty": ["--working-directory=" + path],
-            "cosmic-term": ["--working-directory", path],
-            "mate-terminal": ["--working-directory=" + path],
-            "qterminal": ["--workdir", path],
-            "lxterminal": ["--working-directory=" + path],
-        }
-
-        args = workdir_args.get(terminal, ["--workdir", path])
-        return [terminal] + args
+        return os_integration.build_terminal_workdir_cmd(terminal, path)
 
     def _build_handler_command(self, handler, expanded_path):
         """Build command list from a simple handler definition"""
@@ -12800,7 +12676,7 @@ function filterAliases(q) {{
                         """)
                         file_btn.setToolTip(f"{filepath}\n(Tagged in Dolphin - remove tag there to unlink)")
                         file_btn.clicked.connect(
-                            lambda checked=False, p=filepath: subprocess.Popen(["xdg-open", p], start_new_session=True)
+                            lambda checked=False, p=filepath: os_integration.open_path_default(p)
                         )
                         tagged_group_layout.addWidget(file_btn)
 
@@ -16515,7 +16391,7 @@ function filterAliases(q) {{
         """Open the current webview URL in the system default browser."""
         url = self.webview_url or (self.webview.url().toString() if self.webview else None)
         if url and url not in ('about:blank', ''):
-            subprocess.Popen(['xdg-open', url], start_new_session=True)
+            os_integration.open_path_default(url)
         else:
             QMessageBox.information(self, "No URL", "No URL loaded in the web viewer.")
 
@@ -16535,7 +16411,7 @@ function filterAliases(q) {{
             if pdfviewer:
                 subprocess.Popen([os.path.expanduser(pdfviewer), os.path.expanduser(self.pdf_path)], start_new_session=True)
             else:
-                subprocess.Popen(['xdg-open', os.path.expanduser(self.pdf_path)], start_new_session=True)
+                os_integration.open_path_default(os.path.expanduser(self.pdf_path))
             self.status_label.setText("Opened in external viewer")
         except Exception as e:
             print(f"Error opening PDF in external viewer: {e}")
@@ -17203,7 +17079,7 @@ function filterAliases(q) {{
         new tab in this app's own Web viewer. Same xdg-open convention as
         open_webview_in_external_browser()/open_pdf_in_external_viewer()."""
         url = url.toString() if hasattr(url, "toString") else url
-        subprocess.Popen(['xdg-open', url], start_new_session=True)
+        os_integration.open_path_default(url)
         self.set_status(f"Opened in external browser: {url}")
 
     def _open_web_tab(self, kind, value):
@@ -19952,7 +19828,7 @@ function filterAliases(q) {{
             elif ext in self._code_route_extensions():
                 self._open_code_file_in_editor(path)
             else:
-                subprocess.Popen(["xdg-open", path], start_new_session=True)
+                os_integration.open_path_default(path)
 
     def on_folder_item_clicked(self, item, column):
         """Handle single-click on a tree-view folder browser item"""
@@ -19982,7 +19858,7 @@ function filterAliases(q) {{
         elif ext in self._code_route_extensions():
             self._open_code_file_in_editor(path)
         else:
-            subprocess.Popen(["xdg-open", path], start_new_session=True)
+            os_integration.open_path_default(path)
 
     def _handle_launcher_folder_item_activation(self, path, item_type):
         """Open/navigate an entry from the launcher-column quick file-browser panel.
@@ -23632,8 +23508,7 @@ Project created: {date_str}
 
             # 1. Check built-in smart defaults first (browser, file_manager, editor, default)
             if app in BUILTIN_HANDLERS:
-                cmd = BUILTIN_HANDLERS[app](expanded_path)
-                subprocess.Popen(cmd, start_new_session=True)
+                BUILTIN_HANDLERS[app](expanded_path)
                 self.status_label.setText(f"✓ Opened: {path}")
                 self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
                 return
@@ -24029,7 +23904,7 @@ Project created: {date_str}
         project_display_name = project_id.replace('_', ' ').title()
 
         # Desktop file named after current project
-        desktop_file = os.path.expanduser(f"~/.local/share/applications/projectflow-{project_id}.desktop")
+        desktop_file = os.path.join(os_integration.applications_dir(), f"projectflow-{project_id}.desktop")
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
 
         # Use projectflow-nix wrapper if available (for NixOS), otherwise projectflow.py
@@ -24132,6 +24007,9 @@ Examples:
              'ProjectFlow" service menu.'
     )
     args = parser.parse_args()
+
+    # Must happen before QApplication() is constructed — see docstring.
+    os_integration.set_windows_taskbar_identity("ProjectFlow.ProjectFlow")
 
     app = QApplication(sys.argv)
 
