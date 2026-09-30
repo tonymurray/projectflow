@@ -23461,8 +23461,10 @@ Project created: {date_str}
         """Refresh the project list by reloading the configuration"""
         self._freeze_window_size()
         try:
-            # Store current window geometry
+            # Store current window geometry AND window state (maximized/not) — see the
+            # restore below for why both are needed, not just geometry.
             current_geometry = self.geometry()
+            current_window_state = self.windowState()
 
             # Reload configuration from file
             self.load_config()
@@ -23471,8 +23473,20 @@ Project created: {date_str}
             # Recreate the UI
             self.init_ui()
 
-            # Restore window geometry
-            self.setGeometry(current_geometry)
+            # Restore window geometry/state. setGeometry() alone is the wrong tool when
+            # the window is maximized: it sets explicit pixel coordinates, which can make
+            # Qt/the OS implicitly treat the window as no longer maximized even though it
+            # visually still fills the screen — the window's own "restore" position
+            # bookkeeping can then differ from where it actually is, producing a real,
+            # reported-live position shift (not a resize — same size, window moves) before
+            # something corrects it back. Reported specifically on Windows; matches this
+            # codebase's own existing convention elsewhere (see toggle_fullscreen()) of
+            # tracking the windowState() bitmask rather than trusting geometry alone for
+            # a maximized window.
+            if current_window_state & Qt.WindowState.WindowMaximized:
+                self.setWindowState(current_window_state)
+            else:
+                self.setGeometry(current_geometry)
 
             # Restore scroll position after UI is laid out
             if restore_scroll_pos is not None and hasattr(self, 'main_scroll'):
