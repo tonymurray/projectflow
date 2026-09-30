@@ -15,7 +15,13 @@
 
 import os
 
-ROOT = os.path.abspath(os.path.dirname(__file__))
+# NOTE: __file__ is NOT defined here — PyInstaller executes .spec files via
+# exec(), not a normal module import, so there's no __file__ to derive a path
+# from (confirmed via a real build: NameError: name '__file__' is not
+# defined). PyInstaller injects SPECPATH into the spec's exec namespace
+# specifically for this — it's already the absolute path to this spec
+# file's own directory.
+ROOT = SPECPATH
 
 a = Analysis(
     ['projectflow.py'],
