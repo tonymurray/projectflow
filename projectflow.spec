@@ -15,6 +15,7 @@
 # in that one folder.
 
 import os
+from PyInstaller.utils.hooks import collect_all
 
 # NOTE: __file__ is NOT defined here — PyInstaller executes .spec files via
 # exec(), not a normal module import, so there's no __file__ to derive a path
@@ -24,10 +25,26 @@ import os
 # file's own directory.
 ROOT = SPECPATH
 
+# Real runtime crash from a build: ipykernel's in-process kernel manager
+# (used by the embedded qtconsole Terminal viewer) imports ipykernel.debugger
+# -> debugpy.server -> debugpy._vendored, and debugpy._vendored's own
+# __init__.py does a runtime directory scan (os.path/os.listdir) of its own
+# package folder to dynamically locate vendored sub-packages (pydevd etc.).
+# That scan fails once those files are compressed into PyInstaller's PYZ
+# archive instead of sitting as real files on disk:
+#   FileNotFoundError: [WinError 3] The system cannot find the path
+#   specified: '...\dist\ProjectFlow\debugpy\_vendored'
+# Same root cause category as launch_handlers.py below — a package whose own
+# code expects to see itself as real on-disk files — just inside a
+# third-party dependency this time. collect_all() is PyInstaller's standard
+# fix for exactly this: bundles the package's data/binaries/hidden-imports as
+# real files rather than trusting default archive-based bundling.
+debugpy_datas, debugpy_binaries, debugpy_hiddenimports = collect_all('debugpy')
+
 a = Analysis(
     ['projectflow.py'],
     pathex=[ROOT],
-    binaries=[],
+    binaries=debugpy_binaries,
     datas=[
         ('assets', 'assets'),          # includes assets/muya, assets/codemirror,
                                         # assets/monaco (~24MB, unpruned by design —
@@ -40,17 +57,16 @@ a = Analysis(
                                         # NOT a normal `import` — PyInstaller's static
                                         # analysis will not auto-bundle this file
         # themes.py: a normal top-level `from themes import ...` in projectflow.py —
-        # PyInstaller's static analysis should already compile it into the bundle
-        # automatically. Deliberately NOT listed here; verify this assumption during
-        # the first build rather than trusting it blind.
-    ],
+        # confirmed already bundled correctly by PyInstaller's static analysis (the
+        # first real build got past theme loading before failing elsewhere).
+    ] + debugpy_datas,
     hiddenimports=[
         # Safety net only — PyQt6's sip binding module is occasionally missed by
         # static analysis on some PyInstaller/PyQt6 version combinations. Leave
         # commented out unless the build log or a runtime ModuleNotFoundError says
         # otherwise:
         # 'PyQt6.sip',
-    ],
+    ] + debugpy_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
