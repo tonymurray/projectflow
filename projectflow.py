@@ -23423,52 +23423,47 @@ Project created: {date_str}
             self.render_image()
 
     def _freeze_window_size(self):
-        """Floor the window at its current size AND suppress its repainting — see
-        _unfreeze_window_size() for the matching release and the full rationale.
-        Reentrant: nested freeze/unfreeze pairs (e.g. toggle_edit_mode() wraps its whole
-        refresh_projects() + switch_to_viewer_mode() sequence in one outer freeze, while
-        refresh_projects() also freezes/unfreezes around its own internal rebuild) only
-        actually release the floor/repainting once every freeze has been matched by its
-        own unfreeze — a plain non-counted setMinimumSize/setUpdatesEnabled would
+        """Floor the window at its current size, suppress its repainting, AND actually
+        hide it — see _unfreeze_window_size() for the matching release and the full
+        rationale, especially for why hiding was added after the first two measures
+        turned out not to be enough. Reentrant: nested freeze/unfreeze pairs (e.g.
+        toggle_edit_mode() wraps its whole refresh_projects() + switch_to_viewer_mode()
+        sequence in one outer freeze, while refresh_projects() also freezes/unfreezes
+        around its own internal rebuild) only actually release any of this once every
+        freeze has been matched by its own unfreeze — plain non-counted calls would
         otherwise let an inner call's unfreeze prematurely release an outer caller's
         still-active freeze."""
         depth = getattr(self, '_size_freeze_depth', 0)
         if depth == 0:
             size = self.size()
             self.setMinimumSize(size.width(), size.height())
-            # Confirmed on real Windows hardware that even with the size floor and the
-            # deferred release below, the window visibly shifts a noticeable amount
-            # before settling back to the correct position — self-correcting, but
-            # distracting to watch (not observed on Linux, presumably faster/different
-            # compositor timing there). setMinimumSize alone only constrains the final
-            # size/position, it doesn't stop Qt from actually painting the in-between
-            # states. Disabling updates suppresses all repainting for this widget (and
-            # its children) until re-enabled — Qt still tracks that a repaint is owed
-            # and does one final correct-looking paint once re-enabled, so the user only
-            # ever sees the "before" frame and then the "after" frame, never whatever
-            # wrong intermediate geometry happens in between. This only affects
-            # painting, not layout/geometry computation, so it doesn't carry the same
-            # risk as the earlier setWindowState() attempt (reverted) of actually
-            # corrupting window state.
             self.setUpdatesEnabled(False)
+            # The real fix, added after setMinimumSize+setUpdatesEnabled alone were
+            # confirmed on real Windows hardware to NOT be enough: on a dual-monitor
+            # setup, the window was seen jumping to an entirely different monitor
+            # before snapping back — a genuine OS-level move/resize of the actual
+            # window frame, not a paint-timing issue. setUpdatesEnabled only suppresses
+            # repainting of this widget's own *content*; it has no power over the OS
+            # actually relocating the top-level window frame, which is what
+            # setCentralWidget() inside init_ui() apparently triggers a recomputation
+            # of on Windows. Actually hiding the window sidesteps this at the only
+            # layer that can: a hidden window has no visible frame for the OS to show
+            # moving in the first place, wherever it transiently ends up.
+            self.hide()
         self._size_freeze_depth = depth + 1
 
     def _unfreeze_window_size(self):
-        """Reentrant-safe release of _freeze_window_size()'s floor and repaint
-        suppression, deferred via QTimer.singleShot rather than released immediately.
+        """Reentrant-safe release of _freeze_window_size()'s floor, repaint
+        suppression, and hide, deferred via QTimer.singleShot rather than released
+        immediately.
 
         Why deferred: init_ui() tears down and reconstructs the entire widget tree, and
         Qt's own layout/resize settling is not necessarily finished the instant
         init_ui()/setGeometry() return — much of it is only processed once control
-        returns to the event loop. Releasing synchronously (an earlier version of this
-        fix) stopped the visible window-shrink-then-snap-back on Linux, but NOT on
-        Windows — confirmed via live testing on real hardware — evidently because
-        Windows' native window-resize handshake with the OS lands later relative to
-        this Python code than X11/Wayland's does. A real, non-zero delay (not just a
-        0ms/next-tick defer) is used for the same reason: extra margin for the OS-level
-        resize to actually commit before the floor lifts and repainting resumes —
-        resuming too early would just repaint the same distracting in-between state
-        setUpdatesEnabled(False) exists to hide.
+        returns to the event loop. A real, non-zero delay (not just a 0ms/next-tick
+        defer) gives the OS-level resize/reposition time to actually commit before the
+        window is shown again — showing too early risks showing it mid-transition,
+        which is exactly what hiding it was meant to avoid.
         """
         depth = max(0, getattr(self, '_size_freeze_depth', 1) - 1)
         self._size_freeze_depth = depth
@@ -23476,6 +23471,7 @@ Project created: {date_str}
             def _release():
                 self.setMinimumSize(0, 0)
                 self.setUpdatesEnabled(True)
+                self.show()
             QTimer.singleShot(120, _release)
 
     def refresh_projects(self, restore_scroll_pos=None):
