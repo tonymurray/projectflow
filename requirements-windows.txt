@@ -1,0 +1,26 @@
+# Windows-only dependencies for building/running the PyInstaller-packaged
+# ProjectFlow. Deliberately separate from requirements.txt (Linux/Nix runtime
+# deps) and untouched by shell.nix/projectflow-nix — per this project's
+# established convention of fully separate Windows vs. Linux dependency
+# delivery. Install with: pip install -r requirements-windows.txt
+
+# Runtime (same packages as requirements.txt — Windows needs its own venv/pip
+# install path since it has no Nix equivalent):
+PyQt6
+PyQt6-WebEngine
+PyMuPDF
+qtconsole
+ipykernel
+
+# Windows-only runtime dependency, used by os_integration.app_data_dir():
+platformdirs
+
+# Build-only (not a runtime dependency — needed on the machine doing the
+# packaging, not by end users running the built .exe):
+pyinstaller
+
+# NOT included: pywin32. Speculatively planned for a future Start Menu .lnk
+# writer (os_integration.applications_dir() already resolves the right
+# Windows directory, but the actual .lnk-writing code is explicitly deferred,
+# unbuilt, and unverified). Not needed for this packaging spike — add it
+# only when that feature is actually built.
