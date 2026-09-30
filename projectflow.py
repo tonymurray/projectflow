@@ -9002,8 +9002,20 @@ function filterAliases(q) {{
             # Only change display name - desktopFileName must match installed .desktop file
             app.setApplicationDisplayName(f"{display_name} - ProjectFlow")
 
-        self.setGeometry(100, 100, 1000, 600)
-
+        # REMOVED: self.setGeometry(100, 100, 1000, 600) used to sit here unconditionally.
+        # init_ui() runs on every refresh_projects() call, not just the initial one from
+        # __init__ — so this was resetting the window to a small fixed rectangle at
+        # (100, 100) on EVERY project switch, launcher-tab switch, and edit-mode toggle,
+        # relying entirely on refresh_projects()'s own separate geometry capture/restore
+        # (see that method) to silently undo it afterward. That undo-the-damage dance is
+        # what actually caused the whole "window shrinks/shifts/jumps to another monitor,
+        # then snaps back" saga (real, reported on real Windows hardware) — not some
+        # obscure Qt/Windows compositor quirk. On first launch this line was harmless
+        # (main()'s window.showMaximized() immediately overrides it before the window is
+        # ever shown), so it's simply dead weight there too. Root-caused via git blame
+        # style reasoning after several targeted mitigations (window-size freeze, restoring
+        # windowState instead of geometry, suppressing repaints, even hiding the window
+        # outright) each failed to fully fix — or actively worsened — the symptom.
         # Detach webview before the central widget is replaced so it isn't
         # deleted — the same QWebEngineView (and its profile/cookies) is
         # re-used for the lifetime of the app.
@@ -15289,20 +15301,10 @@ function filterAliases(q) {{
             self._save_project_and_exit_edit_mode()
         else:
             self.edit_mode = True
-            # Freeze around the WHOLE sequence, not just refresh_projects()'s own
-            # internal freeze — switch_to_viewer_mode() runs after refresh_projects()
-            # already returns, and without this outer freeze the window was still free
-            # to shrink for that second call. _freeze_window_size()/_unfreeze_window_size()
-            # are reentrant, so this composes safely with refresh_projects()'s own
-            # freeze/unfreeze pair around its internal rebuild.
-            self._freeze_window_size()
-            try:
-                # Rebuild first so the edit-mode launcher controls and settings_container
-                # actually exist before switch_to_viewer_mode() tries to show the latter.
-                self.refresh_projects()
-                self.switch_to_viewer_mode("settings")
-            finally:
-                self._unfreeze_window_size()
+            # Rebuild first so the edit-mode launcher controls and settings_container
+            # actually exist before switch_to_viewer_mode() tries to show the latter.
+            self.refresh_projects()
+            self.switch_to_viewer_mode("settings")
 
     def _settings_shortcut_clicked(self):
         """Click handler for the viewer tab row's Settings cog icon — effectively a second
@@ -23422,67 +23424,22 @@ Project created: {date_str}
             self.image_zoom_label.setText(f"{int(self.image_zoom * 100)}%")
             self.render_image()
 
-    def _freeze_window_size(self):
-        """Floor the window at its current size AND suppress its repainting — see
-        _unfreeze_window_size() for the matching release and the full rationale.
-        Reentrant: nested freeze/unfreeze pairs (e.g. toggle_edit_mode() wraps its whole
-        refresh_projects() + switch_to_viewer_mode() sequence in one outer freeze, while
-        refresh_projects() also freezes/unfreezes around its own internal rebuild) only
-        actually release the floor/repainting once every freeze has been matched by its
-        own unfreeze — a plain non-counted setMinimumSize/setUpdatesEnabled would
-        otherwise let an inner call's unfreeze prematurely release an outer caller's
-        still-active freeze."""
-        depth = getattr(self, '_size_freeze_depth', 0)
-        if depth == 0:
-            size = self.size()
-            self.setMinimumSize(size.width(), size.height())
-            # Confirmed on real Windows hardware that even with the size floor and the
-            # deferred release below, the window visibly shifts a noticeable amount
-            # before settling back to the correct position — self-correcting, but
-            # distracting to watch (not observed on Linux, presumably faster/different
-            # compositor timing there). setMinimumSize alone only constrains the final
-            # size/position, it doesn't stop Qt from actually painting the in-between
-            # states. Disabling updates suppresses all repainting for this widget (and
-            # its children) until re-enabled — Qt still tracks that a repaint is owed
-            # and does one final correct-looking paint once re-enabled, so the user only
-            # ever sees the "before" frame and then the "after" frame, never whatever
-            # wrong intermediate geometry happens in between. This only affects
-            # painting, not layout/geometry computation, so it doesn't carry the same
-            # risk as the earlier setWindowState() attempt (reverted) of actually
-            # corrupting window state.
-            self.setUpdatesEnabled(False)
-        self._size_freeze_depth = depth + 1
-
-    def _unfreeze_window_size(self):
-        """Reentrant-safe release of _freeze_window_size()'s floor and repaint
-        suppression, deferred via QTimer.singleShot rather than released immediately.
-
-        Why deferred: init_ui() tears down and reconstructs the entire widget tree, and
-        Qt's own layout/resize settling is not necessarily finished the instant
-        init_ui()/setGeometry() return — much of it is only processed once control
-        returns to the event loop. Releasing synchronously (an earlier version of this
-        fix) stopped the visible window-shrink-then-snap-back on Linux, but NOT on
-        Windows — confirmed via live testing on real hardware — evidently because
-        Windows' native window-resize handshake with the OS lands later relative to
-        this Python code than X11/Wayland's does. A real, non-zero delay (not just a
-        0ms/next-tick defer) is used for the same reason: extra margin for the OS-level
-        resize to actually commit before the floor lifts and repainting resumes —
-        resuming too early would just repaint the same distracting in-between state
-        setUpdatesEnabled(False) exists to hide.
-        """
-        depth = max(0, getattr(self, '_size_freeze_depth', 1) - 1)
-        self._size_freeze_depth = depth
-        if depth == 0:
-            def _release():
-                self.setMinimumSize(0, 0)
-                self.setUpdatesEnabled(True)
-            QTimer.singleShot(120, _release)
-
     def refresh_projects(self, restore_scroll_pos=None):
         """Refresh the project list by reloading the configuration"""
-        self._freeze_window_size()
         try:
-            # Store current window geometry
+            # Store current window geometry. Restored below purely as a defensive
+            # safety net now — the actual cause of the window visibly shrinking/
+            # shifting/jumping to another monitor during this rebuild (reported live on
+            # real Windows hardware) turned out to be a since-removed, unconditional
+            # self.setGeometry(100, 100, 1000, 600) inside init_ui() itself, meant only
+            # for the very first launch but firing on every refresh. Several targeted
+            # mitigations were tried here first (a reentrant window-size floor, restoring
+            # windowState() instead of geometry, suppressing repaints, even hiding the
+            # window outright) — each either didn't fully fix it or made it actively
+            # worse (windowState() left the window genuinely stuck off-screen; hiding it
+            # caused tiling window managers to reflow other windows into the gap) before
+            # the real cause was found and removed at its source. See init_ui()'s own
+            # comment at that former call site for the full account.
             current_geometry = self.geometry()
 
             # Reload configuration from file
@@ -23492,18 +23449,7 @@ Project created: {date_str}
             # Recreate the UI
             self.init_ui()
 
-            # Restore window geometry. REVERTED an attempt to use setWindowState()
-            # instead for a maximized window (theory: setGeometry() with explicit pixel
-            # coordinates could make Qt/the OS implicitly treat a maximized window as no
-            # longer maximized). Confirmed live on Windows that setWindowState() is the
-            # actually-unreliable one here: in maximized mode it left the window
-            # genuinely off-screen (edge past the screen edge, overlapping the taskbar)
-            # with nothing correcting it — whereas plain setGeometry() (confirmed via the
-            # same live testing, in tiled/snapped mode, which never takes the
-            # setWindowState() branch at all since Normal != Maximized) does show a brief
-            # visible position shift but reliably self-corrects to the exact right
-            # rectangle afterward. An imperfect-but-self-correcting restore beats a
-            # clean-looking one that can get permanently stuck wrong.
+            # Restore window geometry
             self.setGeometry(current_geometry)
 
             # Restore scroll position after UI is laid out
@@ -23529,13 +23475,6 @@ Project created: {date_str}
             )
             self.status_label.setText(f"✗ Reload failed: {str(e)}")
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
-        finally:
-            # Always matches the _freeze_window_size() call at the top of this method,
-            # even if the rebuild raised — leaving the floor in place would permanently
-            # prevent the window from ever shrinking again. See _unfreeze_window_size()
-            # for why this is a deferred, reentrant-safe release rather than an
-            # immediate plain setMinimumSize(0, 0).
-            self._unfreeze_window_size()
 
     def open_in_app(self, path, app="default", force_external=False, display_name=None):
         """Open the specified path in the given application"""
