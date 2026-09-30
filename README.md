@@ -47,6 +47,19 @@ Use the provided wrapper script which handles dependencies automatically:
 ./projectflow-nix
 ```
 
+### Windows (experimental)
+
+A Windows port exists and has been validated on real Windows 11 hardware — the core app, launcher system, and all built-in viewers (Notes/Web/Editor/Help) work. There's no packaged `.exe` yet, so for now it's run from source:
+
+```powershell
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements-windows.txt
+python projectflow.py
+```
+
+KDE/Linux-only integrations (Baloo file tags, the ttyd terminal backend, Dolphin's service menu, `.desktop`-style menu entries) aren't available on Windows and fall back gracefully where possible (e.g. the Terminal viewer uses the qtconsole backend instead of ttyd). See `os_integration.py` for what's been ported and how.
+
 ## Goal
 
 The overall goal of the ProjectFlow application is re-focusing desktop organization around **projects** — aggregating a project's files, documentation, websites, functions and routines in one place.

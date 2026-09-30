@@ -12,6 +12,19 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   supersede-with-real-hardware confirmation. Now pushed publicly (GitHub + Gitea) for the first
   time — previously restricted to the internal Gitea remote pending this validation.
 
+### Added
+- **Windows PyInstaller packaging spike**: `projectflow.spec` (an `--onedir` build spec covering
+  every `--add-data` entry `self.script_dir` needs — `assets/`, `help/`, `examples/`,
+  `icon_preferences.json`, and `launch_handlers.py`, the last of which is loaded dynamically via
+  `importlib.util.spec_from_file_location()` rather than a normal `import` and so needs explicit
+  bundling), `requirements-windows.txt` (kept fully separate from `requirements.txt`/`shell.nix`/
+  `projectflow-nix`, which stay untouched), and `assets/icon.ico` (a proper multi-resolution icon
+  generated from the existing `assets/icon.png` for the frozen exe's own icon resource). The
+  actual `pyinstaller` build itself hasn't been run yet — it can't be cross-compiled from Linux,
+  so it needs to happen on real Windows hardware, which is the next step.
+- **README**: added a "Windows (experimental)" installation section alongside the existing
+  uv/Linux/NixOS ones, since the port is now public on `master` rather than a separate branch.
+
 ## 2026-09-29 (Desktop, Nix launcher fix — Niri/Wayland-without-XWayland support)
 
 ### Fixed
