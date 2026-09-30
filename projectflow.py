@@ -23423,23 +23423,39 @@ Project created: {date_str}
             self.render_image()
 
     def _freeze_window_size(self):
-        """Floor the window at its current size — see _unfreeze_window_size() for the
-        matching release and the full rationale. Reentrant: nested freeze/unfreeze pairs
-        (e.g. toggle_edit_mode() wraps its whole refresh_projects() + switch_to_viewer_mode()
-        sequence in one outer freeze, while refresh_projects() also freezes/unfreezes
-        around its own internal rebuild) only actually release the floor once every
-        freeze has been matched by its own unfreeze — a plain non-counted setMinimumSize
-        would otherwise let an inner call's unfreeze prematurely release an outer
-        caller's still-active freeze."""
+        """Floor the window at its current size AND suppress its repainting — see
+        _unfreeze_window_size() for the matching release and the full rationale.
+        Reentrant: nested freeze/unfreeze pairs (e.g. toggle_edit_mode() wraps its whole
+        refresh_projects() + switch_to_viewer_mode() sequence in one outer freeze, while
+        refresh_projects() also freezes/unfreezes around its own internal rebuild) only
+        actually release the floor/repainting once every freeze has been matched by its
+        own unfreeze — a plain non-counted setMinimumSize/setUpdatesEnabled would
+        otherwise let an inner call's unfreeze prematurely release an outer caller's
+        still-active freeze."""
         depth = getattr(self, '_size_freeze_depth', 0)
         if depth == 0:
             size = self.size()
             self.setMinimumSize(size.width(), size.height())
+            # Confirmed on real Windows hardware that even with the size floor and the
+            # deferred release below, the window visibly shifts a noticeable amount
+            # before settling back to the correct position — self-correcting, but
+            # distracting to watch (not observed on Linux, presumably faster/different
+            # compositor timing there). setMinimumSize alone only constrains the final
+            # size/position, it doesn't stop Qt from actually painting the in-between
+            # states. Disabling updates suppresses all repainting for this widget (and
+            # its children) until re-enabled — Qt still tracks that a repaint is owed
+            # and does one final correct-looking paint once re-enabled, so the user only
+            # ever sees the "before" frame and then the "after" frame, never whatever
+            # wrong intermediate geometry happens in between. This only affects
+            # painting, not layout/geometry computation, so it doesn't carry the same
+            # risk as the earlier setWindowState() attempt (reverted) of actually
+            # corrupting window state.
+            self.setUpdatesEnabled(False)
         self._size_freeze_depth = depth + 1
 
     def _unfreeze_window_size(self):
-        """Reentrant-safe release of _freeze_window_size()'s floor, deferred via
-        QTimer.singleShot rather than released immediately.
+        """Reentrant-safe release of _freeze_window_size()'s floor and repaint
+        suppression, deferred via QTimer.singleShot rather than released immediately.
 
         Why deferred: init_ui() tears down and reconstructs the entire widget tree, and
         Qt's own layout/resize settling is not necessarily finished the instant
@@ -23450,12 +23466,17 @@ Project created: {date_str}
         Windows' native window-resize handshake with the OS lands later relative to
         this Python code than X11/Wayland's does. A real, non-zero delay (not just a
         0ms/next-tick defer) is used for the same reason: extra margin for the OS-level
-        resize to actually commit before the floor lifts.
+        resize to actually commit before the floor lifts and repainting resumes —
+        resuming too early would just repaint the same distracting in-between state
+        setUpdatesEnabled(False) exists to hide.
         """
         depth = max(0, getattr(self, '_size_freeze_depth', 1) - 1)
         self._size_freeze_depth = depth
         if depth == 0:
-            QTimer.singleShot(120, lambda: self.setMinimumSize(0, 0))
+            def _release():
+                self.setMinimumSize(0, 0)
+                self.setUpdatesEnabled(True)
+            QTimer.singleShot(120, _release)
 
     def refresh_projects(self, restore_scroll_pos=None):
         """Refresh the project list by reloading the configuration"""
