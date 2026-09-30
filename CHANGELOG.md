@@ -19,11 +19,41 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   `importlib.util.spec_from_file_location()` rather than a normal `import` and so needs explicit
   bundling), `requirements-windows.txt` (kept fully separate from `requirements.txt`/`shell.nix`/
   `projectflow-nix`, which stay untouched), and `assets/icon.ico` (a proper multi-resolution icon
-  generated from the existing `assets/icon.png` for the frozen exe's own icon resource). The
-  actual `pyinstaller` build itself hasn't been run yet — it can't be cross-compiled from Linux,
-  so it needs to happen on real Windows hardware, which is the next step.
+  generated from the existing `assets/icon.png` for the frozen exe's own icon resource).
 - **README**: added a "Windows (experimental)" installation section alongside the existing
   uv/Linux/NixOS ones, since the port is now public on `master` rather than a separate branch.
+
+### Fixed
+- **`projectflow.spec` build failures, found via the actual first real build on Windows hardware**
+  (PyInstaller can't cross-compile, so none of these were catchable from Linux beforehand):
+  `__file__` doesn't exist inside a `.spec` file's `exec()`-based execution context (use the
+  `SPECPATH` variable PyInstaller injects for exactly this instead); `--contents-directory` is a
+  "makespec"-only CLI flag, rejected once a `.spec` file is given (moved to `EXE(...,
+  contents_directory='.')` instead); and `debugpy._vendored` (a transitive dependency of the
+  embedded qtconsole Terminal viewer's in-process kernel) does its own runtime directory-scan at
+  import time, which fails once PyInstaller compresses those files into its archive instead of
+  leaving them as real files on disk — fixed via PyInstaller's `collect_all('debugpy')` helper,
+  verified directly to find the exact `_vendored/` files that were missing at runtime. **The build
+  now succeeds and the packaged `.exe` runs correctly** on real Windows 11 hardware — Web/Notes/
+  Editor/Help all render real content, file browser and launcher items work, no crashes.
+- **Multi-second window "shrink to ~50%, stall, then snap back to full size"** when switching
+  Focus-layout launcher tabs or entering edit mode, reported on the packaged Windows build (12-core/
+  32GB hardware — not a slow-machine issue). Both actions call `refresh_projects()`, which fully
+  tears down and rebuilds the entire widget tree; the fresh tree's layout hasn't stabilized the
+  instant it's installed, so the window visibly shrinks before `refresh_projects()`'s own (already
+  pre-existing) geometry-restore call snaps it back. Two additive, cross-platform fixes: (1) floor
+  the window at its current size for the rebuild's duration (`setMinimumSize`, not a fixed/maximum
+  size, so legitimately larger content can still grow the window — released in a `finally` block so
+  it can't get stuck if the rebuild raises) — purely cosmetic, stops the visible jump without
+  changing how long the rebuild takes; (2) cache `_resolve_existing_path()`'s `os.path.exists()`
+  results (previously "re-checked per item on every render" with no caching at all), cleared only on
+  an actual project switch — kept alive across incidental same-project rebuilds, exactly what
+  repeated tab-switches are. Verified via an isolated real-method timing test (150 mixed existing/
+  missing paths): cold pass 0.75ms, warm passes 0.02ms, 39.7x speedup. That sub-millisecond Linux
+  cost also confirms this specific check was never the dominant factor there — likely explanation
+  for why this was significant enough to report on Windows specifically: the identical
+  `os.path.exists()` syscall is commonly far more expensive under Windows Defender's real-time
+  filesystem scanning than on Linux, independent of any hardware/CPU/RAM difference.
 
 ## 2026-09-29 (Desktop, Nix launcher fix — Niri/Wayland-without-XWayland support)
 
