@@ -15289,10 +15289,20 @@ function filterAliases(q) {{
             self._save_project_and_exit_edit_mode()
         else:
             self.edit_mode = True
-            # Rebuild first so the edit-mode launcher controls and settings_container
-            # actually exist before switch_to_viewer_mode() tries to show the latter.
-            self.refresh_projects()
-            self.switch_to_viewer_mode("settings")
+            # Freeze around the WHOLE sequence, not just refresh_projects()'s own
+            # internal freeze — switch_to_viewer_mode() runs after refresh_projects()
+            # already returns, and without this outer freeze the window was still free
+            # to shrink for that second call. _freeze_window_size()/_unfreeze_window_size()
+            # are reentrant, so this composes safely with refresh_projects()'s own
+            # freeze/unfreeze pair around its internal rebuild.
+            self._freeze_window_size()
+            try:
+                # Rebuild first so the edit-mode launcher controls and settings_container
+                # actually exist before switch_to_viewer_mode() tries to show the latter.
+                self.refresh_projects()
+                self.switch_to_viewer_mode("settings")
+            finally:
+                self._unfreeze_window_size()
 
     def _settings_shortcut_clicked(self):
         """Click handler for the viewer tab row's Settings cog icon — effectively a second
@@ -23412,22 +23422,47 @@ Project created: {date_str}
             self.image_zoom_label.setText(f"{int(self.image_zoom * 100)}%")
             self.render_image()
 
+    def _freeze_window_size(self):
+        """Floor the window at its current size — see _unfreeze_window_size() for the
+        matching release and the full rationale. Reentrant: nested freeze/unfreeze pairs
+        (e.g. toggle_edit_mode() wraps its whole refresh_projects() + switch_to_viewer_mode()
+        sequence in one outer freeze, while refresh_projects() also freezes/unfreezes
+        around its own internal rebuild) only actually release the floor once every
+        freeze has been matched by its own unfreeze — a plain non-counted setMinimumSize
+        would otherwise let an inner call's unfreeze prematurely release an outer
+        caller's still-active freeze."""
+        depth = getattr(self, '_size_freeze_depth', 0)
+        if depth == 0:
+            size = self.size()
+            self.setMinimumSize(size.width(), size.height())
+        self._size_freeze_depth = depth + 1
+
+    def _unfreeze_window_size(self):
+        """Reentrant-safe release of _freeze_window_size()'s floor, deferred via
+        QTimer.singleShot rather than released immediately.
+
+        Why deferred: init_ui() tears down and reconstructs the entire widget tree, and
+        Qt's own layout/resize settling is not necessarily finished the instant
+        init_ui()/setGeometry() return — much of it is only processed once control
+        returns to the event loop. Releasing synchronously (an earlier version of this
+        fix) stopped the visible window-shrink-then-snap-back on Linux, but NOT on
+        Windows — confirmed via live testing on real hardware — evidently because
+        Windows' native window-resize handshake with the OS lands later relative to
+        this Python code than X11/Wayland's does. A real, non-zero delay (not just a
+        0ms/next-tick defer) is used for the same reason: extra margin for the OS-level
+        resize to actually commit before the floor lifts.
+        """
+        depth = max(0, getattr(self, '_size_freeze_depth', 1) - 1)
+        self._size_freeze_depth = depth
+        if depth == 0:
+            QTimer.singleShot(120, lambda: self.setMinimumSize(0, 0))
+
     def refresh_projects(self, restore_scroll_pos=None):
         """Refresh the project list by reloading the configuration"""
+        self._freeze_window_size()
         try:
             # Store current window geometry
             current_geometry = self.geometry()
-
-            # Floor the window at its current size for the duration of the rebuild
-            # below. init_ui() tears down and reconstructs the entire widget tree, and
-            # the freshly built tree's own layout hasn't stabilized the instant it's
-            # installed — without this, the window visibly shrinks (reported as far as
-            # ~50%) before settling back to its real size once layout catches up and
-            # setGeometry() below restores it. Minimum only (not setFixedSize/a maximum)
-            # so genuinely larger content can still grow the window during the rebuild
-            # as normal — this only stops the transient shrink, released in the
-            # `finally` block below regardless of whether the rebuild succeeds.
-            self.setMinimumSize(current_geometry.width(), current_geometry.height())
 
             # Reload configuration from file
             self.load_config()
@@ -23463,10 +23498,12 @@ Project created: {date_str}
             self.status_label.setText(f"✗ Reload failed: {str(e)}")
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
         finally:
-            # Always release the size floor set above, even if the rebuild raised —
-            # leaving it in place would permanently prevent the window from ever
-            # shrinking again.
-            self.setMinimumSize(0, 0)
+            # Always matches the _freeze_window_size() call at the top of this method,
+            # even if the rebuild raised — leaving the floor in place would permanently
+            # prevent the window from ever shrinking again. See _unfreeze_window_size()
+            # for why this is a deferred, reentrant-safe release rather than an
+            # immediate plain setMinimumSize(0, 0).
+            self._unfreeze_window_size()
 
     def open_in_app(self, path, app="default", force_external=False, display_name=None):
         """Open the specified path in the given application"""
