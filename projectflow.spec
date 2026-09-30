@@ -1,17 +1,18 @@
 # projectflow.spec — PyInstaller spec for a Windows --onedir build.
 #
 # PyInstaller cannot cross-compile — this MUST be run on Windows itself:
-#   pyinstaller projectflow.spec --clean --contents-directory .
+#   pyinstaller projectflow.spec --clean
 #
-# "--contents-directory ." keeps bundled data flat next to ProjectFlow.exe.
-# PyInstaller >= 6.0 defaults onedir output into a nested _internal/ folder
-# otherwise, which would break _get_script_dir()'s onedir resolution
-# (os.path.dirname(sys.executable)) — verify whether this flag is actually
-# needed for whatever PyInstaller version ends up installed, and report the
-# version used either way.
+# NOTE: don't pass --contents-directory on the command line — once a .spec
+# file is given, PyInstaller rejects it ("makespec options not valid when a
+# .spec file is given", confirmed via a real build). The equivalent is set
+# below via EXE(..., contents_directory='.'), which keeps bundled data flat
+# next to ProjectFlow.exe instead of PyInstaller >= 6.0's default nested
+# _internal/ folder — required for _get_script_dir()'s onedir resolution
+# (os.path.dirname(sys.executable)) to find anything.
 #
 # Output: dist/ProjectFlow/ProjectFlow.exe + its supporting files, all flat
-# in that one folder (assuming the flag above worked as expected).
+# in that one folder.
 
 import os
 
@@ -65,6 +66,14 @@ exe = EXE(
     [],
     exclude_binaries=True,   # onedir: binaries/data go to COLLECT(), not baked into the exe
     name='ProjectFlow',
+    contents_directory='.', # spec-file equivalent of the CLI --contents-directory flag —
+                             # that flag is a "makespec" option and isn't accepted on the
+                             # command line once a .spec file is given (confirmed via a
+                             # real build: "ERROR: option(s) not allowed: --contents-directory
+                             # / makespec options not valid when a .spec file is given").
+                             # '.' keeps bundled data flat next to ProjectFlow.exe, matching
+                             # what _get_script_dir()'s onedir branch expects, instead of the
+                             # nested _internal/ folder PyInstaller >= 6.0 defaults to.
     debug=False,
     strip=False,
     upx=False,               # leave UPX off for this first spike — UPX-compressed
