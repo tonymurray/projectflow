@@ -57,6 +57,27 @@ BUILTIN_HANDLERS = {
 }
 
 
+def _get_script_dir():
+    """Base directory assets/help/examples/icon_preferences.json/
+    launch_handlers.py are all resolved relative to (see self.script_dir).
+
+    Deliberately not in os_integration.py — this is a frozen-vs-source-run
+    distinction (relevant to a future PyInstaller-packaged build on any OS),
+    not a sys.platform one, which is that module's whole charter.
+
+    __file__ doesn't point where you'd expect once packaged: a onefile
+    PyInstaller build's bundled data (assets/, help/, etc. — added via
+    --add-data) is unpacked into a temp directory at sys._MEIPASS; a onedir
+    build's bundled data sits alongside sys.executable itself. Both are
+    reached via the standard `sys.frozen` flag PyInstaller sets, so this
+    stays a no-op (falls through to the existing __file__-based resolution)
+    for every current, non-frozen, run-from-source use.
+    """
+    if getattr(sys, 'frozen', False):
+        return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 class DraggableConfigButton(QPushButton):
     """A QPushButton that supports drag-and-drop for reordering"""
 
@@ -1555,8 +1576,9 @@ class ProjectFlowApp(QMainWindow):
         self._alias_write_timer.setInterval(800)
         self._alias_write_timer.timeout.connect(self._flush_pending_alias_write)
 
-        # Get the directory where this script is located
-        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Get the directory where this script (or, once packaged, its bundled
+        # data) is located — see _get_script_dir()'s docstring.
+        self.script_dir = _get_script_dir()
 
         # Settings file to store user preferences (machine-specific, not synced)
         self.settings_file = os.path.join(self.script_dir, ".projectflow_settings.json")
