@@ -1596,6 +1596,20 @@ class ProjectFlowApp(QMainWindow):
         self.group_by_type = False
         self._group_view_origin = {}
 
+        # Cache for _resolve_existing_path()'s os.path.exists() lookups — see that
+        # method's docstring for the perf rationale (a full launcher-column rebuild,
+        # triggered by e.g. every Focus-layout launcher-tab switch or entering edit
+        # mode, previously re-ran this check for every item from scratch on every
+        # single rebuild; on Windows in particular, each os.path.exists() call can be
+        # meaningfully more expensive than on Linux due to Defender's real-time
+        # filesystem scanning, turning "harmless per-item check" into multi-second UI
+        # stalls for a project with many items). Cleared on an actual project switch
+        # in switch_to_config() — the one point this cache could otherwise go stale
+        # across genuinely different data — but deliberately kept alive across
+        # incidental same-project rebuilds, since re-resolving the same paths on every
+        # tab click is exactly the redundant work this cache exists to avoid.
+        self._path_exists_cache = {}
+
         # "Open All" per-category opt-in — off by default for every category (including
         # Documentation), see _toggle_open_all_for_category()/open_all_in_group(). A plain
         # set of category names, loaded fresh in load_config().
@@ -10735,18 +10749,31 @@ function filterAliases(q) {{
         A third tier, _resolve_via_project_folder(), runs after the mapping fallback above
         also fails — see that method for why (shared-project support: a launcher item's
         absolute path was only ever correct on whoever's machine originally saved it).
+
+        Result is cached in self._path_exists_cache, keyed by the raw input path, and
+        reused across incidental same-project rebuilds (cleared only on an actual project
+        switch — see switch_to_config() and this cache's own init comment in __init__) —
+        see that comment for why a full rebuild calling this once per item, on every
+        launcher-tab switch or edit-mode toggle, made this worth caching at all.
         """
+        cache = self._path_exists_cache
+        if path in cache:
+            return cache[path]
+
         if not self._is_local_path(path):
-            return path, False
-        if os.path.exists(os.path.expanduser(path)):
-            return path, False
-        mapped = self._resolve_path(path)
-        if mapped != path and os.path.exists(os.path.expanduser(mapped)):
-            return mapped, True
-        via_project = self._resolve_via_project_folder(path)
-        if via_project:
-            return via_project, True
-        return path, False
+            result = (path, False)
+        elif os.path.exists(os.path.expanduser(path)):
+            result = (path, False)
+        else:
+            mapped = self._resolve_path(path)
+            if mapped != path and os.path.exists(os.path.expanduser(mapped)):
+                result = (mapped, True)
+            else:
+                via_project = self._resolve_via_project_folder(path)
+                result = (via_project, True) if via_project else (path, False)
+
+        cache[path] = result
+        return result
 
     def _resolve_via_project_folder(self, path):
         """Third path-resolution tier, tried after the direct path and the global mapping
@@ -14393,6 +14420,11 @@ function filterAliases(q) {{
         # are discarded here, same as they would be by navigating away in the old dialog
         # without clicking OK.
         self._settings_loaded_for = None
+
+        # A different project means different paths — the old project's cached
+        # exists()/mapping results have no bearing here. See _resolve_existing_path()
+        # and this cache's init comment in __init__.
+        self._path_exists_cache.clear()
 
         # Reload with the new project
         self.refresh_projects()
@@ -23386,6 +23418,17 @@ Project created: {date_str}
             # Store current window geometry
             current_geometry = self.geometry()
 
+            # Floor the window at its current size for the duration of the rebuild
+            # below. init_ui() tears down and reconstructs the entire widget tree, and
+            # the freshly built tree's own layout hasn't stabilized the instant it's
+            # installed — without this, the window visibly shrinks (reported as far as
+            # ~50%) before settling back to its real size once layout catches up and
+            # setGeometry() below restores it. Minimum only (not setFixedSize/a maximum)
+            # so genuinely larger content can still grow the window during the rebuild
+            # as normal — this only stops the transient shrink, released in the
+            # `finally` block below regardless of whether the rebuild succeeds.
+            self.setMinimumSize(current_geometry.width(), current_geometry.height())
+
             # Reload configuration from file
             self.load_config()
             self.load_notes()
@@ -23419,6 +23462,11 @@ Project created: {date_str}
             )
             self.status_label.setText(f"✗ Reload failed: {str(e)}")
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
+        finally:
+            # Always release the size floor set above, even if the rebuild raised —
+            # leaving it in place would permanently prevent the window from ever
+            # shrinking again.
+            self.setMinimumSize(0, 0)
 
     def open_in_app(self, path, app="default", force_external=False, display_name=None):
         """Open the specified path in the given application"""
