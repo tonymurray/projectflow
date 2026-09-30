@@ -36,24 +36,31 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   verified directly to find the exact `_vendored/` files that were missing at runtime. **The build
   now succeeds and the packaged `.exe` runs correctly** on real Windows 11 hardware — Web/Notes/
   Editor/Help all render real content, file browser and launcher items work, no crashes.
-- **Multi-second window "shrink to ~50%, stall, then snap back to full size"** when switching
-  Focus-layout launcher tabs or entering edit mode, reported on the packaged Windows build (12-core/
-  32GB hardware — not a slow-machine issue). Both actions call `refresh_projects()`, which fully
-  tears down and rebuilds the entire widget tree; the fresh tree's layout hasn't stabilized the
-  instant it's installed, so the window visibly shrinks before `refresh_projects()`'s own (already
-  pre-existing) geometry-restore call snaps it back. Two additive, cross-platform fixes: (1) floor
-  the window at its current size for the rebuild's duration (`setMinimumSize`, not a fixed/maximum
-  size, so legitimately larger content can still grow the window — released in a `finally` block so
-  it can't get stuck if the rebuild raises) — purely cosmetic, stops the visible jump without
-  changing how long the rebuild takes; (2) cache `_resolve_existing_path()`'s `os.path.exists()`
-  results (previously "re-checked per item on every render" with no caching at all), cleared only on
-  an actual project switch — kept alive across incidental same-project rebuilds, exactly what
-  repeated tab-switches are. Verified via an isolated real-method timing test (150 mixed existing/
-  missing paths): cold pass 0.75ms, warm passes 0.02ms, 39.7x speedup. That sub-millisecond Linux
-  cost also confirms this specific check was never the dominant factor there — likely explanation
-  for why this was significant enough to report on Windows specifically: the identical
-  `os.path.exists()` syscall is commonly far more expensive under Windows Defender's real-time
-  filesystem scanning than on Linux, independent of any hardware/CPU/RAM difference.
+- **Window "shrink to ~50%, stall, then snap back to full size" when switching Focus-layout
+  launcher tabs or entering edit mode** — reported on the packaged Windows build (12-core/32GB
+  hardware, not a slow-machine issue), later also reproduced as a same-size *position* shift
+  (window sliding to a wrong spot, or on a dual-monitor setup jumping to the entirely other
+  monitor, then correcting). **Root cause**: `init_ui()` had an unconditional
+  `self.setGeometry(100, 100, 1000, 600)` near its top — harmless-looking since it was clearly
+  meant only for the very first launch (immediately overridden there by `main()`'s
+  `window.showMaximized()` before the window is ever shown), except `init_ui()` also runs on
+  *every* `refresh_projects()` call — every project switch, launcher-tab switch, and edit-mode
+  toggle — silently resetting the window to that small fixed rectangle every single time, with
+  `refresh_projects()`'s own pre-existing geometry capture/restore dance existing entirely to
+  undo the damage immediately afterward. That undo cycle was the whole visible symptom, in every
+  variant reported. Fixed by deleting the line outright — safe on first launch (already
+  overridden there regardless) and eliminates the reset on every later refresh. Four earlier,
+  more targeted mitigations aimed at the *symptom* rather than this cause were tried and reverted
+  along the way (floor the window at its current size during rebuild; restore `windowState()`
+  instead of geometry for a maximized window; suppress repainting during rebuild; hide the window
+  outright during rebuild) — each either didn't fully fix it or made it actively worse
+  (`windowState()` left the window genuinely stuck off-screen with nothing correcting it; hiding
+  the window caused tiling window managers, e.g. Niri, to reflow another window into the gap).
+  Kept independently from this: caching `_resolve_existing_path()`'s `os.path.exists()` results
+  (previously "re-checked per item on every render" with no caching at all), cleared only on an
+  actual project switch — a genuine, unrelated performance win verified via an isolated
+  real-method timing test (150 mixed existing/missing paths: cold pass 0.75ms, warm passes
+  0.02ms, 39.7x speedup) even though it turned out not to be the cause of the reported jank.
 
 ## 2026-09-29 (Desktop, Nix launcher fix — Niri/Wayland-without-XWayland support)
 
