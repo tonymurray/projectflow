@@ -2,6 +2,17 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-19 (Desktop, Help content caught up to the Docs/Documents rename)
+
+### Fixed
+- **Stale Help viewer wording left over from the Docs/Documents renames above**: the Launchers tab's
+  "two tab sections" description and its "Open All" opt-in note still said "Documentation"; the Viewers
+  tab's Folder Browser section described a "'double-home' button ⌂⌂" that was actually removed back in
+  September (replaced by the Work Folder/Documents shortcut row); and a Tips entry pointed at "the Docs
+  button in the Folder Browser toolbar", which no longer exists either. All three updated to match the
+  current UI — the Viewers tab now describes the real mechanism (the shortcut row, the 📌 pin button, and
+  Project Settings' "Folder Start Path" field).
+
 ## 2026-10-19 (Desktop, Docs/Documents naming finalized)
 
 ### Changed
