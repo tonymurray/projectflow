@@ -2881,15 +2881,18 @@ class ProjectFlowApp(QMainWindow):
 
     def _ensure_project_files_category(self):
         """Return the real category name to file newly-created editor files under (see
-        new_code_file()) — a plain "Project Files" category, created on first use.
-        No docs_categories flag: these are working files, not documentation, so they
-        render under Resources like any other ordinary category."""
+        new_code_file()) — a plain "Assets" category (canonically; "Project Files" is
+        recognized as a legacy alias for any project created before this name was
+        settled on, same dual-name pattern _ensure_documentation_category() uses for
+        "Documentation"/"Docs"), created on first use. No docs_categories flag: these
+        are working files, not documentation, so they render under Resources like any
+        other ordinary category."""
         for cd in self.COLUMN_1:
-            if "Project Files" in cd:
-                return "Project Files"
-        self.COLUMN_1.append({"Project Files": []})
+            if any(name in cd for name in ("Assets", "Project Files")):
+                return next(name for name in ("Assets", "Project Files") if name in cd)
+        self.COLUMN_1.append({"Assets": []})
         self.save_config_to_json()
-        return "Project Files"
+        return "Assets"
 
     def _ai_hidden_paths_key(self):
         """Absolute path of the current config — scopes ai_hidden_paths per project."""
@@ -7380,7 +7383,7 @@ StartupNotify=true
 
     def _preview_project_documents_path(self):
         """Non-mutating peek at where _get_or_create_project_documents_folder() would
-        resolve to — used only for the "Project Files" folder-shortcut button's tooltip
+        resolve to — used only for the "Assets" folder-shortcut button's tooltip
         and highlight-matching (_build_folder_shortcuts_row), never to decide whether to
         create anything. Safe to call on every toolbar rebuild since
         _resolve_project_documents_slug()'s own collision check is read-only and this
@@ -11867,13 +11870,6 @@ function filterAliases(q) {{
                         add_btn.clicked.connect(self.quick_add_launcher)
                         header_layout.addWidget(add_btn)
 
-                        # Upload an existing file into this project's documents folder,
-                        # filed as a real launcher item — the file-picker-based counterpart
-                        # to the Notes/Editor toolbars' own "＋ New" buttons (which create a
-                        # BLANK file in the same folder). Upload Doc files under Documentation,
-                        # Upload File under Project Files/Resources — see
-                        # upload_document_to_project()/upload_file_to_project().
-                        #
                         # In Focus layout, Docs and Resources are separate tabs with a real
                         # "currently viewing this bucket" concept (self.active_launcher_tab),
                         # so showing both buttons on both tabs was a real point of confusion
@@ -11887,6 +11883,26 @@ function filterAliases(q) {{
                         focus_docs_tab = self.layout_mode == "focus" and self.active_launcher_tab == "docs"
                         focus_resources_tab = self.layout_mode == "focus" and self.active_launcher_tab == "resources"
 
+                        # Create a brand-new, blank markdown document directly in this
+                        # project's documents folder, filed under Documentation — the
+                        # Docs-launcher-header counterpart to the Notes/Editor toolbars'
+                        # own "＋ New" buttons, which create a blank file the same way but
+                        # file it under Notes/Project Files instead. Documentation-only
+                        # (like Upload Doc), so it shares that button's Resources-tab gate.
+                        if not focus_resources_tab:
+                            create_doc_btn = QPushButton("📄 Create")
+                            create_doc_btn.setMinimumHeight(self.d('header_btn_height'))
+                            create_doc_btn.setToolTip("Create a new markdown document in this project's Documents folder — gets added to Docs")
+                            create_doc_btn.setStyleSheet(add_btn_style)
+                            create_doc_btn.clicked.connect(self.create_document_in_project)
+                            header_layout.addWidget(create_doc_btn)
+
+                        # Upload an existing file into this project's documents folder,
+                        # filed as a real launcher item — the file-picker-based counterpart
+                        # to the same "＋ New" buttons above (which create a BLANK file,
+                        # rather than copying an existing one in). Upload Doc files under
+                        # Documentation, Upload File under Project Files/Resources — see
+                        # upload_document_to_project()/upload_file_to_project().
                         if not focus_resources_tab:
                             upload_doc_btn = QPushButton("⬆ Upload Doc")
                             upload_doc_btn.setMinimumHeight(self.d('header_btn_height'))
@@ -18238,8 +18254,8 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(home_btn)
 
         # The old "⌂⌂ project folder" and icon-only "Docs" buttons that used to sit here
-        # were removed — both are now covered by the spelled-out "Project Home"/"Project
-        # Files" shortcuts in the row above (_build_folder_shortcuts_row), which made
+        # were removed — both are now covered by the spelled-out "Work Folder"/"Assets"
+        # shortcuts in the row above (_build_folder_shortcuts_row), which made
         # having both a redundant, confusing duplicate. The "pin current folder as this
         # project's default" action "⌂⌂" also used to provide while unpinned is still
         # available via the 📌 button at the end of this toolbar (set_viewer_as_default())
@@ -18380,8 +18396,8 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(home_btn)
 
         # The old "⌂⌂ project folder" and icon-only "Docs" buttons that used to sit here
-        # were removed — both are now covered by the spelled-out "Project Home"/"Project
-        # Files" shortcuts in the row above (_build_folder_shortcuts_row). Note: unlike
+        # were removed — both are now covered by the spelled-out "Work Folder"/"Assets"
+        # shortcuts in the row above (_build_folder_shortcuts_row). Note: unlike
         # create_folder_toolbar's main toolbar, this panel has no equivalent 📌
         # pin-default button of its own — "pin current folder as this project's default"
         # while unpinned is still reachable via the main Folder viewer's own 📌 button or
@@ -19304,7 +19320,7 @@ function filterAliases(q) {{
         cap here is to keep this row small, so anything past it is simply not shown.
 
         The project's own pinned folder_path — if set and it still resolves to a real
-        directory — is always included first, labeled "Project Home": previously this was
+        directory — is always included first, labeled "Work Folder": previously this was
         deliberately excluded (already one click away via the toolbar's own "⌂⌂" icon
         button), but that button is small and unlabeled, so the request was to always
         surface the project's primary location as a full, equally-visible button in this
@@ -19317,7 +19333,7 @@ function filterAliases(q) {{
             resolved = os.path.expanduser(resolved)
             if os.path.isdir(resolved):
                 seen_paths.add(os.path.normpath(resolved))
-                shortcuts.append(("Project Home", resolved))
+                shortcuts.append(("Work Folder", resolved))
         for cat_dict in self.COLUMN_1:
             for _category_name, items in cat_dict.items():
                 for item in items:
@@ -19334,7 +19350,7 @@ function filterAliases(q) {{
                         continue
                     normalized = os.path.normpath(resolved)
                     if normalized in seen_paths:
-                        # Either a real duplicate, or the same folder as "Project Home" above.
+                        # Either a real duplicate, or the same folder as "Work Folder" above.
                         continue
                     seen_paths.add(normalized)
                     shortcuts.append((item[0], resolved))
@@ -19344,13 +19360,13 @@ function filterAliases(q) {{
         """Adds a row of quick-jump buttons for _get_folder_location_shortcuts()'s result,
         one per candidate folder location, directly above the caller's own toolbar (called
         as the first line of create_folder_toolbar()/_build_launcher_folder_panel()) — plus
-        an always-present "Project Files" button, added right after "Project Home" (or
-        first, if there's no folder_path pinned yet so "Project Home" doesn't appear at
-        all). "Project Files" used to be a separate icon-only "Docs" button lower down in
+        an always-present "Assets" button, added right after "Work Folder" (or
+        first, if there's no folder_path pinned yet so "Work Folder" doesn't appear at
+        all). "Assets" used to be a separate icon-only "Docs" button lower down in
         the toolbar itself; moved up here per user feedback that having both a spelled-out
-        "Project Home" shortcut in this row AND a redundant icon-only "⌂⌂" duplicate of it
+        "Work Folder" shortcut in this row AND a redundant icon-only "⌂⌂" duplicate of it
         in the toolbar below was confusing. Unlike every other candidate in this row,
-        "Project Files" doesn't come from _get_folder_location_shortcuts() and is never
+        "Assets" doesn't come from _get_folder_location_shortcuts() and is never
         skipped — a documents subfolder is always resolvable/creatable on click, never
         "unset" (see _get_or_create_project_documents_folder()) — so this row is now never
         fully empty either, unlike before.
@@ -19414,12 +19430,12 @@ function filterAliases(q) {{
         inserted_project_files = False
         for name, path in shortcuts:
             add_shortcut_button(name, path, lambda checked=False, p=path, s=side: self._jump_to_folder_shortcut(p, s))
-            if name == "Project Home" and not inserted_project_files:
-                add_shortcut_button("Project Files", self._preview_project_documents_path(),
+            if name == "Work Folder" and not inserted_project_files:
+                add_shortcut_button("Assets", self._preview_project_documents_path(),
                                      lambda checked=False, s=side: self.folder_go_project_documents(s))
                 inserted_project_files = True
         if not inserted_project_files:
-            add_shortcut_button("Project Files", self._preview_project_documents_path(),
+            add_shortcut_button("Assets", self._preview_project_documents_path(),
                                  lambda checked=False, s=side: self.folder_go_project_documents(s))
 
         row_layout.addStretch()
@@ -19434,7 +19450,7 @@ function filterAliases(q) {{
         # the browsed folder instead of always the fixed documents/<slug>/ folder.
         add_file_btn = QPushButton("⬆ Add File...")
         add_file_btn.setStyleSheet(btn_style)
-        add_file_btn.setToolTip("Copy a file from elsewhere into this folder, and add it to Project Files/Resources")
+        add_file_btn.setToolTip("Copy a file from elsewhere into this folder, and add it to Assets/Resources")
         add_file_btn.clicked.connect(lambda checked=False, s=side: self._add_file_to_current_folder(s))
         row_layout.addWidget(add_file_btn)
 
@@ -21423,7 +21439,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         _get_or_create_project_documents_folder()), then opens it as a new Editor tab.
         The suggested "untitled.txt" is just a starting point in an editable field —
         typing a different extension (e.g. "page.html") is respected as-is. Also files
-        it as a real launcher item under the "Project Files" category (Resources tab,
+        it as a real launcher item under the "Assets" category (Resources tab,
         auto-created — see _ensure_project_files_category()) and refreshes any open
         folder browser view, mirroring new_note_file()'s equivalent behavior."""
         from PyQt6.QtWidgets import QInputDialog
@@ -21488,10 +21504,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         — prompts for an existing file anywhere on disk, copies it into whichever folder
         this side is CURRENTLY browsing (unlike _upload_file_to_documents(), which always
         targets the fixed documents/<slug>/ folder regardless of what's on screen), and
-        files it as a launcher item under Project Files/Resources — same copy-then-file
+        files it as a launcher item under Assets/Resources — same copy-then-file
         shape, just a variable destination tied to wherever you're actually looking.
-        Requested directly for browsing a project's own working folder (e.g. "Project
-        Home"), where pulling in a file from elsewhere had no convenient path short of
+        Requested directly for browsing a project's own working folder (e.g. "Work
+        Folder"), where pulling in a file from elsewhere had no convenient path short of
         dragging from a real file manager or right-clicking the file at its source
         location instead of here."""
         current_path = self.launcher_folder_current_path if side == "left" else self.folder_current_path
@@ -21522,6 +21538,41 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.set_status(f"✓ Added '{filename}' to this folder and {category}", "success")
         self.refresh_projects()
 
+    def create_document_in_project(self):
+        """Docs launcher header "📄 Create" button: prompts for a filename and creates a
+        blank markdown document directly in this project's own documents subfolder (see
+        _get_or_create_project_documents_folder()), then opens it via the layout-aware
+        _open_markdown_file() dispatcher (Notes tab in Focus layout, the general webview's
+        Muya editor in Standard layout). Files it as a real launcher item under
+        Documentation (auto-created via _ensure_documentation_category()), app="default" —
+        mirrors new_note_file()/new_code_file()'s identical create-a-blank-file pattern,
+        just filing into Documentation instead of Notes/Assets."""
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Create Document", "File name:", text="New Document.md")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not name.lower().endswith('.md'):
+            name += '.md'
+        docs_folder = self._get_or_create_project_documents_folder()
+        target = os.path.join(docs_folder, name)
+        if os.path.exists(target):
+            QMessageBox.warning(self, "Create Document", f'"{name}" already exists.')
+            return
+        try:
+            open(target, 'w').close()
+        except OSError as e:
+            QMessageBox.warning(self, "Create Document", f"Could not create file: {e}")
+            return
+        category = self._ensure_documentation_category()
+        stem = os.path.splitext(name)[0]
+        self._add_item_to_config(0, category, self._titleize_stem(stem), target, "default")
+        self.save_config_to_json()
+        self._open_markdown_file(target)
+        self._refresh_all_folder_views()
+        self.set_status(f"✓ Created '{name}' and added to {category}", "success")
+        self.refresh_projects()
+
     def upload_document_to_project(self):
         """Launcher header "⬆ Upload Doc" button: uploads a file into this project's
         documents folder and files it under Documentation (auto-created via
@@ -21531,7 +21582,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def upload_file_to_project(self):
         """Launcher header "⬆ Upload File" button: uploads a file into this project's
-        documents folder and files it under Project Files/Resources (auto-created via
+        documents folder and files it under Assets/Resources (auto-created via
         _ensure_project_files_category()), app="default"."""
         category = self._ensure_project_files_category()
         self._upload_file_to_documents(category, "Upload a file to the Project Documents folder")
@@ -21837,9 +21888,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # desktop). Both show the same project-picker shape; only what happens after
         # picking differs — and, per direct user feedback, which category the item
         # lands in: Link stays targeted at Documentation (it's literally what it's
-        # for), but Upload/copy files under "Project Files" instead — a generic
+        # for), but Upload/copy files under "Assets" instead — a generic
         # "add this file to the project" action reads more like Upload File/New File
-        # (also "Project Files") than like something documentation-specific, and it's
+        # (also "Assets") than like something documentation-specific, and it's
         # just as easy to move afterward (drag, or "Move to category") if it turns out
         # to belong in Documentation for a given file. See add_resource_to_documentation()
         # (link) vs upload_resource_to_project_files() (copy).
@@ -22641,7 +22692,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         upload (see the right-click menu's "⬆ Upload to Project (copy)..." action,
         _build_folder_context_menu()) — same project-picker shape, just calls
         upload_resource_to_project_files() instead of add_resource_to_documentation()
-        on accept. Files under "Project Files", not Documentation — see the calling
+        on accept. Files under "Assets", not Documentation — see the calling
         menu's own comment for why."""
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
         projects = []
@@ -22715,7 +22766,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def upload_resource_to_project_files(self, file_path, project_path):
         """Copy file_path INTO project_path's own documents/<slug>/ folder and file
-        it under 'Project Files', app='default' — the copy-based sibling of
+        it under 'Assets' (recognizing the legacy 'Project Files' name on an existing
+        project, same dual-name pattern as _ensure_project_files_category()),
+        app='default' — the copy-based sibling of
         add_resource_to_documentation() above (which only references file_path at
         its original location). This is what actually makes the file available on
         another machine that syncs that project's documents/ tree (e.g. a file
@@ -22726,9 +22779,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         project_path isn't necessarily the currently-loaded project — same
         arbitrary-project convention add_resource_to_documentation() already uses.
 
-        Files under "Project Files" rather than "Documentation", unlike the link
+        Files under "Assets" rather than "Documentation", unlike the link
         variant above — a generic "copy this file into the project" action reads
-        more like Upload File/New File (also "Project Files") than something
+        more like Upload File/New File (also "Assets") than something
         documentation-specific; moving an individual item to Documentation
         afterward (drag, or the right-click "Move to category" menu) is just as
         easy as it would be the other way around."""
@@ -22760,12 +22813,14 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         files_category = None
         for category_dict in column1:
-            if isinstance(category_dict, dict) and "Project Files" in category_dict:
-                files_category = category_dict["Project Files"]
-                break
+            if isinstance(category_dict, dict):
+                matched = next((n for n in ("Assets", "Project Files") if n in category_dict), None)
+                if matched:
+                    files_category = category_dict[matched]
+                    break
         if files_category is None:
             files_category = []
-            column1.append({"Project Files": files_category})
+            column1.append({"Assets": files_category})
 
         stem = os.path.splitext(filename)[0]
         display_name = self._titleize_stem(stem)

@@ -20,7 +20,7 @@ Exec=add-projectflow-servicemenu.sh %F
 
 # Copies the selected file(s) INTO a project's own documents/<slug>/ folder (unlike
 # "Add to ProjectFlow" above, which just references the file at its original location)
-# and files each as a launcher item under that project's "Project Files" category — see
+# and files each as a launcher item under that project's "Assets" category — see
 # upload-to-projectflow-docs.sh.
 [Desktop Action uploadToProjectFlowDocs]
 Name=Upload to ProjectFlow Docs

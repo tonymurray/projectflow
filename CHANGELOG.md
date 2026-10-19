@@ -2,6 +2,36 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-19 (Desktop, Docs/Assets launcher-header polish)
+
+### Added
+- **"📄 Create" button** in the launcher column header, between "+ Add" and "⬆ Upload Doc" —
+  prompts for a filename, creates a blank `.md` file directly in the project's own
+  `documents/<slug>/` folder, files it as a real launcher item under Documentation
+  (auto-created via the existing `_ensure_documentation_category()`), and opens it through the
+  layout-aware `_open_markdown_file()` dispatcher. Mirrors the Notes/Editor toolbars' own
+  "＋ New" buttons exactly, just filing into Documentation instead of Notes/Project Files.
+  Gated like "⬆ Upload Doc" — hidden on the Focus-layout Resources tab, since it's
+  Documentation-only.
+
+### Changed
+- **Renamed the Folder Browser's "Project Home"/"Project Files" shortcuts to "Work Folder"/
+  "Assets"** — the two names read as too similar ("Project X"/"Project Y"), and "Project Files"
+  in particular was easy to misread as "the project's source files" when it's actually the
+  Nextcloud-synced documents/upload folder. "Work Folder" (the project's pinned `folder_path`)
+  and "Assets" (the documents-folder shortcut/category) are now distinct enough not to collide.
+  The persisted category name follows the same dual-name legacy-fallback pattern
+  `_ensure_documentation_category()` already uses for "Documentation"/"Docs": an existing
+  project's `"Project Files"` category is recognized and reused as-is; only a project with
+  neither name yet gets a new `"Assets"` category. Ran a one-time migration renaming the
+  `"Project Files"` key to `"Assets"` across all local projects that had it, for naming
+  consistency (not required for correctness — the fallback alone keeps everything working).
+  The standalone `utilities/upload-to-projectflow-docs.sh` Dolphin service-menu script (which
+  can't import `projectflow.py` and so keeps its own copy of this category-filing logic) was
+  updated to match the same "Assets"/legacy-"Project Files" fallback — left unfixed, it would
+  have silently created a second, duplicate category alongside the app's own for the same
+  folder.
+
 ## 2026-09-30 (Desktop, Windows port merged to master)
 
 ### Changed

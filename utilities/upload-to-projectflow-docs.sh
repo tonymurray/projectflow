@@ -4,7 +4,7 @@
 # Copies the selected file(s) INTO a project's own documents/<slug>/ folder
 # (unlike add-projectflow-servicemenu.sh, which just references the file at its
 # original location) and files each as a launcher item under that project's
-# "Project Files" category — the external, Dolphin-triggered counterpart to the
+# "Assets" category — the external, Dolphin-triggered counterpart to the
 # app's own "⬆ Upload File" launcher-header button (upload_file_to_project() in
 # projectflow.py), reimplemented standalone here since a KDE service menu spawns a
 # fresh process independent of whether ProjectFlow is currently running.
@@ -106,17 +106,21 @@ if 'columns' not in data or not data['columns']:
     data['columns'] = [[]]
 column1 = data['columns'][0]
 
-# Find or create "Project Files" category — same category new_code_file()'s own
+# Find or create "Assets" category — same category new_code_file()'s own
 # _ensure_project_files_category() uses, per the app's own convention that a
 # file-manager/Resources upload files under Resources, not Documentation.
+# Recognizes legacy "Project Files" on a project created before this name was
+# settled on, matching _ensure_project_files_category()'s own dual-name fallback.
 project_files = None
 for category_dict in column1:
-    if isinstance(category_dict, dict) and "Project Files" in category_dict:
-        project_files = category_dict["Project Files"]
-        break
+    if isinstance(category_dict, dict):
+        matched = next((n for n in ("Assets", "Project Files") if n in category_dict), None)
+        if matched:
+            project_files = category_dict[matched]
+            break
 if project_files is None:
     project_files = []
-    column1.append({"Project Files": project_files})
+    column1.append({"Assets": project_files})
 
 existing_paths = {item[1] for item in project_files if len(item) > 1}
 
