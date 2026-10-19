@@ -2,6 +2,38 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-19 (Desktop, Docs/Documents naming finalized)
+
+### Changed
+- **Follow-up to the entry directly below**: the "Assets" name landed there turned out to read
+  like a security-tool/spy-scene term in practice, so the Folder Browser's documents-folder
+  shortcut/category was renamed once more, to **"Documents"** — matching the actual on-disk
+  `documents/<slug>/` folder name exactly, and clearly distinct from "Work Folder" (the
+  project's own working/source directory). Migrated the same 10 local projects a second time,
+  `"Assets"` → `"Documents"`; `_ensure_project_files_category()` and
+  `upload_resource_to_project_files()` now recognize a three-way legacy chain — `"Documents"`
+  (canonical) → `"Assets"` → `"Project Files"` — so a project untouched since any earlier point
+  in this rename's history still resolves correctly. The standalone
+  `utilities/upload-to-projectflow-docs.sh` service-menu script was updated to match.
+- **Renamed the Docs-bucket's backing category from "Documentation" to "Docs"** (now canonical,
+  with "Documentation" recognized as a read-only legacy alias — the same dual-name pattern as
+  before, just flipped) — once "Documents" existed as its own distinct category, keeping the
+  curated-docs/notes bucket named "Documentation" sat too close to it; "Docs" reads as "notes/
+  reference material" and no longer collides. Updated every user-visible string this touches:
+  the "Move to category" menu entry, Kickstart's review-dialog section, Scan for Docs' dialog
+  title/button/tooltips, and the "Add to Docs (link)..." context-menu action and its dialog.
+  Fixed a latent gap found while doing this: `add_resource_to_documentation()` (the in-app
+  "Add to ProjectFlow" Dolphin-service-menu picker) only ever recognized the literal
+  "Documentation" name with no legacy fallback at all — left unfixed, it would have silently
+  created a duplicate category for a project using the other name. Ran a one-time migration
+  renaming `"Documentation"` → `"Docs"` across 27 local projects plus one real `.projectflow`
+  folder-project, including a genuine merge for one project that already had both an empty,
+  orphaned `"Docs"` category and a populated `"Documentation"` one.
+- **Net result, three clearly distinct project-folder concepts**: **Work Folder** (the
+  project's own working/source directory), **Docs** (curated documentation/notes — Scan for
+  Docs, Kickstart, "Move to category"), and **Documents** (uploaded images/PDFs/misc files,
+  matching the actual `documents/<slug>/` folder name).
+
 ## 2026-10-19 (Desktop, Docs/Assets launcher-header polish)
 
 ### Added

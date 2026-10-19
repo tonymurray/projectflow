@@ -433,11 +433,11 @@ class CategoryDropZone(QWidget):
         else:
             # Cross-category move. If this zone is the Docs bucket's real category and it
             # doesn't exist on disk yet (see the construction-time resolve above, which
-            # defaults to "Documentation" without creating it), create it now — this is a
+            # defaults to "Docs" without creating it), create it now — this is a
             # direct result of the user's own drop action, not an incidental render side
             # effect, and without it handle_item_move_to_category() would silently lose the
             # item (it re-reads the config from disk and finds no destination category).
-            if self.category_name in ("Documentation", "Docs") and not any(
+            if self.category_name in ("Docs", "Documentation") and not any(
                 self.category_name in cd for cd in self.app.COLUMN_1
             ):
                 self.category_name = self.app._ensure_documentation_category()
@@ -1611,16 +1611,16 @@ class ProjectFlowApp(QMainWindow):
         self._path_exists_cache = {}
 
         # "Open All" per-category opt-in — off by default for every category (including
-        # Documentation), see _toggle_open_all_for_category()/open_all_in_group(). A plain
+        # Docs), see _toggle_open_all_for_category()/open_all_in_group(). A plain
         # set of category names, loaded fresh in load_config().
         self.open_all_categories = set()
 
         # Docs/Resources bucket membership — off by default for every category (the
-        # "Documentation" category itself is always in Docs via a hardcoded special case in
+        # "Docs" category itself is always in Docs via a hardcoded special case in
         # _build_grouped_categories() and never needs to be in this set). Reversible: a
         # category flagged here keeps its own name/items intact, it's just pooled into the
         # Docs bucket for display instead of Resources — unlike moving items INTO the
-        # Documentation category (which physically relocates/merges them). See
+        # Docs category (which physically relocates/merges them). See
         # _toggle_docs_bucket_for_category(). A plain set of category names, loaded fresh
         # in load_config().
         self.docs_categories = set()
@@ -2842,28 +2842,28 @@ class ProjectFlowApp(QMainWindow):
         return widget
 
     def _ensure_documentation_category(self):
-        """Return the real category name to file Documentation items under, creating it
-        (canonically "Documentation") if this project has neither that nor the legacy
-        "Docs" name yet. Persists immediately via save_config_to_json() when it actually
-        creates the category — required because handle_item_move_to_category() re-reads
-        the config straight from disk, so an in-memory-only category wouldn't be found
-        as a move destination and the item would be lost (removed from source, never
-        inserted anywhere). Called lazily wherever something is actually about to be
-        filed there (Add Launcher, Move to category, Scan for Docs) — never eagerly on
-        project load, so a project that never uses it stays clutter-free."""
+        """Return the real category name to file Docs items under, creating it
+        (canonically "Docs") if this project has neither that nor the legacy
+        "Documentation" name yet. Persists immediately via save_config_to_json() when it
+        actually creates the category — required because handle_item_move_to_category()
+        re-reads the config straight from disk, so an in-memory-only category wouldn't be
+        found as a move destination and the item would be lost (removed from source,
+        never inserted anywhere). Called lazily wherever something is actually about to
+        be filed there (Add Launcher, Move to category, Scan for Docs) — never eagerly
+        on project load, so a project that never uses it stays clutter-free."""
         for cd in self.COLUMN_1:
-            if any(name in cd for name in ("Documentation", "Docs")):
-                return next(name for name in ("Documentation", "Docs") if name in cd)
-        self.COLUMN_1.append({"Documentation": []})
+            if any(name in cd for name in ("Docs", "Documentation")):
+                return next(name for name in ("Docs", "Documentation") if name in cd)
+        self.COLUMN_1.append({"Docs": []})
         self.save_config_to_json()
-        return "Documentation"
+        return "Docs"
 
     def _ensure_notes_category(self):
         """Return the real category name to file newly-created notes under (see
         new_note_file()) — a plain "Notes" category, created on first use and flagged
         into self.docs_categories (_toggle_docs_bucket_for_category()) so it renders
-        pooled into the Docs bucket alongside Documentation, but stays its own,
-        independently-editable category — deliberately distinct from Documentation,
+        pooled into the Docs bucket alongside the Docs category itself, but stays its
+        own, independently-editable category — deliberately distinct from Docs,
         which is reserved for project-folder-derived docs (Scan for Docs/Kickstart).
         The pinned project-note synthetic entry is unaffected either way; this is only
         for notes actually created via the "＋ New" button."""
@@ -2881,18 +2881,19 @@ class ProjectFlowApp(QMainWindow):
 
     def _ensure_project_files_category(self):
         """Return the real category name to file newly-created editor files under (see
-        new_code_file()) — a plain "Assets" category (canonically; "Project Files" is
-        recognized as a legacy alias for any project created before this name was
-        settled on, same dual-name pattern _ensure_documentation_category() uses for
-        "Documentation"/"Docs"), created on first use. No docs_categories flag: these
-        are working files, not documentation, so they render under Resources like any
-        other ordinary category."""
+        new_code_file()) — a plain "Documents" category (canonically; "Assets" and,
+        before that, "Project Files" are both recognized as legacy aliases for any
+        project created before this name was settled on, same dual-name pattern
+        _ensure_documentation_category() uses for "Docs"/"Documentation"), created on
+        first use. No docs_categories flag: these are working files, not documentation,
+        so they render under Resources like any other ordinary category."""
+        legacy_names = ("Documents", "Assets", "Project Files")
         for cd in self.COLUMN_1:
-            if any(name in cd for name in ("Assets", "Project Files")):
-                return next(name for name in ("Assets", "Project Files") if name in cd)
-        self.COLUMN_1.append({"Assets": []})
+            if any(name in cd for name in legacy_names):
+                return next(name for name in legacy_names if name in cd)
+        self.COLUMN_1.append({"Documents": []})
         self.save_config_to_json()
-        return "Assets"
+        return "Documents"
 
     def _ai_hidden_paths_key(self):
         """Absolute path of the current config — scopes ai_hidden_paths per project."""
@@ -2910,7 +2911,7 @@ class ProjectFlowApp(QMainWindow):
         """Hide an AI-category item (👁 toggle) — stored in .projectflow_settings.json,
         never the project JSON, since this is a personal declutter preference rather than
         project content. AI items aren't self.COLUMN_1 data — this is the only per-item
-        hide mechanism left; real Documentation/Resources items have no hide state."""
+        hide mechanism left; real Docs/Resources items have no hide state."""
         key = self._ai_hidden_paths_key()
         if not key:
             return
@@ -2923,7 +2924,7 @@ class ProjectFlowApp(QMainWindow):
 
     def _get_all_hidden_items(self):
         """Everything currently hidden from the AI bucket (the only place a per-item 👁
-        hide toggle still exists — real Documentation/Resources items have no hide
+        hide toggle still exists — real Docs/Resources items have no hide
         state, only delete) — for the "N hidden — Manage" dialog."""
         return [
             {'label': os.path.basename(abs_path), 'path': abs_path}
@@ -3037,7 +3038,7 @@ class ProjectFlowApp(QMainWindow):
         AI stays a non-destructive, purely dynamic pool (see _get_ai_category_items()):
         items are discovered from the filesystem, not from self.COLUMN_1, and never
         written to the project's JSON file. Docs is backed by one real category —
-        canonically named "Documentation" ("Docs" is accepted too, as a read-only legacy
+        canonically named "Docs" ("Documentation" is accepted too, as a read-only legacy
         alias for projects created before this name was settled on; see
         _ensure_documentation_category(), which is what all new items get filed under
         going forward) — behaving exactly like any other category (full drag-reorder/
@@ -3075,15 +3076,15 @@ class ProjectFlowApp(QMainWindow):
         real_category_buckets = []
         for cat_dict in self.COLUMN_1:
             for category_name, items in cat_dict.items():
-                # "Documentation" is always in the Docs bucket (a hardcoded special case —
+                # "Docs" is always in the Docs bucket (a hardcoded special case —
                 # filed here IS the classification, no heuristic, no hiding). Any OTHER
                 # category flagged into self.docs_categories (see
                 # _toggle_docs_bucket_for_category()) is pooled here too, but reversibly —
-                # unlike Documentation, its own name/identity isn't special-cased anywhere
+                # unlike Docs, its own name/identity isn't special-cased anywhere
                 # else, so removing the flag later puts it straight back in Resources with
                 # nothing to undo. Either way, true origin lets these render fully editable
                 # (see docstring above) — this is purely a DISPLAY bucket, not a data move.
-                if category_name in ("Documentation", "Docs") or category_name in self.docs_categories:
+                if category_name in ("Docs", "Documentation") or category_name in self.docs_categories:
                     for idx, item in enumerate(items):
                         buckets['Docs'].append(item)
                         self._group_view_origin[id(item)] = (category_name, idx)
@@ -3116,7 +3117,7 @@ class ProjectFlowApp(QMainWindow):
         the "👁 N hidden — Manage" button, and (per-item, see build_main_content) the
         drag-disable behavior for the still-pooled AI/pinned-notes items. edit_mode does NOT
         blanket-disable this: Docs/Resources both stay on the grouped view while editing
-        (Resources categories are real; Docs mixes a real Documentation category with the
+        (Resources categories are real; Docs mixes a real Docs category with the
         still-pooled AI/pinned-notes entries) — only Files/Apps fall back to raw self.COLUMN_1
         while editing, since there's nothing meaningful to manage on those tabs."""
         if self.layout_mode == "focus" and self.edit_mode and self.active_launcher_tab not in ("docs", "resources"):
@@ -3175,7 +3176,7 @@ class ProjectFlowApp(QMainWindow):
         return results, is_npm
 
     def _show_doc_scan_dialog(self):
-        """Scan a folder for documentation files and add selected ones to a Documentation category."""
+        """Scan a folder for documentation files and add selected ones to a Docs category."""
         scan_path = getattr(self, 'config_folder_path', None)
         if not scan_path or not os.path.isdir(scan_path):
             if hasattr(self, 'current_config_file') and self.current_config_file:
@@ -3189,7 +3190,7 @@ class ProjectFlowApp(QMainWindow):
             scan_path = chosen
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Scan for Documentation")
+        dlg.setWindowTitle("Scan for Docs")
         dlg.resize(580, 500)
         dlg.setStyleSheet(f"background-color: {self.t('bg_primary')}; color: {self.t('fg_primary')};")
 
@@ -3273,7 +3274,7 @@ class ProjectFlowApp(QMainWindow):
         btm_row = QHBoxLayout()
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setStyleSheet(btn_style)
-        add_btn = QPushButton("Add to Documentation")
+        add_btn = QPushButton("Add to Docs")
         add_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.t('bg_category')};
@@ -3303,7 +3304,7 @@ class ProjectFlowApp(QMainWindow):
 
             existing_paths = set()
             for cat_dict in self.COLUMN_1:
-                for name in ('Documentation', 'Docs'):
+                for name in ('Docs', 'Documentation'):
                     if name in cat_dict:
                         existing_paths |= {item[1] for item in cat_dict[name] if len(item) > 1}
 
@@ -3320,7 +3321,7 @@ class ProjectFlowApp(QMainWindow):
                 # uncheck it.
                 list_item.setCheckState(Qt.CheckState.Checked if already else Qt.CheckState.Unchecked)
                 if already:
-                    list_item.setToolTip("Already in Documentation category")
+                    list_item.setToolTip("Already in Docs category")
                     list_item.setForeground(QColor(self.t('fg_secondary')))
                 file_list.addItem(list_item)
 
@@ -3382,7 +3383,7 @@ class ProjectFlowApp(QMainWindow):
             dlg.accept()
             QMessageBox.information(
                 self, "Done",
-                f"Added {added} item{'s' if added != 1 else ''} to Documentation."
+                f"Added {added} item{'s' if added != 1 else ''} to Docs."
             )
 
         change_btn.clicked.connect(change_folder)
@@ -3593,14 +3594,14 @@ class ProjectFlowApp(QMainWindow):
         for group in indicator_groups:
             add_checkbox_section(group["category"], group["suggestions"])
 
-        # --- Documentation ---
+        # --- Docs ---
         found_docs, is_npm = self._scan_for_docs(folder_path)
         doc_suggestions = [
             {"id": f"doc_{i}", "label": f"{display}  —  {os.path.relpath(p, folder_path)}",
              "item": [display, p, app]}
             for i, (display, p, app) in enumerate(found_docs)
         ]
-        add_checkbox_section("Documentation", doc_suggestions)
+        add_checkbox_section("Docs", doc_suggestions)
         if is_npm and found_docs:
             npm_doc_note = QLabel("npm project detected — HTML files outside docs/ folders are excluded.")
             npm_doc_note.setStyleSheet(info_style)
@@ -3738,7 +3739,7 @@ class ProjectFlowApp(QMainWindow):
                                      website, website_launcher_checked, website_pin_checked, dialog,
                                      website_title="Project website"):
         """Apply handler for _show_kickstart_dialog(): writes every checked suggestion
-        into self.COLUMN_1 (Documentation items go through _ensure_documentation_category()
+        into self.COLUMN_1 (Docs items go through _ensure_documentation_category()
         to match Scan-for-Docs' own behavior; everything else creates/reuses a plain
         category dict the same way create_folder_project_config() used to), optionally
         writes a shell alias (_write_alias_to_file(), mirrors the manual add-alias flow —
@@ -3761,7 +3762,7 @@ class ProjectFlowApp(QMainWindow):
             if cb.isChecked():
                 selected_by_category.setdefault(category, []).append(item)
 
-        doc_items = selected_by_category.pop("Documentation", None)
+        doc_items = selected_by_category.pop("Docs", None)
         added = 0
 
         for category, items in selected_by_category.items():
@@ -6360,7 +6361,7 @@ StartupNotify=true
 
     def _toggle_open_all_for_category(self, category_name):
         """Flip whether the "Open All" button is active for `category_name` — opt-in, off
-        by default for every category including Documentation, since one click firing
+        by default for every category including Docs, since one click firing
         every item in a category is a real footgun now that alias/run launcher items can
         execute arbitrary commands (see open_all_in_group()'s own confirmation guard on
         top of this). Reached via the category header's right-click menu
@@ -6408,8 +6409,8 @@ StartupNotify=true
         Resources placement) in the Group-by-Type/Docs-Resources split view — reversible,
         the category keeps its own name/items either way (see self.docs_categories'
         docstring in __init__ for how this differs from physically moving items into the
-        Documentation category). Reached via the category header's right-click menu
-        (_show_category_context_menu); not offered for the Documentation category itself,
+        Docs category). Reached via the category header's right-click menu
+        (_show_category_context_menu); not offered for the Docs category itself,
         which is always in Docs via a separate hardcoded special case."""
         if category_name in self.docs_categories:
             self.docs_categories.discard(category_name)
@@ -7383,7 +7384,7 @@ StartupNotify=true
 
     def _preview_project_documents_path(self):
         """Non-mutating peek at where _get_or_create_project_documents_folder() would
-        resolve to — used only for the "Assets" folder-shortcut button's tooltip
+        resolve to — used only for the "Documents" folder-shortcut button's tooltip
         and highlight-matching (_build_folder_shortcuts_row), never to decide whether to
         create anything. Safe to call on every toolbar rebuild since
         _resolve_project_documents_slug()'s own collision check is read-only and this
@@ -10847,7 +10848,7 @@ function filterAliases(q) {{
         """True if `path` is a local file/folder path that doesn't exist directly but does
         resolve via the global path mappings (see _resolve_existing_path()) — drives the
         pale-blue "mapped path" launcher-button styling (see get_item_button_style()) for
-        Documentation/Resources items, matching the folder browser's own pale-blue path-label
+        Docs/Resources items, matching the folder browser's own pale-blue path-label
         indicator for the same underlying fallback."""
         if not path:
             return False
@@ -11884,10 +11885,10 @@ function filterAliases(q) {{
                         focus_resources_tab = self.layout_mode == "focus" and self.active_launcher_tab == "resources"
 
                         # Create a brand-new, blank markdown document directly in this
-                        # project's documents folder, filed under Documentation — the
+                        # project's documents folder, filed under Docs — the
                         # Docs-launcher-header counterpart to the Notes/Editor toolbars'
                         # own "＋ New" buttons, which create a blank file the same way but
-                        # file it under Notes/Project Files instead. Documentation-only
+                        # file it under Notes/Documents instead. Docs-only
                         # (like Upload Doc), so it shares that button's Resources-tab gate.
                         if not focus_resources_tab:
                             create_doc_btn = QPushButton("📄 Create")
@@ -11901,7 +11902,7 @@ function filterAliases(q) {{
                         # filed as a real launcher item — the file-picker-based counterpart
                         # to the same "＋ New" buttons above (which create a BLANK file,
                         # rather than copying an existing one in). Upload Doc files under
-                        # Documentation, Upload File under Project Files/Resources — see
+                        # Docs, Upload File under Documents/Resources — see
                         # upload_document_to_project()/upload_file_to_project().
                         if not focus_resources_tab:
                             upload_doc_btn = QPushButton("⬆ Upload Doc")
@@ -11938,7 +11939,7 @@ function filterAliases(q) {{
                     # while editing, since it's purely filesystem-derived, not a real category
                     # to rename/delete (see _build_grouped_categories()). "Docs" is excluded
                     # too: it's a display LABEL that can differ from the real backing category
-                    # name ("Documentation", or legacy "Docs" — see
+                    # name (legacy "Documentation", or "Docs" itself — see
                     # _ensure_documentation_category()), so renaming/deleting via this inline
                     # header could act on the wrong (or a nonexistent) category name. The "+
                     # Add Launcher" button below resolves the real name itself instead.
@@ -11997,21 +11998,23 @@ function filterAliases(q) {{
                         group_container_layout.addWidget(category_header)
                     else:
                         # VIEW MODE: category header. "Open All" is opt-in per category (off
-                        # by default, including Documentation — see
+                        # by default, including Docs — see
                         # _toggle_open_all_for_category()) rather than always shown, since one
                         # click firing every item in a category is a real footgun now that
                         # alias/run items can execute arbitrary commands.
                         #
                         # In the pooled Docs bucket, category_name is the display LABEL
-                        # ("Docs"), which can differ from the real backing category — resolve
-                        # to the true name (same best-effort logic as the CategoryDropZone
-                        # resolution above) so the opt-in flag — and the context menu's
-                        # rename/delete actions — read/write "Documentation" consistently
-                        # rather than a transient label that may not back any real category.
+                        # ("Docs"), which can differ from the real backing category on a
+                        # project that hasn't been touched since before this name was settled
+                        # on — resolve to the true name (same best-effort logic as the
+                        # CategoryDropZone resolution above) so the opt-in flag — and the
+                        # context menu's rename/delete actions — read/write that true name
+                        # consistently rather than a transient label that may not back any
+                        # real category.
                         if category_name == "Docs":
                             _open_all_name = next(
-                                (n for n in ("Documentation", "Docs") if any(n in cd for cd in self.COLUMN_1)),
-                                "Documentation"
+                                (n for n in ("Docs", "Documentation") if any(n in cd for cd in self.COLUMN_1)),
+                                "Docs"
                             )
                         else:
                             _open_all_name = category_name
@@ -12107,9 +12110,10 @@ function filterAliases(q) {{
                     group_layout.setSpacing(3)
 
                     # Create drop zone for drag-and-drop reordering (always active). For the
-                    # Docs bucket, category_name is the display LABEL ("Docs") which can now
-                    # differ from the real backing category ("Documentation", or legacy
-                    # "Docs" — see _ensure_documentation_category()); DraggableItemButton is
+                    # Docs bucket, category_name is the display LABEL ("Docs") which can
+                    # differ from the real backing category on a project that hasn't been
+                    # touched since before this name was settled on (legacy "Documentation"
+                    # — see _ensure_documentation_category()); DraggableItemButton is
                     # built with the item's TRUE category (see true_category below), so the
                     # drop zone must resolve to that same true name too, or same-category
                     # reorders would always be misdetected as cross-category moves, and a
@@ -12121,8 +12125,8 @@ function filterAliases(q) {{
                     # view of the Docs tab shouldn't have.
                     if category_name == "Docs":
                         _docs_real_name = next(
-                            (n for n in ("Documentation", "Docs") if any(n in cd for cd in self.COLUMN_1)),
-                            "Documentation"
+                            (n for n in ("Docs", "Documentation") if any(n in cd for cd in self.COLUMN_1)),
+                            "Docs"
                         )
                         category_drop_zone = CategoryDropZone(self, col_idx, _docs_real_name)
                     else:
@@ -12149,11 +12153,11 @@ function filterAliases(q) {{
                         # True origin first: a real category's items map to themselves; AI
                         # items and the pinned-notes entry have no real category backing them
                         # (sentinel None) — everything else filed under the Docs bucket is a
-                        # genuine Documentation-category item and resolves to its own real name.
+                        # genuine Docs-category item and resolves to its own real name.
                         true_category, true_idx = self._group_view_origin.get(id(item), (category_name, idx))
                         # Pooled (read-mostly) iff there's no real category behind it at all —
                         # AI items and the pinned-notes entry. Every other Docs-bucket item is
-                        # a real Documentation-category item and gets full drag/edit below.
+                        # a real Docs-category item and gets full drag/edit below.
                         is_pooled = self._is_grouped_view_active() and (
                             category_name == "AI" or true_category is None
                         )
@@ -12188,7 +12192,7 @@ function filterAliases(q) {{
                             # AI items are sourced from config_folder_path — if that root was
                             # only reachable via the path-mapping fallback (see
                             # _get_ai_category_items()), flag every item it produced as
-                            # "mapped" too, same pale-blue treatment as Documentation/Resources
+                            # "mapped" too, same pale-blue treatment as Docs/Resources
                             # items with their own missing-but-mapped path.
                             is_ai_via_mapping = category_name == "AI" and getattr(self, '_ai_via_mapping', False)
                             btn = QPushButton(f"{app_icon}{display_name}")
@@ -12610,9 +12614,10 @@ function filterAliases(q) {{
                         """)
                         # The Docs bucket's header reads "Docs" (a display label — see
                         # _build_grouped_categories()) but the real backing category may not
-                        # exist yet, or may be named "Documentation"/legacy "Docs" — resolve
-                        # (and auto-create if needed) via _ensure_documentation_category()
-                        # rather than adding into the literal label "Docs".
+                        # exist yet, or may still carry its legacy "Documentation" name —
+                        # resolve (and auto-create if needed) via
+                        # _ensure_documentation_category() rather than adding into the
+                        # literal label "Docs" directly.
                         if category_name == "Docs":
                             add_entry_btn.clicked.connect(
                                 lambda checked=False, c_idx=col_idx:
@@ -12766,7 +12771,7 @@ function filterAliases(q) {{
                     column_layout.addWidget(manage_hidden_btn)
 
             # Add "Add Category" button in edit mode — hidden for the Focus-layout Docs tab
-            # specifically: Docs is backed by one fixed "Documentation" category (see
+            # specifically: Docs is backed by one fixed "Docs" category (see
             # _ensure_documentation_category()), so "add a new category" here doesn't map to
             # anything meaningful the way it does for Resources. A "Scan for docs" button
             # (same action as the Project Settings viewer's own, see _build_settings_form())
@@ -15447,7 +15452,7 @@ function filterAliases(q) {{
         add_todo_action = menu.addAction("☑  Add as To-Do")
 
         # "Move to category" physically relocates the item into any real category. A fixed
-        # "Documentation (docs)" entry is always offered first regardless of whether that
+        # "Docs" entry is always offered first regardless of whether that
         # category exists yet — moving into it is how a real item gets promoted to show
         # under the Docs tab — auto-creating it on first use via
         # _ensure_documentation_category(). Real category names come after, deduped against
@@ -15457,11 +15462,11 @@ function filterAliases(q) {{
             # Blue folder icon, not the 📁 emoji — renders yellow/manila in most color-emoji
             # fonts; never use a yellow folder glyph for folders/files in this project.
             move_menu = menu.addMenu(self._blue_folder_icon(), "Move to category")
-            if category_name not in ("Documentation", "Docs"):
-                move_actions[move_menu.addAction("📄  Documentation (docs)")] = "__DOCS__"
+            if category_name not in ("Docs", "Documentation"):
+                move_actions[move_menu.addAction("📄  Docs")] = "__DOCS__"
             real_category_names = [list(cd.keys())[0] for cd in self.COLUMN_1 if cd]
             for real_name in real_category_names:
-                if real_name in (category_name, "Documentation", "Docs"):
+                if real_name in (category_name, "Docs", "Documentation"):
                     continue  # already there, or already offered as the fixed entry above
                 move_actions[move_menu.addAction(real_name)] = real_name
 
@@ -15510,11 +15515,11 @@ function filterAliases(q) {{
         toggle_label = '⚡  Disable "Open All"' if open_all_enabled else '⚡  Enable "Open All"'
         toggle_action = menu.addAction(toggle_label)
 
-        # Not offered for the Documentation category itself — it's always in the Docs
+        # Not offered for the Docs category itself — it's always in the Docs
         # bucket via a hardcoded special case in _build_grouped_categories(), so a toggle
         # here would have no visible effect either way.
         bucket_action = None
-        if category_name not in ("Documentation", "Docs"):
+        if category_name not in ("Docs", "Documentation"):
             in_docs_bucket = category_name in self.docs_categories
             bucket_label = "📂  Move to Resources" if in_docs_bucket else "📄  Move to Docs"
             bucket_action = menu.addAction(bucket_label)
@@ -18254,7 +18259,7 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(home_btn)
 
         # The old "⌂⌂ project folder" and icon-only "Docs" buttons that used to sit here
-        # were removed — both are now covered by the spelled-out "Work Folder"/"Assets"
+        # were removed — both are now covered by the spelled-out "Work Folder"/"Documents"
         # shortcuts in the row above (_build_folder_shortcuts_row), which made
         # having both a redundant, confusing duplicate. The "pin current folder as this
         # project's default" action "⌂⌂" also used to provide while unpinned is still
@@ -18396,7 +18401,7 @@ function filterAliases(q) {{
         toolbar_layout.addWidget(home_btn)
 
         # The old "⌂⌂ project folder" and icon-only "Docs" buttons that used to sit here
-        # were removed — both are now covered by the spelled-out "Work Folder"/"Assets"
+        # were removed — both are now covered by the spelled-out "Work Folder"/"Documents"
         # shortcuts in the row above (_build_folder_shortcuts_row). Note: unlike
         # create_folder_toolbar's main toolbar, this panel has no equivalent 📌
         # pin-default button of its own — "pin current folder as this project's default"
@@ -19360,13 +19365,13 @@ function filterAliases(q) {{
         """Adds a row of quick-jump buttons for _get_folder_location_shortcuts()'s result,
         one per candidate folder location, directly above the caller's own toolbar (called
         as the first line of create_folder_toolbar()/_build_launcher_folder_panel()) — plus
-        an always-present "Assets" button, added right after "Work Folder" (or
+        an always-present "Documents" button, added right after "Work Folder" (or
         first, if there's no folder_path pinned yet so "Work Folder" doesn't appear at
-        all). "Assets" used to be a separate icon-only "Docs" button lower down in
+        all). "Documents" used to be a separate icon-only "Docs" button lower down in
         the toolbar itself; moved up here per user feedback that having both a spelled-out
         "Work Folder" shortcut in this row AND a redundant icon-only "⌂⌂" duplicate of it
         in the toolbar below was confusing. Unlike every other candidate in this row,
-        "Assets" doesn't come from _get_folder_location_shortcuts() and is never
+        "Documents" doesn't come from _get_folder_location_shortcuts() and is never
         skipped — a documents subfolder is always resolvable/creatable on click, never
         "unset" (see _get_or_create_project_documents_folder()) — so this row is now never
         fully empty either, unlike before.
@@ -19431,11 +19436,11 @@ function filterAliases(q) {{
         for name, path in shortcuts:
             add_shortcut_button(name, path, lambda checked=False, p=path, s=side: self._jump_to_folder_shortcut(p, s))
             if name == "Work Folder" and not inserted_project_files:
-                add_shortcut_button("Assets", self._preview_project_documents_path(),
+                add_shortcut_button("Documents", self._preview_project_documents_path(),
                                      lambda checked=False, s=side: self.folder_go_project_documents(s))
                 inserted_project_files = True
         if not inserted_project_files:
-            add_shortcut_button("Assets", self._preview_project_documents_path(),
+            add_shortcut_button("Documents", self._preview_project_documents_path(),
                                  lambda checked=False, s=side: self.folder_go_project_documents(s))
 
         row_layout.addStretch()
@@ -19450,7 +19455,7 @@ function filterAliases(q) {{
         # the browsed folder instead of always the fixed documents/<slug>/ folder.
         add_file_btn = QPushButton("⬆ Add File...")
         add_file_btn.setStyleSheet(btn_style)
-        add_file_btn.setToolTip("Copy a file from elsewhere into this folder, and add it to Assets/Resources")
+        add_file_btn.setToolTip("Copy a file from elsewhere into this folder, and add it to Documents/Resources")
         add_file_btn.clicked.connect(lambda checked=False, s=side: self._add_file_to_current_folder(s))
         row_layout.addWidget(add_file_btn)
 
@@ -20246,7 +20251,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     def _notes_paper_css(self):
         """CSS for the 'paper on page' look — a Documentary-style paper card floating
         on a tinted page background, with a drop shadow. Used both for the Notes panel and
-        the general Muya markdown-file viewer (e.g. clicking a Documentation launcher item).
+        the general Muya markdown-file viewer (e.g. clicking a Docs launcher item).
         Light mode uses a light paper-type theme color; dark mode uses the
         specified dark palette. Paper opacity is higher in Standard layout's narrower
         3-column view (90%) than in Focus layout's wider 2-column one (80%).
@@ -21439,7 +21444,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         _get_or_create_project_documents_folder()), then opens it as a new Editor tab.
         The suggested "untitled.txt" is just a starting point in an editable field —
         typing a different extension (e.g. "page.html") is respected as-is. Also files
-        it as a real launcher item under the "Assets" category (Resources tab,
+        it as a real launcher item under the "Documents" category (Resources tab,
         auto-created — see _ensure_project_files_category()) and refreshes any open
         folder browser view, mirroring new_note_file()'s equivalent behavior."""
         from PyQt6.QtWidgets import QInputDialog
@@ -21504,7 +21509,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         — prompts for an existing file anywhere on disk, copies it into whichever folder
         this side is CURRENTLY browsing (unlike _upload_file_to_documents(), which always
         targets the fixed documents/<slug>/ folder regardless of what's on screen), and
-        files it as a launcher item under Assets/Resources — same copy-then-file
+        files it as a launcher item under Documents/Resources — same copy-then-file
         shape, just a variable destination tied to wherever you're actually looking.
         Requested directly for browsing a project's own working folder (e.g. "Work
         Folder"), where pulling in a file from elsewhere had no convenient path short of
@@ -21544,9 +21549,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         _get_or_create_project_documents_folder()), then opens it via the layout-aware
         _open_markdown_file() dispatcher (Notes tab in Focus layout, the general webview's
         Muya editor in Standard layout). Files it as a real launcher item under
-        Documentation (auto-created via _ensure_documentation_category()), app="default" —
+        Docs (auto-created via _ensure_documentation_category()), app="default" —
         mirrors new_note_file()/new_code_file()'s identical create-a-blank-file pattern,
-        just filing into Documentation instead of Notes/Assets."""
+        just filing into Docs instead of Notes/Documents."""
         from PyQt6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "Create Document", "File name:", text="New Document.md")
         if not ok or not name.strip():
@@ -21575,14 +21580,14 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def upload_document_to_project(self):
         """Launcher header "⬆ Upload Doc" button: uploads a file into this project's
-        documents folder and files it under Documentation (auto-created via
+        documents folder and files it under Docs (auto-created via
         _ensure_documentation_category()), app="default"."""
         category = self._ensure_documentation_category()
         self._upload_file_to_documents(category, "Upload a document to the Project Documents folder")
 
     def upload_file_to_project(self):
         """Launcher header "⬆ Upload File" button: uploads a file into this project's
-        documents folder and files it under Assets/Resources (auto-created via
+        documents folder and files it under Documents/Resources (auto-created via
         _ensure_project_files_category()), app="default"."""
         category = self._ensure_project_files_category()
         self._upload_file_to_documents(category, "Upload a file to the Project Documents folder")
@@ -21880,22 +21885,22 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         add_action = menu.addAction("Add to Project...")
         add_action.triggered.connect(lambda: self.show_add_to_project_dialog(path))
 
-        # Add to Documentation (files only) — two variants: a lightweight LINK to the
+        # Add to Docs (files only) — two variants: a lightweight LINK to the
         # file at its current location (e.g. still on this machine only), and a real
         # COPY into the target project's own documents/<slug>/ folder (so it's
         # actually available from any machine that syncs that folder — e.g. a file in
         # ~/Downloads on the laptop, uploaded so it's also reachable from the
         # desktop). Both show the same project-picker shape; only what happens after
         # picking differs — and, per direct user feedback, which category the item
-        # lands in: Link stays targeted at Documentation (it's literally what it's
-        # for), but Upload/copy files under "Assets" instead — a generic
+        # lands in: Link stays targeted at Docs (it's literally what it's
+        # for), but Upload/copy files under "Documents" instead — a generic
         # "add this file to the project" action reads more like Upload File/New File
-        # (also "Assets") than like something documentation-specific, and it's
+        # (also "Documents") than like something documentation-specific, and it's
         # just as easy to move afterward (drag, or "Move to category") if it turns out
-        # to belong in Documentation for a given file. See add_resource_to_documentation()
+        # to belong in Docs for a given file. See add_resource_to_documentation()
         # (link) vs upload_resource_to_project_files() (copy).
         if item_type != "dir":
-            doc_action = menu.addAction("Add to Documentation (link)...")
+            doc_action = menu.addAction("Add to Docs (link)...")
             doc_action.triggered.connect(lambda: self.show_add_to_documentation_dialog(path))
 
             upload_action = menu.addAction("⬆ Upload to Project (copy)...")
@@ -21955,7 +21960,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             open_in_viewer_action.triggered.connect(lambda checked, p=path: self.preview_in_folder_browser(p))
 
         # Rename, Copy to.../Move to... (folder-picker dialog) — available for both files
-        # and folders, unlike "Add to Documentation (link)..."/"Upload to Project (copy)..."
+        # and folders, unlike "Add to Docs (link)..."/"Upload to Project (copy)..."
         # above, which are files-only.
         menu.addSeparator()
         rename_action = menu.addAction("✏️ Rename...")
@@ -22343,8 +22348,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         a hardcoded "Added Resources" category, reading/writing that project's JSON directly
         from disk since it may not even be the currently-loaded project. This one always
         targets the project already open in front of you, and lets you pick (or type a new)
-        category — including Documentation, auto-created via _ensure_documentation_category()
-        the same way every other Documentation entry point does.
+        category — including Docs, auto-created via _ensure_documentation_category()
+        the same way every other Docs entry point does.
         """
         if not getattr(self, 'current_config_file', None):
             QMessageBox.information(self, "Add to Project", "No project is currently open.")
@@ -22386,14 +22391,14 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         category_combo.setStyleSheet(input_style)
         category_combo.setToolTip("Pick an existing category, or type a new name to create one")
 
-        # Documentation is always offered first — even before it's ever been created for
+        # Docs is always offered first — even before it's ever been created for
         # this project — since it's the one category every "add a doc/file" flow in this
         # app steers people toward (Scan for Docs, Kickstart, Move to category all do the
         # same). Existing categories follow in their on-disk order; picking the literal
-        # "Documentation"/legacy "Docs" name resolves to whichever already exists below.
+        # "Docs"/legacy "Documentation" name resolves to whichever already exists below.
         existing_categories = [name for cd in self.COLUMN_1 for name in cd.keys()]
-        doc_name = next((n for n in ("Documentation", "Docs") if n in existing_categories), None)
-        combo_items = ([] if doc_name else ["Documentation"]) + existing_categories
+        doc_name = next((n for n in ("Docs", "Documentation") if n in existing_categories), None)
+        combo_items = ([] if doc_name else ["Docs"]) + existing_categories
         category_combo.addItems(combo_items)
         layout.addRow(category_label, category_combo)
 
@@ -22410,7 +22415,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if not name or not category:
             return
 
-        if category in ("Documentation", "Docs"):
+        if category in ("Docs", "Documentation"):
             category = self._ensure_documentation_category()
         elif not any(category in cd for cd in self.COLUMN_1):
             self.COLUMN_1.append({category: []})
@@ -22582,7 +22587,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self.refresh_projects()
 
     def show_add_to_documentation_dialog(self, file_path):
-        """Show dialog to select which project to add the file to as a documentation entry"""
+        """Show dialog to select which project to add the file to as a Docs entry"""
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
         projects = []
 
@@ -22592,18 +22597,18 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                     projects.append(f[:-5])
 
         if not projects:
-            QMessageBox.warning(self, "Add to Documentation", f"No project files found in {projects_dir}")
+            QMessageBox.warning(self, "Add to Docs", f"No project files found in {projects_dir}")
             return
 
         projects.sort(key=str.lower)
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Add to Documentation")
+        dialog.setWindowTitle("Add to Docs")
         dialog.setMinimumWidth(300)
         layout = QVBoxLayout(dialog)
 
         filename = os.path.basename(file_path)
-        label = QLabel(f"Add '{filename}' to documentation in which project?")
+        label = QLabel(f"Add '{filename}' to Docs in which project?")
         layout.addWidget(label)
 
         combo = QComboBox()
@@ -22629,7 +22634,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self.add_resource_to_documentation(file_path, project_path)
 
     def add_resource_to_documentation(self, file_path, project_path):
-        """Add a file to a project's 'Documentation' category"""
+        """Add a file to a project's 'Docs' category (recognizing the legacy
+        'Documentation' name on an existing project, same dual-name pattern as
+        _ensure_documentation_category())"""
         try:
             with open(project_path, 'r') as f:
                 data = json.load(f)
@@ -22644,21 +22651,23 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         column1 = data['columns'][0]
 
-        # Find or create "Documentation" category
+        # Find or create "Docs" category (legacy "Documentation" recognized too)
         doc_category = None
         for category_dict in column1:
-            if isinstance(category_dict, dict) and "Documentation" in category_dict:
-                doc_category = category_dict["Documentation"]
-                break
+            if isinstance(category_dict, dict):
+                matched = next((n for n in ("Docs", "Documentation") if n in category_dict), None)
+                if matched:
+                    doc_category = category_dict[matched]
+                    break
 
         if doc_category is None:
             doc_category = []
-            column1.append({"Documentation": doc_category})
+            column1.append({"Docs": doc_category})
 
         # Check for duplicates
         existing_paths = [item[1] for item in doc_category if len(item) > 1]
         if file_path in existing_paths:
-            QMessageBox.information(self, "Add to Documentation", "This file is already in the Documentation category.")
+            QMessageBox.information(self, "Add to Docs", "This file is already in the Docs category.")
             return
 
         # Display name: filename stem with underscores/hyphens replaced by spaces
@@ -22682,7 +22691,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return
 
         project_name = os.path.basename(project_path).replace('.json', '')
-        QMessageBox.information(self, "Add to Documentation", f"Added '{display_name}' to {project_name}")
+        QMessageBox.information(self, "Add to Docs", f"Added '{display_name}' to {project_name}")
 
         if project_path == self.current_config_file:
             self.refresh_projects()
@@ -22692,7 +22701,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         upload (see the right-click menu's "⬆ Upload to Project (copy)..." action,
         _build_folder_context_menu()) — same project-picker shape, just calls
         upload_resource_to_project_files() instead of add_resource_to_documentation()
-        on accept. Files under "Assets", not Documentation — see the calling
+        on accept. Files under "Documents", not Docs — see the calling
         menu's own comment for why."""
         projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
         projects = []
@@ -22766,8 +22775,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def upload_resource_to_project_files(self, file_path, project_path):
         """Copy file_path INTO project_path's own documents/<slug>/ folder and file
-        it under 'Assets' (recognizing the legacy 'Project Files' name on an existing
-        project, same dual-name pattern as _ensure_project_files_category()),
+        it under 'Documents' (recognizing the legacy 'Assets'/'Project Files' names on
+        an existing project, same dual-name pattern as _ensure_project_files_category()),
         app='default' — the copy-based sibling of
         add_resource_to_documentation() above (which only references file_path at
         its original location). This is what actually makes the file available on
@@ -22779,10 +22788,10 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         project_path isn't necessarily the currently-loaded project — same
         arbitrary-project convention add_resource_to_documentation() already uses.
 
-        Files under "Assets" rather than "Documentation", unlike the link
+        Files under "Documents" rather than "Docs", unlike the link
         variant above — a generic "copy this file into the project" action reads
-        more like Upload File/New File (also "Assets") than something
-        documentation-specific; moving an individual item to Documentation
+        more like Upload File/New File (also "Documents") than something
+        documentation-specific; moving an individual item to Docs
         afterward (drag, or the right-click "Move to category" menu) is just as
         easy as it would be the other way around."""
         try:
@@ -22814,13 +22823,13 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         files_category = None
         for category_dict in column1:
             if isinstance(category_dict, dict):
-                matched = next((n for n in ("Assets", "Project Files") if n in category_dict), None)
+                matched = next((n for n in ("Documents", "Assets", "Project Files") if n in category_dict), None)
                 if matched:
                     files_category = category_dict[matched]
                     break
         if files_category is None:
             files_category = []
-            column1.append({"Assets": files_category})
+            column1.append({"Documents": files_category})
 
         stem = os.path.splitext(filename)[0]
         display_name = self._titleize_stem(stem)
