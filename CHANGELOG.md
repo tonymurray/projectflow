@@ -47,9 +47,15 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   since that already *is* the packaged `.exe` with nothing else to point at. Also
   guards against appending a stray `None` arg if no project is currently loaded.
   Verified directly (mocking `subprocess.Popen` to capture args rather than actually
-  spawning anything) for the source, frozen, and no-config-loaded cases.
-  `open_config_in_new_window()` has the identical bare-script-path pattern and is
-  likely subject to the same issue — flagged, not fixed in this pass.
+  spawning anything) for the source, frozen, and no-config-loaded cases. The fix was
+  extracted into a shared `_relaunch_args(config_path=None)` helper so this one parsing
+  site can't quietly diverge from the others, and applied to the two sibling call sites
+  with the identical bare-script-path pattern: `open_config_in_new_window()` (the
+  "open in new window" action, used by the project mega-menu etc. — same Windows risk
+  as `restart_application()`) and `open_config_in_new_desktop()` (KDE-only "open in a
+  new virtual desktop" action — not reachable on Windows at all since it's gated behind
+  `qdbus`/KDE detection, fixed anyway for consistency rather than leaving one caller of
+  the new helper's sibling pattern unfixed next to it).
 
 ## 2026-10-19 (Desktop, Help content caught up to the Docs/Documents rename)
 

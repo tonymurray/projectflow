@@ -14260,8 +14260,7 @@ function filterAliases(q) {{
 
     def open_config_in_new_window(self, config_path):
         """Launch a new instance of ProjectFlow with the specified config"""
-        script_path = os.path.join(self.script_dir, "projectflow.py")
-        subprocess.Popen([script_path, config_path], start_new_session=True)
+        subprocess.Popen(self._relaunch_args(config_path), start_new_session=True)
 
     def _can_open_in_new_desktop(self):
         """Return True if the current DE supports opening in a new virtual desktop."""
@@ -14300,8 +14299,7 @@ function filterAliases(q) {{
                 timeout=3
             )
 
-            script_path = os.path.join(self.script_dir, "projectflow.py")
-            subprocess.Popen([script_path, config_path], start_new_session=True)
+            subprocess.Popen(self._relaunch_args(config_path), start_new_session=True)
 
         except Exception as e:
             QMessageBox.warning(self, "New Desktop", f"Could not create virtual desktop:\n{str(e)}")
@@ -24205,19 +24203,27 @@ Project created: {date_str}
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "Upgrade Error", str(e))
 
-    def restart_application(self):
-        """Restart the application (used by check_for_upgrade() after a successful pull).
-        A bare script path isn't directly executable via subprocess.Popen on Windows
-        (no shell=True here, unlike Linux where the shebang + executable bit make that
-        work) — must relaunch through the Python interpreter itself. A PyInstaller-frozen
-        build has no script to point at either; sys.executable there IS the .exe."""
+    def _relaunch_args(self, config_path=None):
+        """Build the subprocess.Popen() args to launch a fresh ProjectFlow instance —
+        shared by restart_application()/open_config_in_new_window()/
+        open_config_in_new_desktop(), so this one parsing site can't quietly diverge
+        from the others (see e.g. _parse_alias_rest()'s own history for why that's a
+        real risk, not just tidiness). A bare script path isn't directly executable via
+        subprocess.Popen on Windows (no shell=True here, unlike Linux where the shebang
+        + executable bit make that work) — must relaunch through the Python interpreter
+        itself. A PyInstaller-frozen build has no script to point at either;
+        sys.executable there IS the .exe."""
         if getattr(sys, 'frozen', False):
             args = [sys.executable]
         else:
             args = [sys.executable, os.path.join(self.script_dir, "projectflow.py")]
-        if self.current_config_file:
-            args.append(self.current_config_file)
-        subprocess.Popen(args, start_new_session=True)
+        if config_path:
+            args.append(config_path)
+        return args
+
+    def restart_application(self):
+        """Restart the application (used by check_for_upgrade() after a successful pull)."""
+        subprocess.Popen(self._relaunch_args(self.current_config_file), start_new_session=True)
         QApplication.quit()
 
     def regenerate_desktop_file(self):
