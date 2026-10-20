@@ -41,10 +41,23 @@ ROOT = SPECPATH
 # real files rather than trusting default archive-based bundling.
 debugpy_datas, debugpy_binaries, debugpy_hiddenimports = collect_all('debugpy')
 
+# Same root-cause category as debugpy above, found via a real build: PyMuPDF's
+# `fitz` (the import name projectflow.py uses) is a thin compatibility alias
+# over its actual package, `pymupdf` — and that real package ships its layout-
+# analysis feature's ONNX model config as a genuine on-disk data file,
+# `pymupdf/layout/resources/onnx/layout_rf2.4.1+imf1.yaml`, which PyInstaller's
+# static analysis does not auto-bundle (it only follows *code* imports, not
+# arbitrary data files a package reads via its own path logic at runtime):
+#   FileNotFoundError: ...\pymupdf\layout\resources\onnx\layout_rf2.4.1+imf1.yaml
+# collect_all('pymupdf') (not 'fitz' — the data files live under the real
+# package's own directory, not the alias's) bundles it as a real file rather
+# than compressing it into PyInstaller's PYZ archive.
+pymupdf_datas, pymupdf_binaries, pymupdf_hiddenimports = collect_all('pymupdf')
+
 a = Analysis(
     ['projectflow.py'],
     pathex=[ROOT],
-    binaries=debugpy_binaries,
+    binaries=debugpy_binaries + pymupdf_binaries,
     datas=[
         ('assets', 'assets'),          # includes assets/muya, assets/codemirror,
                                         # assets/monaco (~24MB, unpruned by design —
@@ -63,14 +76,14 @@ a = Analysis(
         # themes.py: a normal top-level `from themes import ...` in projectflow.py —
         # confirmed already bundled correctly by PyInstaller's static analysis (the
         # first real build got past theme loading before failing elsewhere).
-    ] + debugpy_datas,
+    ] + debugpy_datas + pymupdf_datas,
     hiddenimports=[
         # Safety net only — PyQt6's sip binding module is occasionally missed by
         # static analysis on some PyInstaller/PyQt6 version combinations. Leave
         # commented out unless the build log or a runtime ModuleNotFoundError says
         # otherwise:
         # 'PyQt6.sip',
-    ] + debugpy_hiddenimports,
+    ] + debugpy_hiddenimports + pymupdf_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

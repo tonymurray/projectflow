@@ -31,6 +31,13 @@ Some KDE/Linux-only integrations aren't available and fall back gracefully:
 
 ## Option A — Download the prebuilt release
 
+> **Known issue in `v2026.10.20`**: this first prebuilt release crashes on launch with
+> `FileNotFoundError: ...\pymupdf\layout\resources\onnx\layout_rf2.4.1+imf1.yaml` — a PyInstaller
+> packaging gap (a PyMuPDF data file wasn't bundled), not a problem with your Windows machine.
+> Already fixed in `projectflow.spec` for the next tagged release — if you hit this, either grab
+> the next release once published, or use Option B in the meantime (see Troubleshooting below
+> for the full explanation).
+
 1. Go to the [Releases page](https://github.com/tonymurray/projectflow/releases) and download
    the latest `ProjectFlow-win-vYYYY.MM.DD.zip`.
 2. Extract it anywhere you have write access — e.g. `Documents\ProjectFlow` or a `Programs`
@@ -262,3 +269,29 @@ re-extracting a source ZIP into the same folder) — only the application code i
 - **Terminal viewer looks different from the Linux screenshots** — expected; Windows falls back
   to the qtconsole backend (see "What's different on Windows" above), which doesn't support
   interactive full-screen programs like `nano`/`vim`/`htop`.
+- **A Windows warning pops up when running `ProjectFlow.exe` (Option A)** — expected and not
+  specific to this app; it isn't code-signed (no paid Authenticode certificate), so Windows has
+  no way to vouch for who built it. Two different warnings can show up, and they behave
+  differently:
+  - **"Open File – Security Warning"** (has an *"Always ask before opening this file"*
+    checkbox): leave it checked and it reappears every launch; uncheck it, or right-click
+    `ProjectFlow.exe` → Properties → check **"Unblock"** → OK, and it's gone for good *for that
+    specific file*.
+  - **Windows Defender SmartScreen** ("Windows protected your PC" → "More info" → "Run
+    anyway"): once you click "Run anyway," Windows remembers that choice for *that exact file*
+    and won't ask again for it.
+  - Either way, this comes back on **every new release** you download (a new build is a new,
+    unrecognized file to Windows, even though it's the same app) — it's not a one-time thing
+    across versions, only per downloaded file. The only real fix is code-signing the `.exe` in
+    CI, a cost/process decision not yet made.
+- **`FileNotFoundError: ...\pymupdf\layout\resources\onnx\layout_rf2.4.1+imf1.yaml` on launch
+  (Option A or C)** — a PyInstaller packaging gap: PyMuPDF (imported as `fitz` in this app, but
+  its actual package directory is `pymupdf` — `fitz` is just a thin compatibility alias) ships a
+  layout-analysis ONNX model config as a real on-disk data file, which PyInstaller's static
+  analysis doesn't auto-bundle since it only follows code imports, not a package's own runtime
+  file reads. Same root-cause category as the `debugpy._vendored` fix already documented inline
+  in `projectflow.spec` — both fixed the same way, via `collect_all('pymupdf')`/
+  `collect_all('debugpy')` forcing their data files to be bundled as real files rather than
+  compressed into PyInstaller's archive. Fixed in `projectflow.spec` as of the build immediately
+  after `v2026.10.20` (that specific release predates the fix — see the callout at the top of
+  Option A above).

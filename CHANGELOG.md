@@ -36,6 +36,26 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   moved from the gitignored `docs/` folder to the repo root (`INSTALL_WINDOWS.md`) so it's
   actually trackable/shareable, and linked from `README.md`'s Windows section.
 
+### Fixed
+- **`v2026.10.20`'s packaged `.exe` crashed on launch** with `FileNotFoundError: ...\pymupdf\
+  layout\resources\onnx\layout_rf2.4.1+imf1.yaml` — found via the actual first real download
+  of the CI-built release (PyInstaller can't cross-compile, so nothing short of a real Windows
+  run ever surfaces this class of bug). Same root-cause category as the `debugpy._vendored` fix
+  already documented inline in `projectflow.spec`: PyMuPDF (`import fitz` in this app, but the
+  real package directory is `pymupdf` — `fitz` is a thin compatibility alias) ships a
+  layout-analysis ONNX model config as a genuine on-disk data file, which PyInstaller's static
+  analysis doesn't auto-bundle, since it only follows code imports, not a package's own runtime
+  file reads. Fixed identically — `collect_all('pymupdf')` in `projectflow.spec`, bundling its
+  data/binaries/hidden-imports as real files rather than compressing them into PyInstaller's
+  PYZ archive.
+- **`get_version()`'s footer display** also had its own, unrelated pre-existing issue flagged in
+  passing while discussing the above: it ran a live `git describe --tags --always --dirty` +
+  `git log` on every launch, which (a) needs a `.git` folder a packaged release doesn't have,
+  (b) showed an alarming-looking `-dirty` suffix for completely unrelated local changes, and (c)
+  showed a to-the-minute commit timestamp nobody needed. Now just reads the same `VERSION` file
+  the update-check feature already uses — works identically from source or packaged, same
+  source of truth everywhere.
+
 ## 2026-10-20 (Desktop, Settings → Features tab; restart_application() Windows fix)
 
 ### Added
