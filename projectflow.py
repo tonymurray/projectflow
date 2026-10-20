@@ -1922,6 +1922,8 @@ class ProjectFlowApp(QMainWindow):
                     "color_order": [],  # user-ordered list of color hex strings for swatch priority
                     "launcher_tab_order": [],  # user-ordered list of launcher tab ids (docs/resources/files/apps)
                     "viewer_tab_order": [],  # user-ordered list of viewer tab ids (notes/code/console/webview/pdf/image/time)
+                    "disabled_launcher_tabs": [],  # Settings -> Features: hidden launcher tab ids
+                    "disabled_viewer_tabs": [],  # Settings -> Features: hidden viewer tab ids
                     "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
                     "folder_show_images": False,  # Show image thumbnails in folder icon-grid view
                     "folder_icon_zoom_index": self.ICON_ZOOM_DEFAULT_INDEX,  # Index into ICON_ZOOM_FACTORS
@@ -2095,7 +2097,7 @@ class ProjectFlowApp(QMainWindow):
 
         Args:
             initial_tab: Index of tab to show (0=Settings, 1=Themes, 2=Applications,
-                3=Integrations, 4=Icons, 5=Launch Handlers)
+                3=Integrations, 4=Icons, 5=Launch Handlers, 6=Features)
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("ProjectFlow Settings")
@@ -2114,6 +2116,7 @@ class ProjectFlowApp(QMainWindow):
         integrations_tab = self._create_integrations_tab()
         icons_tab = self._create_icons_tab()
         handlers_tab = self._create_handlers_tab()
+        features_tab = self._create_features_tab()
 
         tabs.addTab(settings_tab, "Settings")
         tabs.addTab(themes_tab, "Themes")
@@ -2121,6 +2124,7 @@ class ProjectFlowApp(QMainWindow):
         tabs.addTab(integrations_tab, "Integrations")
         tabs.addTab(icons_tab, "Icons")
         tabs.addTab(handlers_tab, "Launch Handlers")
+        tabs.addTab(features_tab, "Features")
 
         # Set initial tab if specified
         if initial_tab > 0 and initial_tab < tabs.count():
@@ -2838,6 +2842,112 @@ class ProjectFlowApp(QMainWindow):
         bulk_tag_row.addWidget(bulk_tag_btn)
         bulk_tag_row.addWidget(bulk_tag_desc)
         layout.addRow(bulk_tag_row)
+
+        return widget
+
+    def _create_features_tab(self):
+        """Create the Features tab — lets the user hide individual Launcher/Viewer tabs
+        they don't use (e.g. a Windows user who never touches Terminal/Editor/PDF/Image),
+        decluttering both tab rows. Global/machine-wide (settings['disabled_launcher_tabs']/
+        ['disabled_viewer_tabs']), same convention as launcher_tab_order/viewer_tab_order.
+        See _is_launcher_tab_enabled()/_is_viewer_tab_enabled() for how these are read."""
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        section_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px; padding-top: 8px;"
+        check_style = f"color: {self.t('fg_primary')};"
+        desc_style = f"color: {self.t('fg_secondary')}; font-size: 11px;"
+
+        def add_desc(text):
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setStyleSheet(desc_style)
+            layout.addRow(label)
+
+        # === Launcher Tabs section ===
+        launcher_section = QLabel("Launcher Tabs")
+        launcher_section.setStyleSheet(section_style)
+        layout.addRow(launcher_section)
+        add_desc(
+            "Hide tabs in the Focus-layout launcher column you don't use. Docs and "
+            "Resources can't both be hidden — hiding one merges its items into the other "
+            "as a single stacked list."
+        )
+
+        launcher_tab_defs = {
+            "docs": "Docs",
+            "resources": "Resources",
+            "files": "Files",
+            "apps": "Apps",
+        }
+        self._settings_launcher_tab_checks = {}
+        disabled_launcher = self.settings.get("disabled_launcher_tabs", [])
+        for tab_id, label in launcher_tab_defs.items():
+            cb = QCheckBox(label)
+            cb.setStyleSheet(check_style)
+            cb.setChecked(tab_id not in disabled_launcher)
+            layout.addRow(cb)
+            self._settings_launcher_tab_checks[tab_id] = cb
+
+        def _validate_docs_resources(_checked=None):
+            docs_cb = self._settings_launcher_tab_checks["docs"]
+            res_cb = self._settings_launcher_tab_checks["resources"]
+            docs_cb.setEnabled(res_cb.isChecked())
+            res_cb.setEnabled(docs_cb.isChecked())
+            docs_cb.setToolTip("" if res_cb.isChecked() else "At least one of Docs/Resources must stay enabled")
+            res_cb.setToolTip("" if docs_cb.isChecked() else "At least one of Docs/Resources must stay enabled")
+
+        self._settings_launcher_tab_checks["docs"].toggled.connect(_validate_docs_resources)
+        self._settings_launcher_tab_checks["resources"].toggled.connect(_validate_docs_resources)
+        _validate_docs_resources()
+
+        # === Viewer Tabs section ===
+        viewer_section = QLabel("Viewer Tabs")
+        viewer_section.setStyleSheet(section_style)
+        layout.addRow(viewer_section)
+        add_desc("Hide tabs in the main viewer you don't use. At least one must stay enabled.")
+
+        viewer_tab_defs = {
+            "notes": "Notes",
+            "todo": "To-Do",
+            "code": "Editor",
+            "console": "Terminal",
+            "webview": "Web",
+            "pdf": "PDF",
+            "image": "Image",
+            "time": "Time",
+        }
+        kimai_configured = bool(self.settings.get('kimai_url') and self.settings.get('kimai_token'))
+        self._settings_viewer_tab_checks = {}
+        disabled_viewer = self.settings.get("disabled_viewer_tabs", [])
+        for tab_id, label in viewer_tab_defs.items():
+            cb = QCheckBox(label)
+            cb.setStyleSheet(check_style)
+            cb.setChecked(tab_id not in disabled_viewer)
+            if tab_id == "time" and not kimai_configured:
+                cb.setEnabled(False)
+                cb.setToolTip("Configure Kimai in Integrations to use this")
+            layout.addRow(cb)
+            self._settings_viewer_tab_checks[tab_id] = cb
+
+        def _validate_viewer_floor(_checked=None):
+            checked = [tid for tid, cb in self._settings_viewer_tab_checks.items() if cb.isChecked()]
+            only_one = checked[0] if len(checked) == 1 else None
+            for tid, cb in self._settings_viewer_tab_checks.items():
+                if tid == "time" and not kimai_configured:
+                    continue  # leave this one's independent Kimai-gated disable alone
+                if tid == only_one:
+                    cb.setEnabled(False)
+                    cb.setToolTip("At least one viewer tab must stay enabled")
+                else:
+                    cb.setEnabled(True)
+                    cb.setToolTip("")
+
+        for cb in self._settings_viewer_tab_checks.values():
+            cb.toggled.connect(_validate_viewer_floor)
+        _validate_viewer_floor()
 
         return widget
 
@@ -4354,14 +4464,13 @@ class ProjectFlowApp(QMainWindow):
         launcher_tab_ids = ["docs", "resources", "files", "apps"]
         self._proj_default_launcher_tab.clear()
         self._proj_default_launcher_tab.addItems(
-            [""] + self._ordered_tab_ids("launcher_tab_order", launcher_tab_ids, launcher_tab_ids)
+            [""] + self._ordered_tab_ids("launcher_tab_order", launcher_tab_ids, self._enabled_launcher_tab_ids())
         )
-        viewer_tab_ids = list(self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1])
-        if not (self.settings.get('kimai_url') and self.settings.get('kimai_token')):
-            viewer_tab_ids.remove("time")
+        viewer_tab_canonical = list(self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1])
+        viewer_tab_valid = [t for t in viewer_tab_canonical if self._is_viewer_tab_enabled(t)]
         self._proj_default_viewer.clear()
         self._proj_default_viewer.addItems(
-            [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_ids, viewer_tab_ids, project_order=getattr(self, 'config_viewer_tab_order', None)) + ["help"]
+            [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_canonical, viewer_tab_valid, project_order=getattr(self, 'config_viewer_tab_order', None)) + ["help"]
         )
 
         self._proj_default_viewer.setCurrentText(getattr(self, 'config_column2_default', None) or "")
@@ -5750,6 +5859,14 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["code_editor_extensions"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
+            if hasattr(self, '_settings_launcher_tab_checks'):
+                self.settings["disabled_launcher_tabs"] = [
+                    tid for tid, cb in self._settings_launcher_tab_checks.items() if not cb.isChecked()
+                ]
+            if hasattr(self, '_settings_viewer_tab_checks'):
+                self.settings["disabled_viewer_tabs"] = [
+                    tid for tid, cb in self._settings_viewer_tab_checks.items() if not cb.isChecked()
+                ]
             self.settings["fm_always_tabs"] = self._settings_fm_always_tabs.isChecked()
             self.settings["show_projects_section"] = self._settings_show_projects_section.isChecked()
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
@@ -6771,6 +6888,15 @@ StartupNotify=true
                     self.code_tabs = []
                     self.code_active_index = -1
                     self._teardown_terminal_tabs()
+
+            # Unconditional (not gated on is_project_switch) — active_launcher_tab is only
+            # ever (re)assigned above on an actual project switch, but a non-switch
+            # refresh_projects() call (e.g. right after the user disables the currently-
+            # active tab via Settings -> Features) still needs this clamped, since nothing
+            # else will have touched it this call.
+            if not self._is_launcher_tab_enabled(getattr(self, 'active_launcher_tab', 'files')):
+                enabled = self._enabled_launcher_tab_ids()
+                self.active_launcher_tab = enabled[0] if enabled else 'files'
         except Exception as e:
             raise Exception(f"Error loading config: {str(e)}")
 
@@ -8515,6 +8641,14 @@ function filterAliases(q) {{
                     self.config_column2_default = "help"
                 if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes", "code", "todo"):
                     self.column2_mode = self.config_column2_default
+
+            # Unconditional (not gated on _column2_mode_is_project_switch) — none of the
+            # three assignments above run on a non-switch refresh_projects() call (e.g.
+            # right after the user disables the currently-active viewer tab via Settings ->
+            # Features), so this is the only place that will actually catch a now-hidden
+            # mode and fall back to the always-available Folder viewer.
+            if not self._is_viewer_tab_enabled(self.column2_mode):
+                self.column2_mode = "folder"
         except Exception as e:
             print(f"Error loading notes: {e}")
             self.notes_data = {}
@@ -10570,6 +10704,25 @@ function filterAliases(q) {{
                 stored.insert(insert_at, t)
         return stored
 
+    def _is_launcher_tab_enabled(self, tab_id):
+        """Settings -> Features gate for the Launcher Tab Bar (Docs/Resources/Files/Apps).
+        Global/machine-wide (settings['disabled_launcher_tabs']), not per-project."""
+        return tab_id not in self.settings.get("disabled_launcher_tabs", [])
+
+    def _is_viewer_tab_enabled(self, tab_id):
+        """Settings -> Features gate for the Viewer Tab Bar. "time" composes this with
+        the pre-existing Kimai-configured check (both must hold), same as the tab-row
+        builder already does when deciding whether to show the Time tab at all."""
+        if tab_id == "time" and not (self.settings.get('kimai_url') and self.settings.get('kimai_token')):
+            return False
+        return tab_id not in self.settings.get("disabled_viewer_tabs", [])
+
+    def _enabled_launcher_tab_ids(self):
+        """Canonical-order launcher tab ids currently enabled, per _is_launcher_tab_enabled().
+        Used as a fallback target when active_launcher_tab/launcher_tab_default points at a
+        tab that's since been globally hidden (see load_config())."""
+        return [t for t in ["docs", "resources", "files", "apps"] if self._is_launcher_tab_enabled(t)]
+
     def _save_viewer_tab_order_to_config(self, order):
         """Persist the per-project viewer tab order into the active project's own
         config file — same read-modify-write shape as _save_layout_mode_to_config().
@@ -11593,11 +11746,26 @@ function filterAliases(q) {{
             focus_launcher_tab_active = col_idx == 0 and self.layout_mode == "focus" and (
                 not self.edit_mode or self.active_launcher_tab in ("docs", "resources")
             )
+            # True when exactly one of Docs/Resources is hidden via Settings -> Features
+            # (never both — enforced by that dialog's own live safeguard). The surviving
+            # tab then shows both buckets stacked in one view, reusing the identical
+            # unfiltered _build_grouped_categories() call Standard layout's own
+            # group_by_type "else" branch below already uses for the same purpose.
+            docs_resources_merged = (
+                ("docs" in self.settings.get("disabled_launcher_tabs", []))
+                != ("resources" in self.settings.get("disabled_launcher_tabs", []))
+            )
             if focus_launcher_tab_active:
                 if self.active_launcher_tab == "resources":
-                    column_categories = [c for c in self._build_grouped_categories() if "AI" not in c and "Docs" not in c]
+                    column_categories = (
+                        self._build_grouped_categories() if docs_resources_merged
+                        else [c for c in self._build_grouped_categories() if "AI" not in c and "Docs" not in c]
+                    )
                 elif self.active_launcher_tab == "docs":
-                    column_categories = [c for c in self._build_grouped_categories() if "AI" in c or "Docs" in c]
+                    column_categories = (
+                        self._build_grouped_categories() if docs_resources_merged
+                        else [c for c in self._build_grouped_categories() if "AI" in c or "Docs" in c]
+                    )
                 elif not self.edit_mode:
                     column_categories = []  # "files" / "apps" — panel built directly, no categories
                 # else: edit_mode and tab is "files"/"apps" — falls through, column_categories
@@ -11761,7 +11929,7 @@ function filterAliases(q) {{
                             "apps": ("Apps", "Applications relevant to this project"),
                         }
                         launcher_tab_ids = self._ordered_tab_ids(
-                            "launcher_tab_order", list(launcher_tab_defs.keys()), list(launcher_tab_defs.keys())
+                            "launcher_tab_order", list(launcher_tab_defs.keys()), self._enabled_launcher_tab_ids()
                         )
                         for tab_id in launcher_tab_ids:
                             tab_label, tab_tooltip = launcher_tab_defs[tab_id]
@@ -11881,8 +12049,8 @@ function filterAliases(q) {{
                         # view rather than separate tabs) has no single "current bucket" to key
                         # off, so both stay shown there, same as before — just with clearer
                         # tooltips, since that ambiguity was real there too.
-                        focus_docs_tab = self.layout_mode == "focus" and self.active_launcher_tab == "docs"
-                        focus_resources_tab = self.layout_mode == "focus" and self.active_launcher_tab == "resources"
+                        focus_docs_tab = self.layout_mode == "focus" and self.active_launcher_tab == "docs" and not docs_resources_merged
+                        focus_resources_tab = self.layout_mode == "focus" and self.active_launcher_tab == "resources" and not docs_resources_merged
 
                         # Create a brand-new, blank markdown document directly in this
                         # project's documents folder, filed under Docs — the
@@ -12864,8 +13032,11 @@ function filterAliases(q) {{
                     "pdf":     ("PDF",      "PDF viewer"),
                     "image":   ("Image",    "Image viewer"),
                 }
-                viewer_tab_valid_ids = list(viewer_tab_defs.keys())
-                if self.settings.get('kimai_url') and self.settings.get('kimai_token'):
+                viewer_tab_valid_ids = [t for t in viewer_tab_defs if t not in self.settings.get("disabled_viewer_tabs", [])]
+                if (
+                    self.settings.get('kimai_url') and self.settings.get('kimai_token')
+                    and "time" not in self.settings.get("disabled_viewer_tabs", [])
+                ):
                     viewer_tab_defs["time"] = ("⏱ Time", "Kimai time tracker")
                     viewer_tab_valid_ids.append("time")
                 viewer_tab_canonical_order = self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1]
@@ -13662,6 +13833,14 @@ function filterAliases(q) {{
                     if getattr(self, '_settings_loaded_for', None) != self.current_config_file:
                         self._populate_settings_form()
                         self._settings_loaded_for = self.current_config_file
+                else:
+                    # Defensive fallback only — load_notes()'s own clamp (see
+                    # _is_viewer_tab_enabled()) should already prevent column2_mode from
+                    # ever reaching here holding a hidden/unrecognized mode, but this
+                    # chain otherwise has no else at all, so an unmatched value would
+                    # silently show nothing rather than falling back to Folder.
+                    self.folder_container.show()
+                    self.populate_folder_browser(self.folder_current_path)
 
                 self.column2_layout.addWidget(self.column2_stack, 1)  # stretch factor to fill space
 
@@ -15395,6 +15574,8 @@ function filterAliases(q) {{
         focus_launcher_tab_active dispatch there), so switching to them used to just silently
         keep showing the same raw category list with no visible change — confusing, easy to
         read as "the tab is broken" rather than "there's nothing to show here yet"."""
+        if not self._is_launcher_tab_enabled(tab_name):
+            return
         if self.edit_mode and tab_name in ("files", "apps"):
             QMessageBox.information(
                 self, "Not Available While Editing",
@@ -23571,10 +23752,10 @@ Project created: {date_str}
             # these items) always uses a real external terminal instead. Falls through to
             # the always-external handling further below on the qtconsole backend, since it
             # has no live interactive shell to paste a command into.
-            if app == "alias" and not force_external and self.resolve_console_backend() == "ttyd":
+            if app == "alias" and not force_external and self.resolve_console_backend() == "ttyd" and self._is_viewer_tab_enabled("console"):
                 self._open_alias_launcher_in_console(path)
                 return
-            if app == "run" and not force_external and self.resolve_console_backend() == "ttyd":
+            if app == "run" and not force_external and self.resolve_console_backend() == "ttyd" and self._is_viewer_tab_enabled("console"):
                 self._open_run_launcher_in_console(path)
                 return
 
@@ -23582,35 +23763,51 @@ Project created: {date_str}
             # force_external=True lets the small icon button bypass this and always launch externally.
             if self.layout_mode == "focus" and not force_external:
                 ext = os.path.splitext(expanded_path)[1].lower()
+                # Each branch below is additionally gated on _is_viewer_tab_enabled() for
+                # its target viewer tab (Settings -> Features) — when disabled, it falls
+                # through rather than returning, landing on the external launch further
+                # below (none of the subsequent checks match the same content, so this is
+                # safe). _open_markdown_file() routes to the Notes tab in Focus layout
+                # (never webview), so its branches are gated on "notes", not "webview".
                 if app in ("firefox", "chrome") or expanded_path.startswith(("http://", "https://")):
                     if ext == ".md" and self._is_local_path(path):
-                        self._open_markdown_file(expanded_path)
+                        if self._is_viewer_tab_enabled("notes"):
+                            self._open_markdown_file(expanded_path)
+                            return
                     elif ext in (".html", ".htm") and self._is_local_path(path):
-                        self._open_file_in_webview(expanded_path)
+                        if self._is_viewer_tab_enabled("webview"):
+                            self._open_file_in_webview(expanded_path)
+                            return
                     else:
-                        self.preview_in_webview(path)
-                    return
+                        if self._is_viewer_tab_enabled("webview"):
+                            self.preview_in_webview(path)
+                            return
                 if ext in self._IMAGE_LAUNCHER_EXTENSIONS or app in ("gwenview", "gimp", "krita"):
-                    self.preview_in_image_viewer(expanded_path)
-                    return
+                    if self._is_viewer_tab_enabled("image"):
+                        self.preview_in_image_viewer(expanded_path)
+                        return
                 if ext == ".pdf":
-                    self.preview_in_pdf_viewer(expanded_path)
-                    return
+                    if self._is_viewer_tab_enabled("pdf"):
+                        self.preview_in_pdf_viewer(expanded_path)
+                        return
                 if ext == ".md" and self._is_local_path(path):
-                    self._open_markdown_file(expanded_path)
-                    return
+                    if self._is_viewer_tab_enabled("notes"):
+                        self._open_markdown_file(expanded_path)
+                        return
                 # .html/.htm now default into the code editor too, via
                 # _CODE_ROUTE_EXTENSIONS below — local files open in the editor, only URLs
                 # (and the explicit firefox/chrome-app case above) open in the web viewer.
                 # Use the "👁 Rendered"/"</> Edit Source" toggle to switch a given file
-                # between the two views.
+                # between the two views. Deliberately NOT gated by Settings -> Features —
+                # Editor's click-dispatch is universal/always-on regardless of layout, so
+                # hiding its tab only removes the tab button, never this routing.
                 if ext in self._code_route_extensions() and self._is_local_path(path):
                     self._open_code_file_in_editor(expanded_path)
                     return
-                if (app == "tail_log" or (ext == ".log" and self._is_local_path(path))) and self.resolve_console_backend() == "ttyd":
+                if (app == "tail_log" or (ext == ".log" and self._is_local_path(path))) and self.resolve_console_backend() == "ttyd" and self._is_viewer_tab_enabled("console"):
                     self._open_log_file_in_console(expanded_path)
                     return
-                if app in ("terminal", "konsole") and self.resolve_console_backend() == "ttyd":
+                if app in ("terminal", "konsole") and self.resolve_console_backend() == "ttyd" and self._is_viewer_tab_enabled("console"):
                     self._open_terminal_launcher_in_console(expanded_path)
                     return
                 if os.path.isdir(expanded_path) and app not in ("terminal", "konsole", "editor", "directorydev"):
@@ -24009,9 +24206,18 @@ Project created: {date_str}
             QMessageBox.critical(self, "Upgrade Error", str(e))
 
     def restart_application(self):
-        """Restart the application"""
-        script_path = os.path.join(self.script_dir, "projectflow.py")
-        subprocess.Popen([script_path, self.current_config_file], start_new_session=True)
+        """Restart the application (used by check_for_upgrade() after a successful pull).
+        A bare script path isn't directly executable via subprocess.Popen on Windows
+        (no shell=True here, unlike Linux where the shebang + executable bit make that
+        work) — must relaunch through the Python interpreter itself. A PyInstaller-frozen
+        build has no script to point at either; sys.executable there IS the .exe."""
+        if getattr(sys, 'frozen', False):
+            args = [sys.executable]
+        else:
+            args = [sys.executable, os.path.join(self.script_dir, "projectflow.py")]
+        if self.current_config_file:
+            args.append(self.current_config_file)
+        subprocess.Popen(args, start_new_session=True)
         QApplication.quit()
 
     def regenerate_desktop_file(self):

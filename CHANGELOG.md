@@ -2,6 +2,55 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-20 (Desktop, Settings → Features tab; restart_application() Windows fix)
+
+### Added
+- **Settings → Features tab**: lets you hide individual Launcher Tab Bar tabs (Docs/
+  Resources/Files/Apps) and Viewer Tab Bar tabs (Notes/To-Do/Editor/Terminal/Web/PDF/
+  Image/Time) that you don't use — aimed at Windows users who may only touch a subset
+  of these (e.g. never the Terminal or Code Editor), decluttering both rows. Global/
+  machine-wide (`disabled_launcher_tabs`/`disabled_viewer_tabs` in
+  `.projectflow_settings.json`), not per-project.
+  - **Docs/Resources**: either can be hidden, but never both — a live checkbox lock in
+    the Features tab enforces this. Hiding one merges its content into the surviving
+    tab as a single stacked view, reusing the exact rendering Standard layout's own
+    "☰ Group" toggle already uses for showing both buckets together.
+  - **Viewer tabs**: a live floor-of-one lock prevents hiding all 8 at once. Hiding one
+    stops *automatic* routing into it — Focus layout's launcher-click-opens-inline
+    inversion, and alias/run/tail_log/terminal auto-routing into the internal Console —
+    falling back to opening externally instead. *Explicit* actions (a preview-icon-
+    button click, the Files tab's embedded browser, an Apps-tab tile) are deliberately
+    untouched, since those are deliberate clicks, not automatic surprises. Hiding
+    "Editor" only removes its tab button — code-file click-routing is universal
+    (not Focus-gated) and was left completely alone, out of scope for this feature.
+  - New `_is_launcher_tab_enabled()`/`_is_viewer_tab_enabled()` helpers are the single
+    source of truth for all of this — `_is_viewer_tab_enabled("time")` composes the new
+    user-disable gate with the pre-existing "only show Time if Kimai is configured"
+    check via a plain `and`.
+  - Fixed two real pre-existing gaps this surfaced, independent of whether any tab is
+    actually hidden: `column2_mode` and `active_launcher_tab` could previously end up
+    holding a stale/invalid value after a non-project-switch `refresh_projects()` call
+    (e.g. right after disabling the tab you're currently on, via Settings → Apply) with
+    nothing to catch it — `load_notes()`/`load_config()` now each end with an
+    unconditional clamp back to a valid tab, and `build_main_content()`'s container-
+    show/hide chain gained a defensive `else` (falls back to the Folder viewer) where
+    previously there was none at all.
+
+### Fixed
+- **`restart_application()` (used by the "✨ Check for Updates" button after a
+  successful `git pull`) would likely not have worked on Windows**: it relaunched via
+  `subprocess.Popen([script_path, ...])` with no interpreter in front of the bare
+  `projectflow.py` path — works on Linux only because of the shebang + executable bit,
+  but `subprocess.Popen` can't directly execute a `.py` file on Windows without
+  `shell=True`. Now relaunches via `sys.executable` (the running interpreter) plus the
+  script path, or — for a future PyInstaller-frozen build — `sys.executable` alone,
+  since that already *is* the packaged `.exe` with nothing else to point at. Also
+  guards against appending a stray `None` arg if no project is currently loaded.
+  Verified directly (mocking `subprocess.Popen` to capture args rather than actually
+  spawning anything) for the source, frozen, and no-config-loaded cases.
+  `open_config_in_new_window()` has the identical bare-script-path pattern and is
+  likely subject to the same issue — flagged, not fixed in this pass.
+
 ## 2026-10-19 (Desktop, Help content caught up to the Docs/Documents rename)
 
 ### Fixed
