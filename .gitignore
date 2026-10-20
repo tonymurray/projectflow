@@ -29,6 +29,7 @@ ai/
 
 # Local dev/planning docs (working notes, not meant for the public repo)
 docs/
+TODO.md
 
 # Local/generated files
 course/
