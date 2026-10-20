@@ -52,6 +52,10 @@ a = Analysis(
         ('help', 'help'),
         ('examples', 'examples'),
         ('icon_preferences.json', '.'),
+        ('VERSION', '.'),              # read by get_app_version()/_check_for_update_if_due()
+                                        # — must sit flat next to ProjectFlow.exe, same as
+                                        # icon_preferences.json above, for the onedir
+                                        # _get_script_dir() resolution to find it
         ('launch_handlers.py', '.'),   # loaded at runtime via
                                         # importlib.util.spec_from_file_location(),
                                         # NOT a normal `import` — PyInstaller's static

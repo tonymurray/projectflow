@@ -49,7 +49,9 @@ Use the provided wrapper script which handles dependencies automatically:
 
 ### Windows (experimental)
 
-A Windows port exists and has been validated on real Windows 11 hardware — the core app, launcher system, and all built-in viewers (Notes/Web/Editor/Help) work. There's no packaged `.exe` yet, so for now it's run from source:
+A Windows port exists and has been validated on real Windows 11 hardware — the core app, launcher system, and all built-in viewers (Notes/Web/Editor/Help) work. Easiest way to get it: download the latest prebuilt zip from the [Releases page](https://github.com/tonymurray/projectflow/releases), extract it, and run `ProjectFlow.exe` — no Python needed. The app checks GitHub once a day for a newer release and will say so in the status bar.
+
+Prefer to run it from source instead (e.g. to develop/modify it)?
 
 ```powershell
 python -m venv venv
@@ -57,6 +59,8 @@ venv\Scripts\activate
 pip install -r requirements-windows.txt
 python projectflow.py
 ```
+
+See [`INSTALL_WINDOWS.md`](INSTALL_WINDOWS.md) for full install/upgrade/build instructions (including how to build the standalone `.exe` yourself) and Windows-specific gotchas (PowerShell execution policy, PATH, etc.).
 
 KDE/Linux-only integrations (Baloo file tags, the ttyd terminal backend, Dolphin's service menu, `.desktop`-style menu entries) aren't available on Windows and fall back gracefully where possible (e.g. the Terminal viewer uses the qtconsole backend instead of ttyd). See `os_integration.py` for what's been ported and how.
 

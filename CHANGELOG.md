@@ -2,6 +2,40 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-20 (Desktop, Windows: GitHub Releases build + update check)
+
+### Added
+- **`VERSION` file** at repo root (date-based, e.g. `2026.10.20`, matching this project's own
+  dating convention rather than semver) — the one source of truth for "what version is this,"
+  read by both the app itself (`get_app_version()`) and the new build workflow below. Bundled
+  into the Windows PyInstaller build via `projectflow.spec`'s `datas` list.
+- **`.github/workflows/windows-build.yml`**: builds the PyInstaller onedir package on a
+  `windows-latest` runner (required — PyInstaller can't cross-compile from Linux) whenever a
+  `v*` tag is pushed, zips `dist\ProjectFlow`, and attaches it to a GitHub Release via `gh
+  release create --generate-notes`. Deliberately tag-triggered, not on every push to `master`
+  — cutting a release is a separate, deliberate act from committing.
+- **Automatic update check** (`_check_for_update_if_due()`): once per calendar day at startup
+  (throttled the same way `_warn_backup_dir_unreachable()` already is, via a persisted
+  `update_check_last_run` date), pings GitHub's public, unauthenticated Releases API and
+  compares the latest tag against the local `VERSION` file (`_parse_version_tuple()` — extracts
+  every run of digits via regex rather than splitting on `.`, so a leading `v` or un-padded
+  numbers don't matter). Surfaces a plain status-bar hint with a link on a newer release, never
+  a modal; fails completely silently on any network error (offline is the common case, not
+  something worth surfacing as an error). Deferred via a short `QTimer.singleShot` from
+  `__init__` rather than run inline like the (local-filesystem-only) daily backup check, so a
+  slow/unreachable network doesn't delay the window's first paint — no threading involved,
+  matching this codebase's standing no-`QThread`/`QRunnable` convention, so a few seconds of
+  main-thread blocking once the window is already up is the accepted tradeoff over building a
+  worker-thread path for an optional, once-a-day check.
+  - **Settings → Settings tab → "Check for Updates"** checkbox (`check_for_updates`, default
+    **on**) — opts out of the check entirely.
+- **`INSTALL_WINDOWS.md`** reworked into three explicit install paths: **Option A** (download
+  the prebuilt release zip — no Python needed, the new recommended default), **Option B** (run
+  from source, the previous sole documented path), **Option C** (build the `.exe` yourself via
+  `projectflow.spec` — now framed as "for contributors," since CI covers the common case). Also
+  moved from the gitignored `docs/` folder to the repo root (`INSTALL_WINDOWS.md`) so it's
+  actually trackable/shareable, and linked from `README.md`'s Windows section.
+
 ## 2026-10-20 (Desktop, Settings → Features tab; restart_application() Windows fix)
 
 ### Added

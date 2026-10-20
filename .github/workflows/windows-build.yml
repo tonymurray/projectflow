@@ -1,0 +1,56 @@
+name: Windows build
+
+# Builds the PyInstaller onedir package (see projectflow.spec) on real Windows
+# hardware — PyInstaller can't cross-compile, so this has to run on a
+# windows-latest runner, not Linux — zips it, and attaches it to a GitHub
+# Release for the pushed tag.
+#
+# Triggered manually by pushing a version tag:
+#   git tag v2026.10.20
+#   git push origin v2026.10.20
+#
+# Deliberately NOT triggered on every push to master — an experimental,
+# frequently-changing Windows port shouldn't publish a "release" build on
+# every commit. Cutting a release is a deliberate act (bump VERSION, tag,
+# push the tag), matching how _check_for_update_if_due() in projectflow.py
+# compares the running app's own VERSION file against this same tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write  # needed to create the Release and upload the zip asset
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-windows.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller projectflow.spec --clean
+
+      - name: Zip the onedir build
+        run: |
+          Compress-Archive -Path dist\ProjectFlow\* -DestinationPath ProjectFlow-win-${{ github.ref_name }}.zip
+
+      - name: Create GitHub Release and upload zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" "ProjectFlow-win-${{ github.ref_name }}.zip" `
+            --title "ProjectFlow ${{ github.ref_name }}" `
+            --generate-notes

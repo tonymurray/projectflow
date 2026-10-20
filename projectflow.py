@@ -78,6 +78,42 @@ def _get_script_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def get_app_version(script_dir):
+    """Reads the plain VERSION file at the repo/bundle root — the one source of
+    truth for "what version is this build", used both to tag/name GitHub Releases
+    (see .github/workflows/windows-build.yml) and by _check_for_update_if_due()
+    to compare against the latest published release. A date-based scheme
+    (YYYY.MM.DD, e.g. "2026.10.20") is used rather than semver, matching this
+    project's own commit/CHANGELOG dating convention. Bundled into the frozen
+    Windows build via projectflow.spec's datas list, so this resolves the same
+    way whether run from source or from the packaged .exe. Returns "dev"
+    (deliberately un-parseable as a real release — see _parse_version_tuple())
+    if the file is missing, e.g. a checkout that predates this file's existence.
+    """
+    try:
+        with open(os.path.join(script_dir, "VERSION"), "r") as f:
+            return f.read().strip()
+    except OSError:
+        return "dev"
+
+
+def _parse_version_tuple(version_str):
+    """Parses a version/tag string (e.g. "v2026.10.20", "2026.10.20", "1.4.0")
+    into a tuple of ints for comparison — extracts every run of digits via
+    regex rather than splitting on '.', so a leading 'v' (GitHub tag convention)
+    or any other separator is harmless, and un-padded numbers (10 vs 2) still
+    compare correctly since each regex match is the whole number, not a single
+    digit. Returns None if nothing numeric could be parsed at all — e.g. the
+    "dev" fallback from get_app_version() correctly yields None here, rather
+    than parsing as some always-older-or-newer sentinel value."""
+    if not version_str:
+        return None
+    parts = re.findall(r'\d+', version_str)
+    if not parts:
+        return None
+    return tuple(int(p) for p in parts)
+
+
 class DraggableConfigButton(QPushButton):
     """A QPushButton that supports drag-and-drop for reordering"""
 
@@ -1720,6 +1756,12 @@ class ProjectFlowApp(QMainWindow):
         # set_status() which needs self.status_label (built inside init_ui()).
         self._run_daily_backup_if_needed()
 
+        # Update check — deferred slightly (unlike the backup check above, which
+        # is local-filesystem-only and fine to run inline) so a slow/unreachable
+        # network doesn't delay the window's first paint. See
+        # _check_for_update_if_due()'s own docstring for why this isn't threaded.
+        QTimer.singleShot(1500, self._check_for_update_if_due)
+
     def resizeEvent(self, event):
         """Handle window resize"""
         super().resizeEvent(event)
@@ -1929,6 +1971,7 @@ class ProjectFlowApp(QMainWindow):
                     "folder_icon_zoom_index": self.ICON_ZOOM_DEFAULT_INDEX,  # Index into ICON_ZOOM_FACTORS
                     "folder_sort_mode": "name",  # Folder browser sort: "name" (A-Z) or "date" (most recent first)
                     "show_projects_section": True,  # Show the always-visible Projects section below the columns
+                    "check_for_updates": True,  # Ping GitHub Releases once/day for a newer version (see _check_for_update_if_due)
                 }
                 self.save_settings()
         except Exception as e:
@@ -2251,6 +2294,20 @@ class ProjectFlowApp(QMainWindow):
         )
         startup_outer.addWidget(self._settings_startup_project)
         layout.addRow(startup_label, startup_outer)
+
+        # Check for Updates
+        update_label = QLabel("Check for Updates:")
+        update_label.setStyleSheet(label_style)
+        self._settings_check_for_updates = QCheckBox("Check GitHub for a newer release at startup")
+        self._settings_check_for_updates.setChecked(self.settings.get("check_for_updates", True))
+        self._settings_check_for_updates.setStyleSheet(f"color: {self.t('fg_primary')};")
+        self._settings_check_for_updates.setToolTip(
+            "Once per day at most, pings github.com/tonymurray/projectflow's public\n"
+            "Releases API (no login/token needed) and shows a status-bar note if a\n"
+            "newer version is tagged than this build's own VERSION file. Never blocks\n"
+            "startup or shows an error if offline — fails silently on any network issue."
+        )
+        layout.addRow(update_label, self._settings_check_for_updates)
 
         # Default Launcher
         default_app_label = QLabel("Default Launcher:")
@@ -5788,6 +5845,8 @@ class ProjectFlowApp(QMainWindow):
             elif "startup_project" in self.settings:
                 del self.settings["startup_project"]
 
+            self.settings["check_for_updates"] = self._settings_check_for_updates.isChecked()
+
             # Save other settings
             pdfviewer = self._settings_pdfviewer.text().strip()
             if pdfviewer:
@@ -7686,6 +7745,50 @@ StartupNotify=true
 
         success, message = self._perform_backup(zip_path)
         self.set_status(message, "success" if success else "error")
+
+    def _check_for_update_if_due(self):
+        """Pings GitHub's public, unauthenticated Releases API at most once per
+        calendar day (same throttle shape as _warn_backup_dir_unreachable(), via
+        a persisted "update_check_last_run" date) to see if a newer dated release
+        is tagged than this build's own VERSION file (see get_app_version()).
+        Opt-out via Settings -> "Check for Updates". Deliberately a plain
+        status-bar hint, never a modal — and fails completely silently on any
+        network error (offline is the common case, not an error state worth
+        surfacing). Called via a short QTimer.singleShot delay from __init__
+        (not inline, unlike the local-filesystem-only daily backup check right
+        above) so a slow/unreachable network doesn't visibly stall the window's
+        very first paint — this codebase has no threading precedent to reach for
+        instead (see Backup's own "no threading anywhere" rationale), so a few
+        seconds of main-thread blocking once the window is already up and
+        interactive is the accepted tradeoff over building a worker-thread path
+        for an optional, once-a-day check."""
+        if not self.settings.get("check_for_updates", True):
+            return
+        today = datetime.date.today().isoformat()
+        if self.settings.get("update_check_last_run") == today:
+            return
+        # Persist the throttle date before the network call, not after — so a
+        # hang/timeout still counts as "checked today" rather than retrying on
+        # every subsequent launch until one happens to succeed within timeout.
+        self.settings["update_check_last_run"] = today
+        self.save_settings()
+
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/tonymurray/projectflow/releases/latest",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "ProjectFlow"},
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            latest_tag = data.get("tag_name", "")
+            latest_url = data.get("html_url", "https://github.com/tonymurray/projectflow/releases")
+        except Exception:
+            return  # offline, rate-limited, no releases published yet, etc.
+
+        current = _parse_version_tuple(get_app_version(self.script_dir))
+        latest = _parse_version_tuple(latest_tag)
+        if current is not None and latest is not None and latest > current:
+            self.set_status(f"A newer ProjectFlow version ({latest_tag}) is available — {latest_url}", "info")
 
     def _on_backup_now_clicked(self):
         """Settings dialog 'Backup Now' button — a deliberate, synchronous,
@@ -24024,31 +24127,16 @@ Project created: {date_str}
         self.status_label.setStyleSheet("color: #27ae60; margin: 10px; font-weight: bold;")
 
     def get_version(self):
-        """Get the current version from git (short commit hash or tag) with date"""
-        try:
-            # Get version/tag
-            version_result = subprocess.run(
-                ["git", "describe", "--tags", "--always", "--dirty"],
-                cwd=self.script_dir,
-                capture_output=True,
-                text=True
-            )
-            # Get last commit date
-            date_result = subprocess.run(
-                ["git", "log", "-1", "--format=%cd", "--date=format:%Y-%m-%d %H:%M"],
-                cwd=self.script_dir,
-                capture_output=True,
-                text=True
-            )
-            if version_result.returncode == 0:
-                version = version_result.stdout.strip()
-                if date_result.returncode == 0:
-                    commit_date = date_result.stdout.strip()
-                    return f"{version} [{commit_date}]"
-                return version
-        except Exception:
-            pass
-        return "unknown"
+        """Version string shown in the footer — just the VERSION file's own
+        content (see get_app_version()), the same single source of truth the
+        update-check feature already compares against, rather than a separate
+        live `git describe`/`git log` lookup. The git-based version used to show
+        unrelated-to-this-app noise (a "-dirty" suffix from incidental
+        uncommitted changes, a to-the-minute commit timestamp) and needed a
+        `.git` folder that a packaged build from a Releases zip doesn't have —
+        VERSION works identically whether run from source or packaged."""
+        v = get_app_version(self.script_dir)
+        return v if v == "dev" else f"v{v}"
 
     def install_kde_servicemenu(self):
         """Install the KDE Dolphin service menu — Add to ProjectFlow, Upload to
