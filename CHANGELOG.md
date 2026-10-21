@@ -2,6 +2,55 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-21 (Desktop, Notes undo-history fix; Backup now includes Documents/Images; virtual-desktop Features toggle)
+
+### Added
+- **Settings → Features → "Open in New Virtual Desktop" checkbox** (`enable_virtual_desktop_feature`,
+  default on): lets you turn off the ⧉ button next to each project (opens it in a freshly
+  created KDE virtual desktop via `qdbus`) without needing to be on a non-KDE system to not
+  see it. Greyed out with a tooltip when the environment can't support it anyway (not KDE, or
+  `qdbus` missing) — same treatment the Kimai-gated "Time" viewer-tab checkbox already gets.
+  Already effectively unavailable on Windows with no code change needed (`_can_open_in_new_desktop()`
+  only ever returns true for `detect_desktop_environment() == 'kde'`, which Windows never
+  reports) — real Windows virtual-desktop creation has no supported scriptable API (only a
+  COM interface limited to moving windows between *existing* desktops, plus brittle
+  reverse-engineered DLL hacks), so building that out was considered and deliberately skipped.
+- **Backup now also zips the global Documents and Images folders** (`get_documents_folder()`/
+  `get_images_folder()`, as `documents/`/`images/` in the zip), alongside the existing
+  configs/notes/settings — previously only configs and notes were covered, which meant any
+  project files saved via Docs/Documents or pasted-into-notes images had no safety net at all.
+  Can make the zip noticeably larger if those folders are, which is an accepted tradeoff (no
+  threading/size-based opt-out added) rather than something worth engineering around for what's
+  still a once-a-day, already-asynchronous-feeling background task.
+
+### Fixed
+- **Notes editor: Ctrl+Z could silently stop working mid-session** — reported as an
+  intermittent "sometimes I can't undo an accidental delete while typing notes." Root cause,
+  confirmed by reading the vendored Muya bundle directly: `muya.setContent()` unconditionally
+  clears the entire undo/redo history as a side effect, and two of this app's own call sites
+  invoked it on a *live* session with no guard at all, invisibly:
+  - `_activate_notes_tab()` had no "already showing this tab" check, so re-clicking the Notes
+    tab you were already on — or clicking a launcher/"🏠 Project Note" button that resolved to
+    the already-open note — still ran the full flush-then-reload path every time, which calls
+    `setContent()` internally. Nothing about this was visible (same content, caret restored to
+    roughly the same spot), so the undo stack was zeroed with no way to notice until the next
+    accidental delete had nothing left for Ctrl+Z to reach. Fixed with a new
+    `self._notes_tab_content_loaded_index` tracker (distinct from `notes_active_index`, which
+    gets recomputed from disk on every incidental refresh) — the function now returns
+    immediately, before touching the session at all, once the requested tab is already the one
+    genuinely on screen.
+  - `window.__setMuyaMarkdown()` (the JS bridge the To-Do tab's "Add as To-Do" quick-capture
+    uses to push updated markdown into a live session) had the identical problem — fixed by
+    swapping to Muya's own non-destructive `replaceContent()`, which records the change as one
+    normal, undoable history entry instead of wiping everything.
+  - Verified with two isolated test harnesses (never touching real settings/notes): one
+    instrumenting `_do_activate_notes_tab()` directly to confirm the skip-guard fires only
+    when nothing has actually changed (including the tab-close index-shift edge case); another
+    loading `assets/muya/editor.html` straight into a bare `QWebEngineView` to confirm the
+    fixed JS bridge preserves a prior edit's undo entry and makes the external update itself
+    undoable too — with a contrast check confirming the *old* `setContent()`-based code really
+    did zero the stack in the same harness.
+
 ## 2026-10-20 (Desktop, Windows: GitHub Releases build + update check)
 
 ### Added

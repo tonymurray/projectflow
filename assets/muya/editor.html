@@ -149,7 +149,17 @@
 
   window.__setMuyaMarkdown = function (markdown) {
     if (muya) {
-      muya.setContent(markdown || '');
+      // muya.setContent() unconditionally clears the undo/redo history as a side effect
+      // (confirmed in the vendored bundle: Editor.prototype.setContent always calls
+      // this.history.clear()) — fine for a fresh load (nothing to lose yet), but this
+      // function is also called against a LIVE, already-open session (the To-Do tab's
+      // "Add as To-Do" quick-capture writes a new line in and pushes the updated markdown
+      // back in here while that tab may still be open) where wiping history is a real,
+      // silent loss of the user's undo stack. muya.replaceContent() computes a diff against
+      // the current state and applies it as one recorded, undoable history entry instead
+      // (via history.recordRebuild()/suppressRecording()) — same net content, but Ctrl+Z
+      // still works afterward, and everything typed before this call is still undoable too.
+      muya.replaceContent(markdown || '');
       dirty = false;
     }
   };

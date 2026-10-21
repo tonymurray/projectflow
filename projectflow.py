@@ -1565,6 +1565,13 @@ class ProjectFlowApp(QMainWindow):
         # working unchanged.
         self.notes_tabs = []
         self.notes_active_index = -1
+        # Tracks which tab index the webview is ACTUALLY currently showing — distinct from
+        # notes_active_index, which load_notes() recomputes from disk on every incidental
+        # refresh (editing a launcher, toggling theme) even when no real reload happens. Used
+        # by _activate_notes_tab() to skip a redundant flush+full-reload when the requested
+        # tab is already the one genuinely on screen — see that method's own comment for why
+        # this matters (a real, reported undo-history-loss bug, not just a perf nicety).
+        self._notes_tab_content_loaded_index = None
 
         # Multi-instance Terminal tabs (see TerminalTabState) — one ttyd subprocess + one
         # dedicated QWebEngineView PER tab (unlike Web/Notes, which share a single persistent
@@ -1966,6 +1973,7 @@ class ProjectFlowApp(QMainWindow):
                     "viewer_tab_order": [],  # user-ordered list of viewer tab ids (notes/code/console/webview/pdf/image/time)
                     "disabled_launcher_tabs": [],  # Settings -> Features: hidden launcher tab ids
                     "disabled_viewer_tabs": [],  # Settings -> Features: hidden viewer tab ids
+                    "enable_virtual_desktop_feature": True,  # Settings -> Features: show "Open in New Virtual Desktop" (⧉) button (KDE only)
                     "folder_view_mode": "tree",  # Folder browser view: "tree" or "icons"
                     "folder_show_images": False,  # Show image thumbnails in folder icon-grid view
                     "folder_icon_zoom_index": self.ICON_ZOOM_DEFAULT_INDEX,  # Index into ICON_ZOOM_FACTORS
@@ -2369,9 +2377,10 @@ class ProjectFlowApp(QMainWindow):
         layout.addRow(QLabel(""), self._settings_daily_backup)
 
         daily_backup_hint = QLabel(
-            "Zips your project configs, notes, and app settings into the backup folder,\n"
-            "dated (e.g. backup-2026-09-08.zip). Runs once per day at startup, skipped if\n"
-            "today's backup already exists. Consider deleting older backups from time to time."
+            "Zips your project configs, notes, documents, images, and app settings into\n"
+            "the backup folder, dated (e.g. backup-2026-09-08.zip). Can get large if your\n"
+            "documents/images folders do. Runs once per day at startup, skipped if today's\n"
+            "backup already exists. Consider deleting older backups from time to time."
         )
         daily_backup_hint.setStyleSheet(f"color: {self.t('fg_muted')}; font-size: 11px;")
         layout.addRow(QLabel(""), daily_backup_hint)
@@ -3005,6 +3014,24 @@ class ProjectFlowApp(QMainWindow):
         for cb in self._settings_viewer_tab_checks.values():
             cb.toggled.connect(_validate_viewer_floor)
         _validate_viewer_floor()
+
+        # === Other Features section ===
+        other_section = QLabel("Other")
+        other_section.setStyleSheet(section_style)
+        layout.addRow(other_section)
+
+        vdesktop_cb = QCheckBox("Open in New Virtual Desktop")
+        vdesktop_cb.setStyleSheet(check_style)
+        vdesktop_cb.setChecked(self.settings.get("enable_virtual_desktop_feature", True))
+        if not self._virtual_desktop_supported():
+            vdesktop_cb.setEnabled(False)
+            vdesktop_cb.setToolTip("Requires KDE Plasma with qdbus installed")
+        layout.addRow(vdesktop_cb)
+        add_desc(
+            "Adds a ⧉ button next to each project that opens it in a freshly created "
+            "virtual desktop. KDE Plasma only."
+        )
+        self._settings_vdesktop_check = vdesktop_cb
 
         return widget
 
@@ -5926,6 +5953,8 @@ class ProjectFlowApp(QMainWindow):
                 self.settings["disabled_viewer_tabs"] = [
                     tid for tid, cb in self._settings_viewer_tab_checks.items() if not cb.isChecked()
                 ]
+            if hasattr(self, '_settings_vdesktop_check'):
+                self.settings["enable_virtual_desktop_feature"] = self._settings_vdesktop_check.isChecked()
             self.settings["fm_always_tabs"] = self._settings_fm_always_tabs.isChecked()
             self.settings["show_projects_section"] = self._settings_show_projects_section.isChecked()
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
@@ -7638,15 +7667,18 @@ StartupNotify=true
     # ------------------------------------------------------------------
 
     def _perform_backup(self, zip_path):
-        """Create a zip backup of the projects dir, notes dir, and app settings file
-        at zip_path. Returns (success, message) — never raises, so callers can decide
-        how loudly to surface a failure (status bar vs. modal dialog)."""
+        """Create a zip backup of the projects dir, notes dir, documents dir, images
+        dir, and app settings file at zip_path. Returns (success, message) — never
+        raises, so callers can decide how loudly to surface a failure (status bar vs.
+        modal dialog)."""
         try:
             os.makedirs(os.path.dirname(zip_path), exist_ok=True)
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                 sources = [
                     ("configs", self.get_projects_directory()),
                     ("notes", self.get_notes_folder()),
+                    ("documents", self.get_documents_folder()),
+                    ("images", self.get_images_folder()),
                 ]
                 for arc_prefix, src_dir in sources:
                     if not os.path.isdir(src_dir):
@@ -14068,6 +14100,10 @@ function filterAliases(q) {{
         notes_should_reload = notes_is_active_or_fixed and getattr(self, '_notes_loaded_for', None) != notes_reload_key
         if notes_should_reload:
             self._notes_loaded_for = notes_reload_key
+            # A genuine reload is about to happen below — clear the "already showing this
+            # tab" tracker so _activate_notes_tab()'s skip-guard doesn't mistake the index
+            # match for content that's actually on screen yet (it isn't, this is the reload).
+            self._notes_tab_content_loaded_index = None
             # self.notes_tabs was already (re)built from disk in load_notes(), above — just
             # activate whichever tab was active (never _open_notes_tab(), which would create
             # a brand new one instead of restoring the existing list).
@@ -14365,11 +14401,18 @@ function filterAliases(q) {{
         """Launch a new instance of ProjectFlow with the specified config"""
         subprocess.Popen(self._relaunch_args(config_path), start_new_session=True)
 
-    def _can_open_in_new_desktop(self):
-        """Return True if the current DE supports opening in a new virtual desktop."""
+    def _virtual_desktop_supported(self):
+        """Return True if the current DE supports opening in a new virtual desktop
+        (KDE + qdbus present). Pure environment-capability check, independent of the
+        Settings -> Features opt-out — see _can_open_in_new_desktop()."""
         if self.detect_desktop_environment() == 'kde':
             return shutil.which('qdbus') is not None
         return False
+
+    def _can_open_in_new_desktop(self):
+        """Return True if the ⧉ button should actually be shown: environment-capable
+        AND not disabled via Settings -> Features."""
+        return self._virtual_desktop_supported() and self.settings.get('enable_virtual_desktop_feature', True)
 
     def _get_browser_new_tab(self):
         """Return True to open browser links in new tab, False for new window.
@@ -16845,6 +16888,9 @@ function filterAliases(q) {{
             notes_reload_key = (self.current_config_file, self.layout_mode, self.current_theme)
             if getattr(self, '_notes_loaded_for', None) != notes_reload_key:
                 self._notes_loaded_for = notes_reload_key
+                # See build_main_content()'s identical reset for why this has to be cleared
+                # here too, right before the real reload below.
+                self._notes_tab_content_loaded_index = None
                 _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
                 self._activate_notes_tab(_restore_notes_index)
         elif mode == "todo":
@@ -21110,7 +21156,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         folded into the dirty-gated flush below), then flushes any unsaved content (see
         _muya_flush_before_switch()) — without that flush, switching tabs faster than the
         ~1.2s autosave poll silently dropped the last few seconds of edits, since
-        _open_notes_in_muya() below replaces the page outright."""
+        _open_notes_in_muya() below replaces the page outright.
+
+        Skips all of that entirely when `index` is already the tab genuinely on screen
+        (self._notes_tab_content_loaded_index, distinct from notes_active_index — see that
+        attribute's own comment in __init__) — a real, reported bug: re-clicking the Notes
+        tab you're already on, or clicking a launcher/"Project Note" button that resolves to
+        the note already open, used to still run the full reload below every time. That
+        reload calls muya.setContent() under the hood, which unconditionally clears Muya's
+        undo/redo history (confirmed in the vendored bundle — history.clear() runs with no
+        exceptions) even though nothing visibly changes. The user had no way to notice this
+        happened, so the next accidental delete had nothing left for Ctrl+Z to reach."""
+        if index == self._notes_tab_content_loaded_index and 0 <= index < len(self.notes_tabs):
+            return
         session = self._notes_muya_session
         prev_index = self.notes_active_index
 
@@ -21156,6 +21214,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.notes_active_index = index
         self.notes_md_path = self.notes_tabs[index].path
         self._open_notes_in_muya()
+        self._notes_tab_content_loaded_index = index
         self._rebuild_notes_tab_strip()
 
     def _open_notes_tab(self, path):
@@ -21227,6 +21286,13 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         project-note tab instead of leaving an empty state."""
         if not (0 <= index < len(self.notes_tabs)):
             return
+        # Closing a tab shifts every later index down by one, which would otherwise let
+        # _activate_notes_tab()'s "already showing this index" skip-guard match the WRONG
+        # tab's content (e.g. closing an earlier tab makes some other tab's index collide
+        # with the stale loaded-index value). Always reset rather than try to shift it in
+        # place — simplest way to guarantee the guard never fires on stale bookkeeping; the
+        # worst case is one harmless extra reload next time this tab is activated.
+        self._notes_tab_content_loaded_index = None
         closing_active = (index == self.notes_active_index)
         self.notes_tabs.pop(index)
         if not self.notes_tabs:
