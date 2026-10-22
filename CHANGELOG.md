@@ -2,6 +2,34 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-21 (Desktop, Muya Heading Colors: swatches + custom color picker)
+
+### Added
+- **Settings → Themes tab → Muya Heading Colors now shows a small color swatch next to
+  each hue name**, and gained a **"Custom…" button** per heading level (H2–H6) opening a
+  `QColorDialog` to pick a fully arbitrary color instead of being limited to the 13 preset
+  Open Color hues. Swatches are rendered theme-aware (shade 9 for light, shade 4 for dark,
+  matching `_notes_paper_css()`'s own shade choice) via a new `_color_swatch_icon()` helper
+  (modeled on the existing `_folder_icon()` pattern) and a new `MUYA_HEADING_HEX` lookup
+  table — a static transcription of the relevant subset of `assets/open-color.css`, needed
+  because Qt's native dropdown can't resolve a CSS `var(--RED9)` reference itself the way
+  the Muya webview does.
+  - Picking a custom color adds (or, on a repeat pick for the same level, updates in place)
+    a single `"Custom (#hex)"` entry in that level's dropdown rather than accumulating
+    duplicates. `self.settings['muya_heading_colors']`'s per-level value is now either a
+    preset hue name (unchanged, fully backward compatible with existing saved settings) or
+    a raw `"#rrggbb"` string.
+  - A custom hex is applied identically in both light and dark theme (theme-shade-invariant
+    by design) — unlike a preset hue, which always gets an automatically-derived,
+    guaranteed-readable shade per theme. Picking a fully custom color is a deliberate
+    opt-out of that per-theme-safe-shade guarantee, not something solved with a second
+    light/dark custom value per level.
+  - Verified with an isolated offscreen test exercising the full round trip: swatch icons
+    on preset items, a custom pick, a second pick updating in place, `_apply_settings()`/
+    `_notes_paper_css()` both reflecting the custom hex, a simulated Settings-dialog reopen
+    correctly re-showing/re-selecting a previously-picked custom color, and switching back
+    to a preset correctly restoring the `var()` CSS path.
+
 ## 2026-10-21 (Desktop, Notes undo-history fix; Backup now includes Documents/Images; virtual-desktop Features toggle)
 
 ### Added

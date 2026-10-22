@@ -2587,16 +2587,43 @@ class ProjectFlowApp(QMainWindow):
         layout.addRow(heading_colors_label)
 
         saved_heading_hues = self.settings.get('muya_heading_colors', self.MUYA_HEADING_DEFAULTS)
+        # Swatches show the color as it will actually render in the CURRENT theme — matches
+        # _notes_paper_css()'s own theme-aware shade choice (9 for light, 4 for dark).
+        swatch_shade = 4 if self.current_theme == "dark" else 9
         self._settings_muya_heading_combos = {}
+        self._settings_muya_custom_idx = {}
         for level in self.MUYA_HEADING_LEVELS:
             level_label = QLabel(f"  {level.upper()}:")
             level_label.setStyleSheet(label_style)
             combo = QComboBox()
-            combo.addItems(self.MUYA_HEADING_HUES)
-            combo.setCurrentText(saved_heading_hues.get(level, self.MUYA_HEADING_DEFAULTS.get(level, "None")))
+            combo.addItem("None")
+            combo.setItemData(0, "None")
+            for hue in self.MUYA_HEADING_HUES:
+                if hue == "None":
+                    continue
+                combo.addItem(self._color_swatch_icon(self.MUYA_HEADING_HEX[hue][swatch_shade]), hue, hue)
+            combo.setIconSize(QSize(14, 14))
             combo.setStyleSheet(input_style)
+
+            saved = saved_heading_hues.get(level, self.MUYA_HEADING_DEFAULTS.get(level, "None"))
+            if isinstance(saved, str) and saved.startswith("#"):
+                # A previously-picked custom color, not one of the presets — proactively add
+                # a matching entry so it shows correctly on reopen, not just right after the
+                # button is clicked this same session (see _pick_muya_custom_color()).
+                combo.addItem(self._color_swatch_icon(saved), f"Custom ({saved})", saved)
+                custom_idx = combo.count() - 1
+                self._settings_muya_custom_idx[level] = custom_idx
+                combo.setCurrentIndex(custom_idx)
+            else:
+                combo.setCurrentText(saved)
             self._settings_muya_heading_combos[level] = combo
-            layout.addRow(level_label, combo)
+
+            row_layout = QHBoxLayout()
+            row_layout.addWidget(combo)
+            custom_btn = QPushButton("Custom…")
+            custom_btn.clicked.connect(lambda checked=False, lvl=level, cb=combo: self._pick_muya_custom_color(lvl, cb))
+            row_layout.addWidget(custom_btn)
+            layout.addRow(level_label, row_layout)
 
         layout.addRow(QLabel(""))
         return widget
@@ -5854,10 +5881,12 @@ class ProjectFlowApp(QMainWindow):
             old_theme = self.settings.get("theme", "system")
             self.settings["theme"] = new_theme
 
-            # Save Muya heading colors (hue per level; shade is derived automatically per
-            # theme in _notes_paper_css(), never stored here)
+            # Save Muya heading colors (hue per level, or a raw "#rrggbb" for a custom pick;
+            # shade is derived automatically per theme in _notes_paper_css() for presets,
+            # never stored here). currentData() (not currentText()) since the Custom entry's
+            # displayed label ("Custom (#rrggbb)") differs from its stored value (the bare hex).
             self.settings["muya_heading_colors"] = {
-                level: combo.currentText()
+                level: combo.currentData()
                 for level, combo in self._settings_muya_heading_combos.items()
             }
 
@@ -11015,6 +11044,37 @@ function filterAliases(q) {{
         chosen = QColorDialog.getColor(initial, self)
         if chosen.isValid():
             self._set_project_color(config_path, chosen.name())
+
+    def _pick_muya_custom_color(self, level, combo):
+        """Open a color picker for a Muya Heading Colors level (Settings -> Themes tab) and
+        add-or-update a "Custom (#hex)" entry in that level's combo, selecting it. Mirrors
+        _set_project_color_dialog()'s shape above. No revert-on-cancel is needed — the
+        combo's selection is untouched by the button click itself, only by a successful
+        dialog accept, unlike a combo-box-triggered dialog would need."""
+        from PyQt6.QtWidgets import QColorDialog
+        from PyQt6.QtGui import QColor
+        swatch_shade = 4 if self.current_theme == "dark" else 9
+        for i, hue in enumerate(self.MUYA_HEADING_HUES):
+            if hue != "None":
+                QColorDialog.setCustomColor(i - 1, QColor(self.MUYA_HEADING_HEX[hue][swatch_shade]))
+        current_data = combo.currentData()
+        initial = QColor(current_data) if isinstance(current_data, str) and current_data.startswith("#") else QColor("#3498db")
+        chosen = QColorDialog.getColor(initial, self, f"Choose {level.upper()} Heading Color")
+        if not chosen.isValid():
+            return
+        hexv = chosen.name()
+        label = f"Custom ({hexv})"
+        icon = self._color_swatch_icon(hexv)
+        idx = self._settings_muya_custom_idx.get(level)
+        if idx is not None and 0 <= idx < combo.count():
+            combo.setItemText(idx, label)
+            combo.setItemIcon(idx, icon)
+            combo.setItemData(idx, hexv)
+        else:
+            combo.addItem(icon, label, hexv)
+            idx = combo.count() - 1
+            self._settings_muya_custom_idx[level] = idx
+        combo.setCurrentIndex(idx)
 
     def _resolve_path(self, path):
         """Substitute a matching global path-mapping 'from' prefix with its 'to' replacement
@@ -18971,6 +19031,31 @@ function filterAliases(q) {{
         cache[color_hex] = icon
         return icon
 
+    def _color_swatch_icon(self, color_hex, size=14):
+        """A small flat colored square icon — used for the Muya Heading Colors combo boxes
+        in Settings -> Themes tab (both preset-hue and custom-picked entries), so the
+        dropdown shows what each choice actually looks like rather than just its name. Unlike
+        _folder_icon() above, this is always rendered at a small fixed size (never zoomed),
+        so no THUMBNAIL_BASE_PX-style downscale-only sizing is needed. Own cache dict, since
+        this one's key space (arbitrary custom hex values, not just folder-grid colors) is
+        unrelated to _folder_icon_cache."""
+        cache = self._muya_swatch_icon_cache if hasattr(self, '_muya_swatch_icon_cache') else {}
+        if not hasattr(self, '_muya_swatch_icon_cache'):
+            self._muya_swatch_icon_cache = cache
+        if color_hex in cache:
+            return cache[color_hex]
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color_hex))
+        painter.drawRoundedRect(QRect(1, 1, size - 2, size - 2), 2, 2)
+        painter.end()
+        icon = QIcon(pixmap)
+        cache[color_hex] = icon
+        return icon
+
     def _blue_folder_icon(self):
         return self._folder_icon("#3498db")
 
@@ -20575,6 +20660,27 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         "Blue", "Cyan", "Teal", "Green", "Lime", "Yellow", "Orange",
     ]
     MUYA_HEADING_DEFAULTS = {"h2": "Green", "h3": "Red", "h4": "Blue", "h5": "Grape", "h6": "Gray"}
+    # Hex values for each hue's shade 9 (light theme) / shade 4 (dark theme) — a static
+    # transcription of the relevant subset of assets/open-color.css. Needed because Qt's
+    # native QComboBox dropdown (unlike the Muya webview) can't resolve a CSS var(--RED9)
+    # reference itself; this is what _color_swatch_icon() paints swatches from in
+    # _create_themes_tab(). Not read by _notes_paper_css(), which still emits the CSS var
+    # reference directly for preset hues — this table exists purely for the Qt-side preview.
+    MUYA_HEADING_HEX = {
+        "Gray": {9: "#212529", 4: "#ced4da"},
+        "Red": {9: "#c92a2a", 4: "#ff8787"},
+        "Pink": {9: "#a61e4d", 4: "#f783ac"},
+        "Grape": {9: "#862e9c", 4: "#da77f2"},
+        "Violet": {9: "#5f3dc4", 4: "#9775fa"},
+        "Indigo": {9: "#364fc7", 4: "#748ffc"},
+        "Blue": {9: "#1864ab", 4: "#4dabf7"},
+        "Cyan": {9: "#0b7285", 4: "#3bc9db"},
+        "Teal": {9: "#087f5b", 4: "#38d9a9"},
+        "Green": {9: "#2b8a3e", 4: "#69db7c"},
+        "Lime": {9: "#5c940d", 4: "#a9e34b"},
+        "Yellow": {9: "#e67700", 4: "#ffd43b"},
+        "Orange": {9: "#d9480f", 4: "#ffa94d"},
+    }
 
     def _notes_paper_css(self):
         """CSS for the 'paper on page' look — a Documentary-style paper card floating
@@ -20652,16 +20758,26 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             border = "1px solid rgba(255, 255, 255, 0.42)"
             muya_root_vars = ""
             heading_shade = 9  # darkest shade, per the user's own original suggestion
-        # User-selectable per level (Settings → Settings tab → Muya Heading Colors), hue
-        # only — the shade is always derived from the theme above, so a chosen hue is
-        # guaranteed a sensible contrast in both light and dark without the user having to
-        # pick (or get wrong) a specific shade themselves. "None" opts a level out entirely,
-        # leaving it on the plain inherited ink color, same as H1's own permanent treatment.
+        # User-selectable per level (Settings → Themes tab → Muya Heading Colors) — either a
+        # preset hue name, or a raw "#rrggbb" from the custom color picker (see
+        # _pick_muya_custom_color()). For a preset hue, the shade is always derived from the
+        # theme above, so a chosen hue is guaranteed a sensible contrast in both light and
+        # dark without the user having to pick (or get wrong) a specific shade themselves.
+        # A custom hex has no such guarantee — it's used literally, identically in both
+        # themes, since the user explicitly picked one specific color rather than a hue; an
+        # accepted, documented tradeoff rather than asking for a separate light/dark custom
+        # value per level, which would add real complexity for marginal benefit. "None" opts
+        # a level out entirely, leaving it on the plain inherited ink color, same as H1's own
+        # permanent treatment.
         heading_hues = self.settings.get('muya_heading_colors', self.MUYA_HEADING_DEFAULTS)
         heading_rules = []
         for level in self.MUYA_HEADING_LEVELS:
             hue = heading_hues.get(level, self.MUYA_HEADING_DEFAULTS.get(level, "None"))
-            if hue != "None":
+            if hue == "None":
+                continue
+            elif isinstance(hue, str) and hue.startswith("#"):
+                heading_rules.append(f"#editor {level} {{ color: {hue}; }}")
+            else:
                 heading_rules.append(f"#editor {level} {{ color: var(--{hue.upper()}{heading_shade}); }}")
         heading_css = "\n".join(heading_rules)
         return f"""
