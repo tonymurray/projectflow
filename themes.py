@@ -163,6 +163,20 @@ THEMES = {
         # Footer
         "bg_footer": "#5a5a5a",
         "fg_footer": "#ffffff",
+
+        # Structural polish (border-radius + QGraphicsDropShadowEffect tokens — see
+        # "modern" theme below for where these actually have visible effect). Kept at
+        # today's existing values here so light theme is visually unchanged; Qt stylesheets
+        # have no CSS box-shadow equivalent, so shadow_card_* are plain Python values
+        # consumed by _apply_card_effect(), not raw CSS — shadow_card_color is a plain
+        # #rrggbb (QColor's string constructor does NOT parse CSS rgba(...) syntax,
+        # confirmed empirically: QColor("rgba(0,0,0,0)").isValid() is False), with opacity
+        # applied separately via shadow_card_alpha (0.0-1.0, QColor.setAlphaF()).
+        "radius_card": "4px",
+        "shadow_card_color": "#000000",
+        "shadow_card_alpha": 0.0,
+        "shadow_card_blur": 0,
+        "shadow_card_offset": (0, 0),
     },
 
     "dark": {
@@ -286,13 +300,229 @@ THEMES = {
         # Footer
         "bg_footer": "#363636",
         "fg_footer": "#ffffff",
-    }
+
+        # Structural polish — see light theme's identical comment above. Unchanged values,
+        # dark theme is visually unaffected.
+        "radius_card": "4px",
+        "shadow_card_color": "#000000",
+        "shadow_card_alpha": 0.0,
+        "shadow_card_blur": 0,
+        "shadow_card_offset": (0, 0),
+    },
+
+    # A third, visually distinct light theme — airy off-white backgrounds, a clean blue
+    # accent, and pale-background status badges, loosely inspired by modern SaaS-dashboard
+    # UIs (color/shape sense only, not a copy of any specific product). Settings-only for
+    # now (see _create_themes_tab()'s combo and toggle_theme()'s docstring) — the footer
+    # 🌙/☀️ button deliberately still only ever toggles light<->dark. Paired with a bundled
+    # Lato font (see apply_global_styles() for native widgets, _notes_paper_css()/
+    # _todo_paper_css() for the Muya webview, and help/shell.html for the Help viewer) and
+    # the radius_card/shadow_card_* "structural polish" tokens below, both deliberately
+    # curated to a handful of representative surfaces rather than applied everywhere (see
+    # CLAUDE.md's Theme System section for the full writeup).
+    "modern": {
+        # Backgrounds
+        "bg_primary": "#ffffff",
+        "bg_secondary": "#f4f5f7",
+        "bg_panel": "#374151",
+        "bg_input": "#f8f9fb",
+        "bg_button": "#eef1f5",
+        "bg_button_hover": "#2060de",
+        "bg_group": "#ffffff",
+        "bg_list_hover": "#eef2ff",
+
+        # Category/accent colors
+        "bg_category": "#2060de",
+        "bg_category_hover": "#2558c4",
+        "tab_launcher_resting": "#0a5ca9",
+        "tab_launcher_active": "#2060de",
+        "bg_success": "#16a34a",
+        "bg_success_hover": "#15803d",
+        "bg_danger": "#ef4444",
+        "bg_danger_hover": "#dc2626",
+        "bg_warning": "#f59e0b",
+        "bg_purple": "#8b5cf6",
+        "bg_purple_light": "#f3f0ff",
+
+        # Navy/action buttons
+        "bg_navy": "#1e3a8a",
+        "bg_navy_hover": "#1e40af",
+        "bg_navy_checked": "#f59e0b",
+
+        # Green gradient for bottom buttons (darkest to brightest, same success-green
+        # family convention the dark theme's own comment describes)
+        "bg_green_1": "#0d3d26",
+        "bg_green_2": "#14532d",
+        "bg_green_3": "#16a34a",
+        "bg_green_4": "#4ade80",
+
+        # Recent/All configs — a light blue-tinted family (matching the dashboard
+        # reference's own soft-blue "selected nav item" pill) rather than neutral grey
+        "bg_config_current": "#dbe4ff",
+        "bg_config": "#eef1f5",
+        "bg_config_hover": "#e0e7ff",
+        "bg_config_arrow": "#e5e9f0",
+        "bg_config_all": "#f4f5f7",
+        "bg_config_all_current": "#eef1f5",
+        "bg_config_all_arrow": "#eceff3",
+
+        # Text colors
+        "fg_primary": "#1a1a1a",
+        "fg_secondary": "#6b7280",
+        "fg_muted": "#9ca3af",
+        "fg_on_dark": "#ffffff",
+        "fg_on_button": "#1a1a1a",
+        "fg_link": "#2060de",
+
+        # Borders
+        "border": "#e5e7eb",
+        "border_dark": "#d1d5db",
+        "border_light": "#f3f4f6",
+
+        # Status colors
+        "status_success": "#16a34a",
+        "status_error": "#ef4444",
+        "status_info": "#2563eb",
+        "status_warning": "#f59e0b",
+
+        # Code/console — stays dark even in this light theme, matching light theme's own
+        # convention that code/terminal surfaces are dark regardless of the app theme
+        "bg_code": "#1e293b",
+        "fg_code": "#e2e8f0",
+        "bg_console": "#0f172a",
+
+        # Viewer areas
+        "bg_viewer": "#374151",
+
+        # Markdown highlight
+        "bg_highlight": "#b91c1c",
+
+        # Help viewer markdown content
+        "bg_help": "#f4f5f7",
+        "bg_code_inline": "#eef1f5",
+        "fg_help_h1": "#1a1a1a",
+        "fg_help_h2": "#2f3b4c",
+        "fg_help_h3": "#6b7280",
+        "border_help_h1": "#2060de",
+        "border_help_h2": "#e5e7eb",
+
+        # Examples viewer
+        "bg_example_card": "#ffffff",
+        "border_example_card": "#e5e7eb",
+        "bg_example_type_builtin": "#16a34a",
+        "bg_example_type_simple": "#2060de",
+        "bg_example_type_complex": "#8b5cf6",
+        "bg_example_type_custom": "#f59e0b",
+
+        # Footer
+        "bg_footer": "#1f2937",
+        "fg_footer": "#ffffff",
+
+        # Structural polish — see light theme's comment above for what these mean. This is
+        # the one theme where they actually have visible effect.
+        "radius_card": "14px",
+        "shadow_card_color": "#0f172a",
+        "shadow_card_alpha": 0.14,
+        "shadow_card_blur": 24,
+        "shadow_card_offset": (0, 6),
+    },
 }
 
 
-def get_theme(theme_name="light"):
-    """Get a theme dictionary by name"""
-    return THEMES.get(theme_name, THEMES["light"])
+# =============================================================================
+# "modern" theme accent-color customization (Settings -> Themes tab)
+# =============================================================================
+# A handful of the "modern" theme's color keys are driven by just 2 accent colors
+# (a blue and a green, each with an "offset"/darker variant) reused across several
+# keys at once — see _create_themes_tab()'s "Modern Theme Colors" section in
+# projectflow.py for the picker UI, and derive_modern_overrides() below for exactly
+# which keys each of the 4 accent colors drives. These defaults match THEMES["modern"]'s
+# own hardcoded values exactly, so a user who never customizes anything sees the
+# identical palette either way.
+MODERN_ACCENT_DEFAULTS = {
+    "accent_blue": "#2060de",
+    "accent_blue_offset": "#0a5ca9",
+    "accent_green": "#16a34a",
+    "accent_green_offset": "#15803d",
+}
+
+
+def _hex_to_rgb(hex_str):
+    hex_str = hex_str.lstrip('#')
+    return tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _rgb_to_hex(rgb):
+    return '#{:02x}{:02x}{:02x}'.format(*(max(0, min(255, round(c))) for c in rgb))
+
+
+def _lerp_rgb(hex1, hex2, t):
+    """Linear interpolation between two hex colors at t (0.0 = hex1, 1.0 = hex2)."""
+    r1, g1, b1 = _hex_to_rgb(hex1)
+    r2, g2, b2 = _hex_to_rgb(hex2)
+    return _rgb_to_hex((r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t))
+
+
+def _lighten_rgb(hex_str, amount):
+    """Scale each RGB channel toward 255 by `amount` (0.0-1.0) — same "scale by a ratio,
+    preserve hue" technique already used to derive the dark theme's own bg_green_1..4
+    gradient (see CLAUDE.md's Theme System section)."""
+    r, g, b = _hex_to_rgb(hex_str)
+    return _rgb_to_hex((r + (255 - r) * amount, g + (255 - g) * amount, b + (255 - b) * amount))
+
+
+def derive_modern_overrides(accent_colors):
+    """Expand the 4 user-settable accent colors (any subset — missing keys fall back to
+    MODERN_ACCENT_DEFAULTS) into the full set of THEMES["modern"] keys they drive. See the
+    module-level comment above and projectflow.py's "Modern Theme Colors" Settings section
+    for the full writeup of which keys map to which accent."""
+    accent_colors = accent_colors or {}
+    blue = accent_colors.get("accent_blue", MODERN_ACCENT_DEFAULTS["accent_blue"])
+    blue_offset = accent_colors.get("accent_blue_offset", MODERN_ACCENT_DEFAULTS["accent_blue_offset"])
+    green = accent_colors.get("accent_green", MODERN_ACCENT_DEFAULTS["accent_green"])
+    green_offset = accent_colors.get("accent_green_offset", MODERN_ACCENT_DEFAULTS["accent_green_offset"])
+
+    return {
+        # Blue family — literal reuse, matching THEMES["modern"]'s own existing convention
+        # of one accent blue repeated across several keys.
+        "bg_button_hover": blue,
+        "bg_category": blue,
+        "tab_launcher_active": blue,
+        "fg_link": blue,
+        "border_help_h1": blue,
+        "bg_example_type_simple": blue,
+        "tab_launcher_resting": blue_offset,
+        # Folded into Blue Offset too (previously an independent third shade, #2558c4) —
+        # a deliberate simplification so this stays "2 blue knobs," not 3.
+        "bg_category_hover": blue_offset,
+
+        # Green family — literal reuse (all 4 already share one literal value today).
+        "bg_success": green,
+        "bg_green_3": green,
+        "status_success": green,
+        "bg_example_type_builtin": green,
+        "bg_success_hover": green_offset,
+
+        # Green gradient (bg_green_1/2/4) — auto-derived, not directly settable (see
+        # Context in the plan this was built from for why: a real 4-stop ramp doesn't map
+        # cleanly onto 2 knobs, and the resting->hover->active brightness progression has a
+        # documented history of bugs when it's not monotonic).
+        "bg_green_1": green_offset,
+        "bg_green_2": _lerp_rgb(green_offset, green, 0.5),
+        "bg_green_4": _lighten_rgb(green, 0.4),
+    }
+
+
+def get_theme(theme_name="light", accent_colors=None):
+    """Get a theme dictionary by name. For "modern", an optional accent_colors dict (see
+    derive_modern_overrides()) overrides the 16 accent-driven keys on top of a COPY of the
+    base theme — light/dark, and a "modern" call with no accent_colors, are unaffected and
+    return exactly what they always have."""
+    theme = THEMES.get(theme_name, THEMES["light"])
+    if theme_name == "modern" and accent_colors:
+        theme = dict(theme)
+        theme.update(derive_modern_overrides(accent_colors))
+    return theme
 
 
 def detect_system_theme():

@@ -21,10 +21,11 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
-    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton, QSlider
+    QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton, QSlider,
+    QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
-from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics
+from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics, QFontDatabase
 import re
 import configparser
 import urllib.request
@@ -40,8 +41,27 @@ import fitz  # PyMuPDF for PDF rendering
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile, QWebEnginePage
 from PyQt6.QtCore import QUrl
-from themes import get_theme, detect_system_theme, THEMES, get_dimensions
+from themes import get_theme, detect_system_theme, THEMES, get_dimensions, MODERN_ACCENT_DEFAULTS
 import os_integration
+
+# Bundled fonts available for the "modern" theme (Settings -> Themes tab -> "Modern Theme
+# Font"), all under assets/fonts/ — a curated set, not an arbitrary-system-font picker,
+# specifically so the choice renders identically everywhere regardless of what's installed
+# on a given machine (the same reason Lato alone needed bundling in the first place: the
+# Notes/Help QWebEngineView's Chromium renderer doesn't see fonts registered only via
+# QFontDatabase.addApplicationFont(), so every choice here needs its own @font-face too —
+# see apply_global_styles()/_notes_paper_css()/_build_help_html()). Display name (dict key)
+# is kept deliberately separate from `family` (the exact string passed to QFont()/CSS
+# font-family) — e.g. "DM Sans"'s nixpkgs package embeds "DeepMind Sans" as its real
+# internal family name, confirmed via `fc-scan`, not the commonly-known branded name.
+MODERN_FONT_CHOICES = {
+    "Lato": {"files": ("Lato-Regular.ttf", "Lato-Bold.ttf"), "family": "Lato"},
+    "Roboto": {"files": ("Roboto-Regular.ttf", "Roboto-Bold.ttf"), "family": "Roboto"},
+    "Work Sans": {"files": ("WorkSans-Regular.ttf", "WorkSans-Bold.ttf"), "family": "Work Sans"},
+    "DM Sans": {"files": ("DMSans-Regular.ttf", "DMSans-Bold.ttf"), "family": "DeepMind Sans"},
+    "Poppins": {"files": ("Poppins-Regular.ttf", "Poppins-Bold.ttf"), "family": "Poppins"},
+}
+MODERN_FONT_DEFAULT = "Lato"
 
 
 # Built-in smart default handlers using the OS's own default-open mechanism
@@ -2051,7 +2071,7 @@ class ProjectFlowApp(QMainWindow):
             self.current_theme = detect_system_theme()
         else:
             self.current_theme = theme_setting
-        self.theme = get_theme(self.current_theme)
+        self.theme = get_theme(self.current_theme, self.settings.get('modern_accent_colors'))
 
     def t(self, key):
         """Get a theme color by key (shorthand helper)"""
@@ -2067,7 +2087,12 @@ class ProjectFlowApp(QMainWindow):
         return self.dimensions.get(key, 0)
 
     def apply_global_styles(self):
-        """Apply application-wide stylesheet for tooltips and global elements"""
+        """Apply application-wide stylesheet for tooltips and global elements, and the
+        "modern" theme's bundled Lato font for native widgets. This is the one shared place
+        theme-global (not per-widget) state gets (re-)applied — called from every point
+        current_theme can change (toggle_theme(), _apply_settings()'s theme-change block,
+        and once at startup after init_theme()) — so the font swap lives here rather than a
+        separate helper that would need its own wiring into the same three call sites."""
         app = QApplication.instance()
         if app:
             # Global stylesheet for tooltips with generous padding and high contrast
@@ -2093,8 +2118,52 @@ class ProjectFlowApp(QMainWindow):
             """
             app.setStyleSheet(tooltip_style)
 
+            # Native-widget font: the selected MODERN_FONT_CHOICES entry for "modern", the
+            # real pre-custom-font system default otherwise. QFontDatabase.addApplicationFont()
+            # (main()) registers every bundled choice up front, so any of them is a valid
+            # family name to request here — this is what actually makes every native widget
+            # use it, via QApplication's own default font cascading to any widget without a
+            # more specific override. getattr() default covers constructing ProjectFlowApp
+            # directly without going through main() first (e.g. isolated test harnesses).
+            default_font = getattr(app, '_pf_default_font', None) or QFont()
+            if self.current_theme == "modern":
+                font_choice = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
+                font_entry = MODERN_FONT_CHOICES.get(font_choice, MODERN_FONT_CHOICES[MODERN_FONT_DEFAULT])
+                app.setFont(QFont(font_entry['family']))
+            else:
+                app.setFont(default_font)
+
+    def _apply_card_effect(self, widget):
+        """Apply the "modern" theme's drop-shadow "card" lift to widget — a no-op for
+        light/dark (explicitly clears any existing effect, rather than relying on the
+        zero-blur/zero-alpha token values alone, so this is unambiguous). Rounded corners
+        are the caller's own job via radius_card in its .setStyleSheet() (QSS does support
+        border-radius) — this only handles the shadow, since Qt stylesheets have no CSS
+        box-shadow equivalent; QGraphicsDropShadowEffect is the standard Qt workaround.
+
+        Because build_main_content() and the dialog builders reconstruct widgets from
+        scratch on every refresh, this must be called again at each widget's own
+        construction site on every rebuild — exactly like every other per-widget
+        .setStyleSheet(f"...{self.t(key)}...") call in this app already is, not a new
+        burden specific to this helper."""
+        if self.current_theme != "modern":
+            widget.setGraphicsEffect(None)
+            return
+        effect = QGraphicsDropShadowEffect(widget)
+        color = QColor(self.t('shadow_card_color'))
+        color.setAlphaF(self.t('shadow_card_alpha'))
+        effect.setColor(color)
+        effect.setBlurRadius(self.t('shadow_card_blur'))
+        offset_x, offset_y = self.t('shadow_card_offset')
+        effect.setOffset(offset_x, offset_y)
+        widget.setGraphicsEffect(effect)
+
     def toggle_theme(self):
-        """Toggle between light and dark themes"""
+        """Toggle between light and dark themes. Deliberately a strict binary swap — the
+        "modern" theme (see themes.py/THEMES) is Settings-only for now, reachable only via
+        the Themes tab dropdown, not this footer button. Clicking this while on "modern"
+        falls into the `else` branch below and lands on "light" (not back on "modern") —
+        accepted, documented behavior, not a bug."""
         # The general Muya markdown viewer (_open_markdown_in_muya_editor) isn't covered by
         # refresh_projects()'s automatic per-theme reload — that mechanism only exists for the
         # dedicated Notes session (see notes_reload_key in build_main_content()). Its webview
@@ -2112,7 +2181,7 @@ class ProjectFlowApp(QMainWindow):
             self.current_theme = "light"
         self.settings["theme"] = self.current_theme
         self.save_settings()
-        self.theme = get_theme(self.current_theme)
+        self.theme = get_theme(self.current_theme, self.settings.get('modern_accent_colors'))
         self.apply_global_styles()
         self.refresh_projects()
 
@@ -2565,14 +2634,103 @@ class ProjectFlowApp(QMainWindow):
         theme_label = QLabel("Theme:")
         theme_label.setStyleSheet(label_style)
         self._settings_theme_combo = QComboBox()
-        self._settings_theme_combo.addItems(["system", "light", "dark"])
+        self._settings_theme_combo.addItems(["system", "light", "dark", "modern"])
         self._settings_theme_combo.setCurrentText(self.settings.get("theme", "system"))
         self._settings_theme_combo.setStyleSheet(input_style)
         layout.addRow(theme_label, self._settings_theme_combo)
 
-        theme_hint = QLabel("The footer 🌙/☀️ button is the quicker way to toggle this day-to-day.")
+        theme_hint = QLabel(
+            "The footer 🌙/☀️ button is the quicker way to toggle between light/dark "
+            "day-to-day. \"modern\" is reachable only from here for now; the footer button "
+            "will switch you to light if clicked while on it."
+        )
         theme_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
         layout.addRow("", theme_hint)
+
+        # Modern Theme Font — a curated set of bundled fonts (not an arbitrary-system-font
+        # picker — see MODERN_FONT_CHOICES's own comment for why), applied to native
+        # widgets, the Notes/To-Do editor, and the Help viewer alike. Only affects "modern".
+        font_label = QLabel("Modern Theme Font:")
+        font_label.setStyleSheet(label_style)
+        self._settings_modern_font_combo = QComboBox()
+        for _display_name, _entry in MODERN_FONT_CHOICES.items():
+            self._settings_modern_font_combo.addItem(_display_name)
+            _idx = self._settings_modern_font_combo.count() - 1
+            # Live preview — each item renders in its own actual typeface, since every
+            # bundled font is already registered with Qt by main() before Settings opens.
+            self._settings_modern_font_combo.setItemData(_idx, QFont(_entry['family']), Qt.ItemDataRole.FontRole)
+        self._settings_modern_font_combo.setCurrentText(self.settings.get('modern_font', MODERN_FONT_DEFAULT))
+        self._settings_modern_font_combo.setStyleSheet(input_style)
+        layout.addRow(font_label, self._settings_modern_font_combo)
+
+        layout.addRow(QLabel(""))
+
+        # Modern Theme Colors — a handful of "modern" theme keys are driven by just 4
+        # accent colors (a blue/green pair, each with an "offset"/darker variant) reused
+        # across several theme keys at once — see derive_modern_overrides() in themes.py
+        # for exactly which keys each one drives (16 keys total from 4 knobs). Swatch
+        # buttons rather than Muya Heading Colors' combo+preset-icon pattern, since there's
+        # no fixed preset list here, just "pick any color for this role" — modeled directly
+        # on the existing Project Color picker (_set_project_color_dialog()): QColorDialog,
+        # act only if chosen.isValid().
+        modern_colors_label = QLabel("Modern Theme Colors:")
+        modern_colors_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
+        layout.addRow(modern_colors_label)
+
+        modern_colors_hint = QLabel("Only affects the \"modern\" theme.")
+        modern_colors_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        layout.addRow("", modern_colors_hint)
+
+        saved_accent_colors = self.settings.get('modern_accent_colors', {})
+        self._settings_modern_accent_swatches = {}
+
+        def _style_swatch(btn, hex_value):
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {hex_value}; "
+                f"border: 1px solid {self.t('border')}; border-radius: 4px; }}"
+            )
+
+        def _pick_accent_color(key, label_text, btn):
+            from PyQt6.QtWidgets import QColorDialog
+            from PyQt6.QtGui import QColor
+            current = btn.property('hex') or MODERN_ACCENT_DEFAULTS[key]
+            chosen = QColorDialog.getColor(QColor(current), self, f"Choose {label_text}")
+            if chosen.isValid():
+                btn.setProperty('hex', chosen.name())
+                _style_swatch(btn, chosen.name())
+
+        accent_rows = [
+            ("accent_blue", "Accent Blue"),
+            ("accent_blue_offset", "Accent Blue (offset)"),
+            ("accent_green", "Accent Green"),
+            ("accent_green_offset", "Accent Green (offset)"),
+        ]
+        for key, label_text in accent_rows:
+            row_label = QLabel(f"  {label_text}:")
+            row_label.setStyleSheet(label_style)
+            swatch_btn = QPushButton()
+            swatch_btn.setFixedSize(32, 24)
+            initial_hex = saved_accent_colors.get(key, MODERN_ACCENT_DEFAULTS[key])
+            swatch_btn.setProperty('hex', initial_hex)
+            _style_swatch(swatch_btn, initial_hex)
+            swatch_btn.clicked.connect(
+                lambda checked=False, k=key, lt=label_text, b=swatch_btn: _pick_accent_color(k, lt, b)
+            )
+            self._settings_modern_accent_swatches[key] = swatch_btn
+            swatch_row = QHBoxLayout()
+            swatch_row.addWidget(swatch_btn)
+            swatch_row.addStretch()
+            layout.addRow(row_label, swatch_row)
+
+        def _reset_accent_colors():
+            for key, btn in self._settings_modern_accent_swatches.items():
+                default_hex = MODERN_ACCENT_DEFAULTS[key]
+                btn.setProperty('hex', default_hex)
+                _style_swatch(btn, default_hex)
+
+        reset_accent_btn = QPushButton("↺ Reset to Defaults")
+        reset_accent_btn.clicked.connect(_reset_accent_colors)
+        layout.addRow("", reset_accent_btn)
 
         layout.addRow(QLabel(""))
 
@@ -2582,9 +2740,34 @@ class ProjectFlowApp(QMainWindow):
         # always derived automatically in _notes_paper_css() — the user only picks the hue,
         # never the shade, so every choice is guaranteed readable in both themes. See
         # MUYA_HEADING_LEVELS/MUYA_HEADING_HUES/MUYA_HEADING_DEFAULTS near _notes_paper_css().
+        #
+        # Wrapped in its own QFrame "card" — the one representative Settings-dialog section
+        # given the structural-polish treatment (radius_card + _apply_card_effect()) as a
+        # proof-of-pattern other sections can follow later; chosen since it's the section on
+        # the very tab a user opens to pick the "modern" theme. No Settings-tab section had
+        # any container widget before this (confirmed — every tab is one flat QFormLayout
+        # directly on the tab's root QWidget) — light/dark get zero margins on the nested
+        # QFormLayout below so they stay pixel-identical to the old flat-rows layout; only
+        # "modern" gets the extra padding a visible card needs to not look cramped.
+        heading_card = QFrame()
+        heading_card.setObjectName("pf_muya_heading_card")
+        heading_card_layout = QFormLayout(heading_card)
+        heading_card_layout.setSpacing(12)
+        if self.current_theme == "modern":
+            heading_card_layout.setContentsMargins(16, 16, 16, 16)
+            heading_card.setStyleSheet(
+                f"QFrame#pf_muya_heading_card {{ background-color: {self.t('bg_primary')}; "
+                f"border-radius: {self.t('radius_card')}; border: 1px solid {self.t('border')}; }}"
+            )
+        else:
+            heading_card_layout.setContentsMargins(0, 0, 0, 0)
+            heading_card.setStyleSheet("")
+        self._apply_card_effect(heading_card)
+        layout.addRow(heading_card)
+
         heading_colors_label = QLabel("Muya Heading Colors:")
         heading_colors_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
-        layout.addRow(heading_colors_label)
+        heading_card_layout.addRow(heading_colors_label)
 
         saved_heading_hues = self.settings.get('muya_heading_colors', self.MUYA_HEADING_DEFAULTS)
         # Swatches show the color as it will actually render in the CURRENT theme — matches
@@ -2623,7 +2806,7 @@ class ProjectFlowApp(QMainWindow):
             custom_btn = QPushButton("Custom…")
             custom_btn.clicked.connect(lambda checked=False, lvl=level, cb=combo: self._pick_muya_custom_color(lvl, cb))
             row_layout.addWidget(custom_btn)
-            layout.addRow(level_label, row_layout)
+            heading_card_layout.addRow(level_label, row_layout)
 
         layout.addRow(QLabel(""))
         return widget
@@ -5890,6 +6073,17 @@ class ProjectFlowApp(QMainWindow):
                 for level, combo in self._settings_muya_heading_combos.items()
             }
 
+            # Save "modern" theme accent colors (see derive_modern_overrides() in
+            # themes.py) — unconditional write, same shape as muya_heading_colors above,
+            # no default-omission diffing needed.
+            self.settings["modern_accent_colors"] = {
+                key: btn.property('hex')
+                for key, btn in self._settings_modern_accent_swatches.items()
+            }
+
+            # Save "modern" theme font (see MODERN_FONT_CHOICES)
+            self.settings["modern_font"] = self._settings_modern_font_combo.currentText()
+
             # Save startup mode
             _mode_text = self._settings_startup_mode.currentText()
             _mode_val = {"Last opened project": "last_used", "Main project": "main", "Specific project": "specific"}.get(_mode_text, "last_used")
@@ -6052,14 +6246,20 @@ class ProjectFlowApp(QMainWindow):
                 if hasattr(self.handlers_module, 'set_fm_always_tabs_config'):
                     self.handlers_module.set_fm_always_tabs_config(self.settings.get("fm_always_tabs", False))
 
-            # Apply theme change if needed
+            # Resolve the theme name only when it actually changed (system-preference
+            # lookup vs. literal). self.theme/apply_global_styles() below always re-run
+            # regardless, even when the theme name itself didn't change — needed so
+            # "modern" accent-color edits (self.settings['modern_accent_colors'], saved
+            # just above) take effect while STAYING on "modern", not just on an explicit
+            # theme switch. get_theme() is cheap (a dict copy + small merge), so there's no
+            # cost to always recomputing it here.
             if new_theme != old_theme:
                 if new_theme == "system":
                     self.current_theme = detect_system_theme()
                 else:
                     self.current_theme = new_theme
-                self.theme = get_theme(self.current_theme)
-                self.apply_global_styles()
+            self.theme = get_theme(self.current_theme, self.settings.get('modern_accent_colors'))
+            self.apply_global_styles()
 
         # Always refresh to show project setting changes
         self.refresh_projects()
@@ -6203,6 +6403,11 @@ class ProjectFlowApp(QMainWindow):
         path-mapping fallback (see _resolve_existing_path()/_path_is_via_mapping()) — the
         same pale blue and reasoning as the folder browser's path-label badge (see UI
         Features → Folder browser / Settings Dialog → path mappings description)."""
+        # "modern" theme gets the larger radius_card token here too — same reasoning/token
+        # as build_main_content()'s own _pf_btn_radius (these are the individual launcher
+        # item rows, the actual entries the mismatch was reported against); light/dark keep
+        # the original literal 3px, unaffected.
+        _radius = self.t('radius_card') if self.current_theme == "modern" else "3px"
         if mapped:
             if self.current_theme == "dark":
                 bg, border, fg = "#1c3a52", "#2a5a82", "#8ecbff"
@@ -6215,7 +6420,7 @@ class ProjectFlowApp(QMainWindow):
                     background-color: {bg};
                     color: {fg};
                     border: 1px solid {border};
-                    border-radius: 3px;
+                    border-radius: {_radius};
                 }}
                 QPushButton:hover {{
                     background-color: {self.t('bg_button_hover')};
@@ -6231,7 +6436,7 @@ class ProjectFlowApp(QMainWindow):
                     background-color: {self.t('bg_success')};
                     color: {self.t('fg_on_dark')};
                     border: 1px solid {self.t('bg_success_hover')};
-                    border-radius: 3px;
+                    border-radius: {_radius};
                 }}
                 QPushButton:hover {{
                     background-color: {self.t('bg_button_hover')};
@@ -6247,7 +6452,7 @@ class ProjectFlowApp(QMainWindow):
                     background-color: {self.t('bg_button')};
                     color: {self.t('fg_primary')};
                     border: 1px solid {self.t('border')};
-                    border-radius: 3px;
+                    border-radius: {_radius};
                 }}
                 QPushButton:hover {{
                     background-color: {self.t('bg_button_hover')};
@@ -9396,6 +9601,14 @@ function filterAliases(q) {{
         title_bar = QHBoxLayout()
         title_bar.setContentsMargins(5, 5, 5, 10)
 
+        # "modern" theme gets the larger radius_card token on the title bar's own buttons
+        # (hamburger mega-menu, Help/Edit Project/Save/Exit Immersive) too — these sit
+        # directly above the now-rounded launcher chrome, so leaving them at the original
+        # small radius was the same kind of visible mismatch already fixed for
+        # build_main_content()'s own buttons (see _pf_btn_radius there). light/dark keep
+        # the original literal 4px, unaffected.
+        _pf_title_btn_radius = self.t('radius_card') if self.current_theme == "modern" else "4px"
+
         # Hamburger mega-menu button — a fast, additional way to switch projects (Pinned/
         # Recent/All/Folder side by side in one popup) without scrolling to the always-visible
         # Projects section below, which is untouched by this. See _show_project_mega_menu().
@@ -9408,7 +9621,7 @@ function filterAliases(q) {{
             QPushButton {{
                 background-color: {self.t('bg_button')};
                 border: 1px solid {self.t('border')};
-                border-radius: 4px;
+                border-radius: {_pf_title_btn_radius};
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_button_hover')};
@@ -9476,7 +9689,7 @@ function filterAliases(q) {{
                 background-color: {self.t('bg_button')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
-                border-radius: 4px;
+                border-radius: {_pf_title_btn_radius};
                 padding: 5px 12px;
                 font-weight: bold;
                 font-size: 12px;
@@ -11891,6 +12104,18 @@ function filterAliases(q) {{
         all_columns = [self.COLUMN_1]
         self._launcher_search_refs = []
 
+        # "modern" theme gets the larger radius_card token on every launcher/viewer-tab
+        # button, search/entry box, and launcher item button built below — the three main
+        # column panels and category headers already got this treatment (see
+        # _apply_card_effect()/radius_card in themes.py), but the launcher tab row
+        # (Resources/Files/Apps), viewer tab row (Notes/Editor/Web/PDF/etc), search box,
+        # and individual launcher item rows were left at their original small radius,
+        # producing a visible mismatch against the now-rounded category headers (reported
+        # directly, with a screenshot). light/dark keep their original literal 3px,
+        # completely unaffected — computed once here rather than repeated as a ternary at
+        # each of the ~20 style blocks below that reference it.
+        _pf_btn_radius = self.t('radius_card') if self.current_theme == "modern" else "3px"
+
         # Projects section widgets (projects_layout/color_strip_widget/color_sort_btn) are
         # only (re)built below when settings["show_projects_section"] is True. Reset them to
         # None on every build first — otherwise, once hidden, these attributes keep pointing
@@ -12008,7 +12233,7 @@ function filterAliases(q) {{
                     padding: {self.d('header_label_padding')}px;
                     background-color: {self.t('bg_panel')};
                     color: {self.t('fg_on_dark')};
-                    border-radius: 3px;
+                    border-radius: {_pf_btn_radius};
                 """
 
                 if col_idx == 0:
@@ -12020,7 +12245,7 @@ function filterAliases(q) {{
                             background-color: {self.t('bg_green_1')};
                             color: {self.t('fg_on_dark')};
                             font-weight: bold;
-                            border-radius: 3px;
+                            border-radius: {_pf_btn_radius};
                             padding: 5px;
                         }}
                         QPushButton:hover {{
@@ -12043,7 +12268,7 @@ function filterAliases(q) {{
                             background-color: {self.t('tab_launcher_resting')};
                             color: {self.t('fg_on_dark')};
                             font-weight: bold;
-                            border-radius: 3px;
+                            border-radius: {_pf_btn_radius};
                             padding: 5px 8px;
                             font-size: 11px;
                         }}
@@ -12084,7 +12309,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('tab_launcher_resting')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
-                                border-radius: 3px;
+                                border-radius: {_pf_btn_radius};
                                 padding: 5px 8px;
                                 font-size: 11px;
                             }}
@@ -12102,7 +12327,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('tab_launcher_active')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
-                                border-radius: 3px;
+                                border-radius: {_pf_btn_radius};
                                 padding: 5px 8px;
                                 font-size: 11px;
                             }}
@@ -12202,7 +12427,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('bg_secondary')};
                                 color: {self.t('fg_primary')};
                                 border: 1px solid {self.t('border')};
-                                border-radius: 3px;
+                                border-radius: {_pf_btn_radius};
                                 padding: 2px 4px;
                             }}
                             QLineEdit:focus {{
@@ -12346,7 +12571,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('bg_button')};
                                 color: {self.t('bg_danger')};
                                 border: 1px solid {self.t('border')};
-                                border-radius: 3px;
+                                border-radius: {_pf_btn_radius};
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('bg_danger')};
@@ -12385,6 +12610,12 @@ function filterAliases(q) {{
 
                         title_btn = QPushButton(f"⚡ {category_name} - Open All" if open_all_enabled else category_name)
                         title_btn.setMinimumHeight(30)
+                        # "modern" theme gets the larger radius_card token (structural
+                        # polish — see _apply_card_effect()); light/dark keep their
+                        # original literal 5px, untouched, so neither changes visually. No
+                        # drop shadow here — repeated on every category header, it would
+                        # read as cluttered rather than polished; radius alone is enough.
+                        _header_radius = self.t('radius_card') if self.current_theme == "modern" else "5px"
                         title_btn.setStyleSheet(f"""
                             QPushButton {{
                                 text-align: left;
@@ -12392,7 +12623,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('bg_category')};
                                 color: {self.t('fg_on_dark')};
                                 border: 2px solid {self.t('bg_category_hover')};
-                                border-radius: 5px;
+                                border-radius: {_header_radius};
                                 font-weight: bold;
                                 font-size: 12px;
                             }}
@@ -12637,7 +12868,7 @@ function filterAliases(q) {{
                                     background-color: {self.t('bg_button')};
                                     color: {self.t('fg_primary')};
                                     border: 1px solid {self.t('border')};
-                                    border-radius: 3px;
+                                    border-radius: {_pf_btn_radius};
                                     font-size: 14px;
                                 }}
                                 QPushButton:hover {{
@@ -12679,7 +12910,7 @@ function filterAliases(q) {{
                                         background-color: {self.t('bg_button')};
                                         color: {self.t('fg_primary')};
                                         border: 1px solid {self.t('border')};
-                                        border-radius: 3px;
+                                        border-radius: {_pf_btn_radius};
                                         font-size: 14px;
                                     }}
                                     QPushButton:hover {{
@@ -12740,7 +12971,7 @@ function filterAliases(q) {{
                                     QPushButton {{
                                         background-color: {self.t('bg_button')};
                                         border: 1px solid {self.t('border')};
-                                        border-radius: 3px;
+                                        border-radius: {_pf_btn_radius};
                                         font-size: 14px;
                                     }}
                                     QPushButton:hover {{
@@ -12774,7 +13005,7 @@ function filterAliases(q) {{
                                     QPushButton {{
                                         background-color: {self.t('bg_button')};
                                         border: 1px solid {self.t('border')};
-                                        border-radius: 3px;
+                                        border-radius: {_pf_btn_radius};
                                         font-size: 14px;
                                     }}
                                     QPushButton:hover {{
@@ -12966,7 +13197,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('bg_success')};
                                 color: {self.t('fg_on_dark')};
                                 border: 1px solid {self.t('bg_success_hover')};
-                                border-radius: 3px;
+                                border-radius: {_pf_btn_radius};
                                 padding: 4px 8px;
                                 font-size: 10px;
                             }}
@@ -13089,7 +13320,7 @@ function filterAliases(q) {{
                                 background-color: {self.t('bg_button')};
                                 color: {self.t('fg_primary')};
                                 border: 1px solid {self.t('border')};
-                                border-radius: 3px;
+                                border-radius: {_pf_btn_radius};
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('bg_purple')};
@@ -13121,7 +13352,7 @@ function filterAliases(q) {{
                             background-color: {self.t('bg_button')};
                             color: {self.t('fg_secondary')};
                             border: 1px solid {self.t('border')};
-                            border-radius: 3px;
+                            border-radius: {_pf_btn_radius};
                             padding: 4px 10px;
                             font-size: 11px;
                         }}
@@ -13150,7 +13381,7 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_category')};
                         color: {self.t('fg_on_dark')};
                         border: 1px solid {self.t('bg_category_hover')};
-                        border-radius: 3px;
+                        border-radius: {_pf_btn_radius};
                         padding: 5px 10px;
                         font-size: 11px;
                         font-weight: bold;
@@ -13174,7 +13405,7 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_category')};
                         color: {self.t('fg_on_dark')};
                         border: 1px solid {self.t('bg_category_hover')};
-                        border-radius: 3px;
+                        border-radius: {_pf_btn_radius};
                         padding: 5px 10px;
                         font-size: 11px;
                         font-weight: bold;
@@ -13246,7 +13477,7 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_green_1')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
-                        border-radius: 3px;
+                        border-radius: {_pf_btn_radius};
                         padding: 5px 8px;
                         font-size: 11px;
                     }}
@@ -13277,7 +13508,7 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_green_3')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
-                        border-radius: 3px;
+                        border-radius: {_pf_btn_radius};
                         padding: 5px 8px;
                         font-size: 11px;
                     }}
@@ -13299,7 +13530,7 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_green_1')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
-                        border-radius: 3px;
+                        border-radius: {_pf_btn_radius};
                         padding: 5px 8px;
                         font-size: 11px;
                     }}
@@ -13321,7 +13552,7 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_secondary')};
                         color: {self.t('fg_secondary')};
                         font-weight: normal;
-                        border-radius: 3px;
+                        border-radius: {_pf_btn_radius};
                         padding: 5px 8px;
                         font-size: 11px;
                     }}
@@ -14295,14 +14526,36 @@ function filterAliases(q) {{
         if self.layout_mode == "focus":
             self.notes_viewer_layout.addWidget(self.notes_panel)
 
+        # "modern" theme's structural polish: a theme-conditional card background (QSS
+        # scoped via setObjectName()+an ID selector, not a bare `QWidget { ... }` type
+        # selector — the latter would cascade to every descendant widget inside the column,
+        # not just the column's own outer background) + drop shadow on the three main
+        # column panels. These three widgets had zero existing stylesheet before this (no
+        # pre-existing rule to extend), so this is purely additive for light/dark — the
+        # else branch below explicitly clears to an empty stylesheet on every rebuild in
+        # case a prior "modern" session's styling would otherwise persist on a reused
+        # QWidget, though in practice these three are always freshly constructed here.
+        def _style_column_card(widget, name):
+            widget.setObjectName(name)
+            if self.current_theme == "modern":
+                widget.setStyleSheet(
+                    f"QWidget#{name} {{ background-color: {self.t('bg_primary')}; "
+                    f"border-radius: {self.t('radius_card')}; }}"
+                )
+            else:
+                widget.setStyleSheet("")
+            self._apply_card_effect(widget)
+
         # Wrap each column layout in a QWidget (QSplitter requires QWidget children)
         launcher_widget = QWidget()
         launcher_widget.setLayout(launcher_layout)
         self.launcher_widget = launcher_widget
+        _style_column_card(launcher_widget, "pf_launcher_panel")
 
         column2_widget = QWidget()
         column2_widget.setLayout(self.column2_layout)
         self.column2_widget = column2_widget
+        _style_column_card(column2_widget, "pf_viewer_panel")
 
         # Right-column widget holds notes_panel; stored for show/hide toggling in Focus layout
         self.notepad_column_widget = QWidget()
@@ -14312,6 +14565,7 @@ function filterAliases(q) {{
         if self.layout_mode != "focus":
             notepad_col_layout.addWidget(self.notes_panel)
         notepad_widget = self.notepad_column_widget
+        _style_column_card(notepad_widget, "pf_notepad_panel")
 
         # Build splitter
         self.columns_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -14381,7 +14635,7 @@ function filterAliases(q) {{
                 background-color: {self.t('bg_button')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
-                border-radius: 4px;
+                border-radius: {_pf_btn_radius};
                 padding: 5px 12px;
             }}
             QPushButton:hover {{
@@ -16806,12 +17060,16 @@ function filterAliases(q) {{
         if left_widget is not None:
             layout.addWidget(left_widget)
         layout.addStretch()
+        # "modern" theme radius, same pattern as build_main_content()'s _pf_btn_radius —
+        # a separate local here since this is its own method, called from many viewers'
+        # toolbar-building code, not build_main_content() itself.
+        _pf_footer_btn_radius = self.t('radius_card') if self.current_theme == "modern" else "4px"
         footer_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
-                border-radius: 4px;
+                border-radius: {_pf_footer_btn_radius};
                 padding: 3px 10px;
                 font-size: 11px;
             }}
@@ -20780,8 +21038,28 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             else:
                 heading_rules.append(f"#editor {level} {{ color: var(--{hue.upper()}{heading_shade}); }}")
         heading_css = "\n".join(heading_rules)
+        # "modern" theme's selected bundled font (MODERN_FONT_CHOICES), registered for the
+        # webview specifically — QFontDatabase.addApplicationFont() (main()) only registers
+        # it for native Qt widgets, not the separate Chromium renderer QWebEngineView uses,
+        # so it needs its own @font-face here. url(...) is relative to editor.html's own
+        # base URL (assets/muya/, set via QUrl.fromLocalFile() in _load_muya_shell()) — same
+        # relative-path-from-base-URL convention Muya's own vendored KaTeX fonts already use
+        # in assets/muya/lib/core.css. _todo_paper_css() composes on top of this return
+        # value (notes_css + "..."), so it inherits this for free, no separate change needed.
+        modern_font_css = ""
+        if self.current_theme == "modern":
+            _font_choice = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
+            _font_entry = MODERN_FONT_CHOICES.get(_font_choice, MODERN_FONT_CHOICES[MODERN_FONT_DEFAULT])
+            _regular_file, _bold_file = _font_entry['files']
+            _family = _font_entry['family']
+            modern_font_css = f"""
+                @font-face {{ font-family: '{_family}'; src: url(../fonts/{_regular_file}) format('truetype'); font-weight: 400; }}
+                @font-face {{ font-family: '{_family}'; src: url(../fonts/{_bold_file}) format('truetype'); font-weight: 700; }}
+                body, #editor {{ font-family: '{_family}', sans-serif; }}
+            """
         return f"""
             {muya_root_vars}
+            {modern_font_css}
             body {{ background: {page_bg}; color: {ink}; overflow-x: hidden; }}
             #editor {{
                 box-sizing: border-box;
@@ -23662,7 +23940,26 @@ Project created: {date_str}
             _pf_fg = self.t('fg_primary')
             _pf_bg_card = self.t('bg_example_card')
 
+        # "modern" theme's selected bundled font (MODERN_FONT_CHOICES) — see shell.html's
+        # own comment on __PF_FONT_FACE_CSS__ for why this needs a separate @font-face here
+        # rather than relying on main()'s QFontDatabase.addApplicationFont() registration.
+        if self.current_theme == "modern":
+            _font_choice = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
+            _font_entry = MODERN_FONT_CHOICES.get(_font_choice, MODERN_FONT_CHOICES[MODERN_FONT_DEFAULT])
+            _regular_file, _bold_file = _font_entry['files']
+            _family = _font_entry['family']
+            _pf_font_face_css = (
+                f"@font-face {{ font-family: '{_family}'; src: url(../assets/fonts/{_regular_file}) format('truetype'); font-weight: 400; }}\n"
+                f"@font-face {{ font-family: '{_family}'; src: url(../assets/fonts/{_bold_file}) format('truetype'); font-weight: 700; }}"
+            )
+            _pf_font_family = f"'{_family}', -apple-system, \"Segoe UI\", Roboto, sans-serif"
+        else:
+            _pf_font_face_css = ""
+            _pf_font_family = "-apple-system, \"Segoe UI\", Roboto, sans-serif"
+
         replacements = {
+            '__PF_FONT_FACE_CSS__': _pf_font_face_css,
+            '__PF_FONT_FAMILY__': _pf_font_family,
             '__PF_BG__': _pf_bg,
             '__PF_FG__': _pf_fg,
             '__PF_FG_SECONDARY__': self.t('fg_secondary'),
@@ -24614,6 +24911,23 @@ Examples:
     os_integration.set_windows_taskbar_identity("ProjectFlow.ProjectFlow")
 
     app = QApplication(sys.argv)
+
+    # Bundled fonts for the "modern" theme (SIL Open Font License / similarly
+    # redistributable — see MODERN_FONT_CHOICES), used only when "modern" is active (see
+    # apply_global_styles()) — ALL of them loaded unconditionally here regardless of which
+    # one ends up selected, since registration is cheap and has to happen before any widget
+    # that might need it is constructed, and switching the picker at runtime should never
+    # need a fresh addApplicationFont() call. Capture the real pre-custom-font default app
+    # font on the QApplication instance itself (not on ProjectFlowApp, which doesn't exist
+    # yet) so apply_global_styles() has something well-defined to restore when switching
+    # away from "modern" later.
+    app._pf_default_font = QApplication.font()
+    _script_dir_for_fonts = os.path.dirname(os.path.abspath(__file__))
+    for _font_entry in MODERN_FONT_CHOICES.values():
+        for _font_file in _font_entry["files"]:
+            _font_path = os.path.join(_script_dir_for_fonts, "assets", "fonts", _font_file)
+            if os.path.isfile(_font_path):
+                QFontDatabase.addApplicationFont(_font_path)
 
     # Detect desktop environment for app identification strategy
     desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()

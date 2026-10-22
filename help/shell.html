@@ -3,7 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <style>
+  /* "modern" theme's bundled Lato font — see projectflow.py's _build_help_html() for how
+     this is conditionally populated (empty string for light/dark). Registered separately
+     from the native-widget QFontDatabase registration in main(), since this page renders
+     in a separate Chromium renderer (QWebEngineView) that doesn't see that registration.
+     url(...) is relative to this file's own base URL (help/, set via QUrl.fromLocalFile()
+     in load_help_content()) — same convention assets/muya/editor.html's font block uses. */
+  __PF_FONT_FACE_CSS__
   :root {
+    --pf-font-family: __PF_FONT_FAMILY__;
     --pf-bg: __PF_BG__;
     --pf-fg: __PF_FG__;
     --pf-fg-secondary: __PF_FG_SECONDARY__;
@@ -34,7 +42,7 @@
   body {
     display: flex;
     flex-direction: column;
-    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--pf-font-family);
     background: var(--pf-bg);
     color: var(--pf-fg);
   }
