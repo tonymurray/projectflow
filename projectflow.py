@@ -230,6 +230,9 @@ class DraggableTabButton(QPushButton):
         self.mime_type = mime_type
         self.app = app
         self._drag_start = None
+        # (A 2026-10-23 diagnostic temporarily disabled this to test whether the button
+        # being its own drop target was blocking border-radius rendering — confirmed live
+        # that it made no difference, so this is restored to its normal behavior.)
         self.setAcceptDrops(True)
 
     def mousePressEvent(self, event):
@@ -3683,7 +3686,7 @@ class ProjectFlowApp(QMainWindow):
             QPushButton {{
                 background-color: {self.t('bg_category')};
                 color: {self.t('fg_on_dark')};
-                border: none;
+                border: 1px solid {self.t('border')};
                 border-radius: 4px;
                 padding: 6px 14px;
                 font-weight: bold;
@@ -4101,7 +4104,7 @@ class ProjectFlowApp(QMainWindow):
             QPushButton {{
                 background-color: {self.t('bg_category')};
                 color: {self.t('fg_on_dark')};
-                border: none;
+                border: 1px solid {self.t('border')};
                 border-radius: 4px;
                 padding: 6px 14px;
                 font-weight: bold;
@@ -4681,7 +4684,7 @@ class ProjectFlowApp(QMainWindow):
             QPushButton {{
                 background-color: {self.t('bg_success')};
                 color: {self.t('fg_on_dark')};
-                border: none;
+                border: 1px solid {self.t('border')};
                 border-radius: 4px;
                 padding: 8px 24px;
                 font-weight: bold;
@@ -4984,7 +4987,7 @@ class ProjectFlowApp(QMainWindow):
                 QPushButton {{
                     background-color: {self.t('bg_danger')};
                     color: {self.t('fg_on_dark')};
-                    border: none;
+                    border: 1px solid {self.t('border')};
                     border-radius: 4px;
                     padding: 6px 12px;
                 }}
@@ -12104,17 +12107,52 @@ function filterAliases(q) {{
         all_columns = [self.COLUMN_1]
         self._launcher_search_refs = []
 
-        # "modern" theme gets the larger radius_card token on every launcher/viewer-tab
-        # button, search/entry box, and launcher item button built below — the three main
-        # column panels and category headers already got this treatment (see
+        # "modern" theme gets a rounded radius on every launcher/viewer-tab button,
+        # search/entry box, and launcher item button built below — the three main column
+        # panels and category headers already got this treatment (see
         # _apply_card_effect()/radius_card in themes.py), but the launcher tab row
         # (Resources/Files/Apps), viewer tab row (Notes/Editor/Web/PDF/etc), search box,
         # and individual launcher item rows were left at their original small radius,
         # producing a visible mismatch against the now-rounded category headers (reported
         # directly, with a screenshot). light/dark keep their original literal 3px,
-        # completely unaffected — computed once here rather than repeated as a ternary at
-        # each of the ~20 style blocks below that reference it.
-        _pf_btn_radius = self.t('radius_card') if self.current_theme == "modern" else "3px"
+        # completely unaffected.
+        #
+        # Deliberately NOT reusing radius_card (14px) here — a real, confirmed Qt
+        # rendering bug, found via a live radius sweep test (a row of same-sized buttons
+        # with radius 4/8/12/13/14/16/20 rendered side by side and screenshotted): when
+        # `border-radius` exceeds half a widget's height, QStyleSheetStyle doesn't clamp
+        # to the max valid radius the way browsers do — it silently renders ZERO rounding
+        # instead, a sharp rectangle. These buttons are all sized to header_btn_height
+        # (26px on KDE, 32px on GNOME — see themes.py's DIMENSIONS), so half their height
+        # is only 13-16px — radius_card's 14px sits right on/past that boundary on KDE,
+        # which is exactly why these specific buttons rendered square while the taller
+        # (30px+) category headers and title-bar buttons, whose half-height comfortably
+        # exceeds 14px, rendered correctly rounded the whole time. This was invisible
+        # from the stylesheet string alone (confirmed byte-identical to a working
+        # category header's own style in a live side-by-side swap test) and only showed
+        # up by screenshotting actual rendered pixels. 10px is safely under half of even
+        # the smaller 26px KDE height, so it rounds correctly on both desktop
+        # environments. Computed once here rather than repeated at each of the ~20 style
+        # blocks below that reference it.
+        _pf_btn_radius = "12px" if self.current_theme == "modern" else "3px"
+
+        # A real, explicit minimum-height floor for the same set of buttons — added after
+        # the padding bump above (5px -> 8px top/bottom, to make these buttons read as
+        # visually significant as the category headers) turned out to be insufficient on
+        # its own: padding only grows a widget's *preferred* size (sizeHint), which layout
+        # siblings/stretch interactions can still compress below, unlike setMinimumHeight,
+        # which is a hard floor Qt's layout engine cannot violate. Reported live as two
+        # symptoms of the same gap: the launcher tab row (Files/Resources/Apps/Docs) and
+        # viewer tab row (Notes/Web/Terminal/etc) reading as visually out of sync with each
+        # other, and descenders (e.g. the leg of a lowercase "p" in "Upload Doc") getting
+        # clipped on the +Add/Create/Upload row — both are exactly what you'd expect from a
+        # content area that wants to be taller than what it's actually getting. 34px
+        # comfortably fits the bumped padding + font without clipping, and — since every
+        # affected button (both tab rows, +Add/Create/Upload, the pin/reset/settings/folder
+        # icon buttons, AND the search box right alongside them) now shares this exact same
+        # explicit floor — guarantees they render at a consistent, aligned height instead of
+        # each settling wherever its own sizeHint happens to land.
+        _pf_btn_min_height = 34 if self.current_theme == "modern" else self.d('header_btn_height')
 
         # Projects section widgets (projects_layout/color_strip_widget/color_sort_btn) are
         # only (re)built below when settings["show_projects_section"] is True. Reset them to
@@ -12245,6 +12283,7 @@ function filterAliases(q) {{
                             background-color: {self.t('bg_green_1')};
                             color: {self.t('fg_on_dark')};
                             font-weight: bold;
+                            border: 1px solid {self.t('border')};
                             border-radius: {_pf_btn_radius};
                             padding: 5px;
                         }}
@@ -12268,8 +12307,9 @@ function filterAliases(q) {{
                             background-color: {self.t('tab_launcher_resting')};
                             color: {self.t('fg_on_dark')};
                             font-weight: bold;
+                            border: 1px solid {self.t('border')};
                             border-radius: {_pf_btn_radius};
-                            padding: 5px 8px;
+                            padding: 8px 8px;
                             font-size: 11px;
                         }}
                         QPushButton:hover {{
@@ -12309,8 +12349,9 @@ function filterAliases(q) {{
                                 background-color: {self.t('tab_launcher_resting')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
+                                border: 1px solid {self.t('border')};
                                 border-radius: {_pf_btn_radius};
-                                padding: 5px 8px;
+                                padding: 8px 8px;
                                 font-size: 11px;
                             }}
                             QPushButton:hover {{
@@ -12318,17 +12359,24 @@ function filterAliases(q) {{
                                 color: {self.t('fg_on_dark')};
                             }}
                         """
-                        # Active fill, no border — mirrors the viewer tab row's own
-                        # bg_green_3 active fill (see active_tab_style's comment in the
-                        # viewer tab row section for the fuller history of what was tried
-                        # before landing on "just use a different shade, no border").
+                        # Active fill — mirrors the viewer tab row's own bg_green_3 active
+                        # fill (see active_tab_style's comment in the viewer tab row section
+                        # for the fuller history of what was tried). Uses a real, visible
+                        # `border: 1px solid {self.t('border')};` rather than no border or a
+                        # transparent one — see that comment for the two rounds of this bug
+                        # (missing border, then a transparent-but-solid border) that were
+                        # each tried and found insufficient live, before landing on a real
+                        # opaque border matching the two examples that worked correctly the
+                        # whole time (the title-bar hamburger button and the category header
+                        # buttons, both of which already used a real visible border).
                         launcher_tab_active_style = f"""
                             QPushButton {{
                                 background-color: {self.t('tab_launcher_active')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
+                                border: 1px solid {self.t('border')};
                                 border-radius: {_pf_btn_radius};
-                                padding: 5px 8px;
+                                padding: 8px 8px;
                                 font-size: 11px;
                             }}
                             QPushButton:hover {{
@@ -12355,7 +12403,7 @@ function filterAliases(q) {{
                             tab_label, tab_tooltip = launcher_tab_defs[tab_id]
                             tab_btn = DraggableTabButton(tab_id, DraggableTabButton.LAUNCHER_TAB_MIME, self)
                             tab_btn.setText(f" {tab_label}")
-                            tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                            tab_btn.setMinimumHeight(_pf_btn_min_height)
                             tab_btn.setToolTip(f"{tab_tooltip}\n(drag to reorder)")
                             tab_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{tab_id}.png")
                             if os.path.exists(tab_icon_path):
@@ -12387,7 +12435,7 @@ function filterAliases(q) {{
                             pin_tab_btn.setIcon(QIcon(pin_tab_icon_path))
                             pin_tab_btn.setIconSize(QSize(16, 16))
                         pin_tab_btn.setFixedWidth(28)
-                        pin_tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                        pin_tab_btn.setMinimumHeight(_pf_btn_min_height)
                         pin_tab_btn.setToolTip(f"Pin \"{self.active_launcher_tab.title()}\" as default launcher tab for this project")
                         pin_tab_btn.setStyleSheet(launcher_tab_style)
                         pin_tab_btn.clicked.connect(self._set_launcher_tab_as_default)
@@ -12396,8 +12444,14 @@ function filterAliases(q) {{
                         # Resets the drag-customized order back to default — mirrors the
                         # Projects section's own "↺ resets pinned order" button.
                         reset_tab_order_btn = QPushButton("↺")
-                        reset_tab_order_btn.setFixedWidth(22)
-                        reset_tab_order_btn.setMinimumHeight(self.d('header_btn_height'))
+                        # 30px, not the original 22px — at 22px wide, "modern" theme's
+                        # 12px radius exceeds half the button's WIDTH (11px), hitting the
+                        # identical degenerate-rounded-rect Qt bug documented on
+                        # _pf_btn_radius above (there it was height; same rule applies to
+                        # width), so this one button stayed square even after every other
+                        # button in the same row was fixed. 30px keeps it safely >2x radius.
+                        reset_tab_order_btn.setFixedWidth(30)
+                        reset_tab_order_btn.setMinimumHeight(_pf_btn_min_height)
                         reset_tab_order_btn.setToolTip("Reset tab order to default")
                         reset_tab_order_btn.setStyleSheet(launcher_tab_style)
                         reset_tab_order_btn.clicked.connect(self._reset_launcher_tab_order)
@@ -12420,7 +12474,7 @@ function filterAliases(q) {{
                         # Search box + Add button (hidden in edit mode — controls are in title bar)
                         self._launcher_search_box = QLineEdit()
                         self._launcher_search_box.setPlaceholderText("🔍  Search…")
-                        self._launcher_search_box.setMinimumHeight(self.d('header_btn_height'))
+                        self._launcher_search_box.setMinimumHeight(_pf_btn_min_height)
                         self._launcher_search_box.setClearButtonEnabled(True)
                         self._launcher_search_box.setStyleSheet(f"""
                             QLineEdit {{
@@ -12441,7 +12495,7 @@ function filterAliases(q) {{
                         # tab row above instead (active_launcher_tab subsumes this role).
                         if self.layout_mode != "focus":
                             group_btn = QPushButton("☰ Group")
-                            group_btn.setMinimumHeight(self.d('header_btn_height'))
+                            group_btn.setMinimumHeight(_pf_btn_min_height)
                             group_btn.setToolTip(
                                 "Group launchers by type (Docs / Resources) — "
                                 "display only, never changes the project file"
@@ -12453,7 +12507,7 @@ function filterAliases(q) {{
                             header_layout.addWidget(group_btn)
 
                         add_btn = QPushButton("  +  Add")
-                        add_btn.setMinimumHeight(self.d('header_btn_height'))
+                        add_btn.setMinimumHeight(_pf_btn_min_height)
                         add_btn.setToolTip("Quick-add a launcher to the first category")
                         add_btn.setStyleSheet(add_btn_style)
                         add_btn.clicked.connect(self.quick_add_launcher)
@@ -12480,7 +12534,7 @@ function filterAliases(q) {{
                         # (like Upload Doc), so it shares that button's Resources-tab gate.
                         if not focus_resources_tab:
                             create_doc_btn = QPushButton("📄 Create")
-                            create_doc_btn.setMinimumHeight(self.d('header_btn_height'))
+                            create_doc_btn.setMinimumHeight(_pf_btn_min_height)
                             create_doc_btn.setToolTip("Create a new markdown document in this project's Documents folder — gets added to Docs")
                             create_doc_btn.setStyleSheet(add_btn_style)
                             create_doc_btn.clicked.connect(self.create_document_in_project)
@@ -12494,7 +12548,7 @@ function filterAliases(q) {{
                         # upload_document_to_project()/upload_file_to_project().
                         if not focus_resources_tab:
                             upload_doc_btn = QPushButton("⬆ Upload Doc")
-                            upload_doc_btn.setMinimumHeight(self.d('header_btn_height'))
+                            upload_doc_btn.setMinimumHeight(_pf_btn_min_height)
                             upload_doc_btn.setToolTip("Upload a file into this project — gets added to Docs")
                             upload_doc_btn.setStyleSheet(add_btn_style)
                             upload_doc_btn.clicked.connect(self.upload_document_to_project)
@@ -12502,7 +12556,7 @@ function filterAliases(q) {{
 
                         if not focus_docs_tab:
                             upload_file_btn = QPushButton("⬆ Upload File")
-                            upload_file_btn.setMinimumHeight(self.d('header_btn_height'))
+                            upload_file_btn.setMinimumHeight(_pf_btn_min_height)
                             upload_file_btn.setToolTip("Upload a file into this project — gets added to Resources")
                             upload_file_btn.setStyleSheet(add_btn_style)
                             upload_file_btn.clicked.connect(self.upload_file_to_project)
@@ -13472,13 +13526,37 @@ function filterAliases(q) {{
                 ]
 
                 # Normal tab button style — bg_green_1 (the darkest stop) at rest.
+                # Every QPushButton style in this tab row sets an explicit
+                # `border: 1px solid {self.t('border')};` alongside border-radius —
+                # load-bearing, not just explicit-for-clarity. A real, still-not-fully-
+                # resolved-as-of-this-writing bug found live, across several rounds: (1) no
+                # `border` property at all silently makes Qt fall back to native square
+                # button chrome, ignoring border-radius entirely; (2) a `border: none;` fix
+                # for that was ALSO found insufficient live (confirmed by the user testing
+                # after a real restart) — `border-style: none` is apparently itself treated
+                # as "no border styling here" too; (3) `border: 1px solid transparent;` was
+                # tried next (a real `solid`-style border, just invisible) and ALSO
+                # confirmed insufficient live, even forcing `QT_STYLE_OVERRIDE=Fusion` to
+                # rule out a Breeze-specific quirk — still square. Landed on a real, VISIBLE
+                # `border: 1px solid {self.t('border')};` instead, matching the two elements
+                # that were confirmed rendering correctly rounded the whole time (the
+                # title-bar hamburger button and the category header buttons, both of which
+                # already used a real non-transparent border). If this is STILL not
+                # resolving the reported square corners, the border-presence theory itself
+                # may be wrong and needs real stderr/console output from a live run to
+                # diagnose further, rather than another blind guess. See
+                # update_viewer_tab_styling() below for the second half of this bug: that
+                # function keeps its own separate, parallel copies of these same styles
+                # (used to restyle tabs without a full rebuild) which had the identical gap
+                # and are fixed the same way.
                 tab_btn_style = f"""
                     QPushButton {{
                         background-color: {self.t('bg_green_1')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
+                        border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
-                        padding: 5px 8px;
+                        padding: 8px 8px;
                         font-size: 11px;
                     }}
                     QPushButton:hover {{
@@ -13508,8 +13586,9 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_green_3')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
+                        border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
-                        padding: 5px 8px;
+                        padding: 8px 8px;
                         font-size: 11px;
                     }}
                     QPushButton:hover {{
@@ -13530,8 +13609,9 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_green_1')};
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
+                        border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
-                        padding: 5px 8px;
+                        padding: 8px 8px;
                         font-size: 11px;
                     }}
                     QPushButton:hover {{
@@ -13552,8 +13632,9 @@ function filterAliases(q) {{
                         background-color: {self.t('bg_secondary')};
                         color: {self.t('fg_secondary')};
                         font-weight: normal;
+                        border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
-                        padding: 5px 8px;
+                        padding: 8px 8px;
                         font-size: 11px;
                     }}
                     QPushButton:hover {{
@@ -13568,7 +13649,7 @@ function filterAliases(q) {{
                 for mode, label, tooltip in tab_buttons:
                     btn = DraggableTabButton(mode, DraggableTabButton.VIEWER_TAB_MIME, self)
                     btn.setText(label)
-                    btn.setMinimumHeight(self.d('header_btn_height'))
+                    btn.setMinimumHeight(_pf_btn_min_height)
                     # Expanding + a stretch factor on addWidget (below) makes every tab
                     # button grow to fill the row equally, rather than a fixed width —
                     # with Code added as a 6th/7th tab, a flat 175px minimum per button
@@ -13577,11 +13658,6 @@ function filterAliases(q) {{
                     btn.setMinimumWidth(60)
                     btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                     btn.setToolTip(f"{tooltip}\n(drag to reorder)")
-
-                    icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{mode}.png")
-                    if os.path.exists(icon_path):
-                        btn.setIcon(QIcon(icon_path))
-                        btn.setIconSize(QSize(16, 16))
 
                     # Set style based on whether this is the active mode, then
                     # whether this project actually has content for it yet (see
@@ -13594,9 +13670,18 @@ function filterAliases(q) {{
                     # _viewer_tab_has_content()'s "console" branch), so an empty
                     # console must still fall into dimmed_tab_style rather than
                     # always getting console_tab_btn_style regardless of content.
+                    # Computed once (is_dimmed) and reused below for the icon color too
+                    # — see _recolor_icon()'s docstring for why a dimmed tab's icon
+                    # can't just stay the plain white asset.
+                    is_dimmed = mode != self.column2_mode and not self._viewer_tab_has_content(mode)
+                    icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{mode}.png")
+                    if os.path.exists(icon_path):
+                        btn.setIcon(self._recolor_icon(icon_path, self.t('fg_secondary')) if is_dimmed else QIcon(icon_path))
+                        btn.setIconSize(QSize(16, 16))
+
                     if mode == self.column2_mode:
                         btn.setStyleSheet(active_tab_style)
-                    elif not self._viewer_tab_has_content(mode):
+                    elif is_dimmed:
                         btn.setStyleSheet(dimmed_tab_style)
                     elif mode == 'console':
                         btn.setStyleSheet(console_tab_btn_style)
@@ -13641,7 +13726,7 @@ function filterAliases(q) {{
                     folder_tab_btn.setIcon(QIcon(folder_tab_icon_path))
                     folder_tab_btn.setIconSize(QSize(16, 16))
                 folder_tab_btn.setFixedWidth(28)
-                folder_tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                folder_tab_btn.setMinimumHeight(_pf_btn_min_height)
                 folder_tab_btn.setToolTip("Files (folder browser)")
                 folder_tab_btn.setStyleSheet(active_tab_style if self.column2_mode == "folder" else tab_btn_style)
                 folder_tab_btn.clicked.connect(lambda: self.switch_to_viewer_mode("folder"))
@@ -13654,7 +13739,7 @@ function filterAliases(q) {{
                     settings_tab_btn.setIcon(QIcon(settings_tab_icon_path))
                     settings_tab_btn.setIconSize(QSize(16, 16))
                 settings_tab_btn.setFixedWidth(28)
-                settings_tab_btn.setMinimumHeight(self.d('header_btn_height'))
+                settings_tab_btn.setMinimumHeight(_pf_btn_min_height)
                 settings_tab_btn.setToolTip("Edit Project / Project Settings")
                 settings_tab_btn.setStyleSheet(active_tab_style if self.column2_mode == "settings" else tab_btn_style)
                 settings_tab_btn.clicked.connect(self._settings_shortcut_clicked)
@@ -13673,7 +13758,7 @@ function filterAliases(q) {{
                     viewer_pin_btn.setIcon(QIcon(viewer_pin_icon_path))
                     viewer_pin_btn.setIconSize(QSize(16, 16))
                 viewer_pin_btn.setFixedWidth(28)
-                viewer_pin_btn.setMinimumHeight(self.d('header_btn_height'))
+                viewer_pin_btn.setMinimumHeight(_pf_btn_min_height)
                 viewer_pin_btn.setToolTip("Set current viewer as default for this project")
                 viewer_pin_btn.setStyleSheet(tab_btn_style)
                 viewer_pin_btn.clicked.connect(self.set_viewer_as_default)
@@ -13683,8 +13768,10 @@ function filterAliases(q) {{
                 # Launcher Tab Bar's own "↺" button and the Projects section's "↺ resets
                 # pinned order" button.
                 viewer_reset_order_btn = QPushButton("↺")
-                viewer_reset_order_btn.setFixedWidth(22)
-                viewer_reset_order_btn.setMinimumHeight(self.d('header_btn_height'))
+                # 30px — see the matching comment on reset_tab_order_btn above for why
+                # this specific button needs to be wider than the original 22px.
+                viewer_reset_order_btn.setFixedWidth(30)
+                viewer_reset_order_btn.setMinimumHeight(_pf_btn_min_height)
                 viewer_reset_order_btn.setToolTip("Reset tab order to default")
                 viewer_reset_order_btn.setStyleSheet(tab_btn_style)
                 viewer_reset_order_btn.clicked.connect(self._reset_viewer_tab_order)
@@ -14529,12 +14616,8 @@ function filterAliases(q) {{
         # "modern" theme's structural polish: a theme-conditional card background (QSS
         # scoped via setObjectName()+an ID selector, not a bare `QWidget { ... }` type
         # selector — the latter would cascade to every descendant widget inside the column,
-        # not just the column's own outer background) + drop shadow on the three main
-        # column panels. These three widgets had zero existing stylesheet before this (no
-        # pre-existing rule to extend), so this is purely additive for light/dark — the
-        # else branch below explicitly clears to an empty stylesheet on every rebuild in
-        # case a prior "modern" session's styling would otherwise persist on a reused
-        # QWidget, though in practice these three are always freshly constructed here.
+        # not just the column's own outer background) + drop shadow, applied ONLY to
+        # launcher_widget — NOT column2_widget/notepad_widget (see below for why).
         def _style_column_card(widget, name):
             widget.setObjectName(name)
             if self.current_theme == "modern":
@@ -14552,10 +14635,24 @@ function filterAliases(q) {{
         self.launcher_widget = launcher_widget
         _style_column_card(launcher_widget, "pf_launcher_panel")
 
+        # column2_widget/notepad_widget deliberately do NOT get _style_column_card()'s
+        # shadow+radius treatment — real, severe regression found and fixed the same day:
+        # column2_widget hosts every webview-based viewer (Notes, Editor, Web, Help,
+        # Console, PDF/Image) and notepad_widget hosts the Notes webview directly in
+        # Standard layout, and a QGraphicsEffect (the drop shadow) on ANY ancestor of a
+        # QWebEngineView is a well-known, severe Qt performance trap — it forces that
+        # webview into slow software-composited rendering instead of its normal
+        # GPU-accelerated path. Reported live as "20-40 seconds to open a note, cursor
+        # barely responsive" — far too costly for a cosmetic card lift, and NOT fixed by
+        # the earlier @font-face revert (a separate, smaller issue) since the shadow
+        # effect was the real culprit. The rounded-corner background QSS was dropped here
+        # too, conservatively, rather than trying to isolate whether just the radius alone
+        # (vs. the shadow) was also implicated — these two panels simply stay unstyled, as
+        # they always were before this feature, while launcher_widget (no webview
+        # descendants) keeps the full card treatment safely.
         column2_widget = QWidget()
         column2_widget.setLayout(self.column2_layout)
         self.column2_widget = column2_widget
-        _style_column_card(column2_widget, "pf_viewer_panel")
 
         # Right-column widget holds notes_panel; stored for show/hide toggling in Focus layout
         self.notepad_column_widget = QWidget()
@@ -14565,7 +14662,6 @@ function filterAliases(q) {{
         if self.layout_mode != "focus":
             notepad_col_layout.addWidget(self.notes_panel)
         notepad_widget = self.notepad_column_widget
-        _style_column_card(notepad_widget, "pf_notepad_panel")
 
         # Build splitter
         self.columns_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -17062,8 +17158,14 @@ function filterAliases(q) {{
         layout.addStretch()
         # "modern" theme radius, same pattern as build_main_content()'s _pf_btn_radius —
         # a separate local here since this is its own method, called from many viewers'
-        # toolbar-building code, not build_main_content() itself.
-        _pf_footer_btn_radius = self.t('radius_card') if self.current_theme == "modern" else "4px"
+        # toolbar-building code, not build_main_content() itself. Deliberately 10px, not
+        # radius_card (14px) — these buttons have no explicit height (natural sizeHint
+        # from `padding: 3px 10px; font-size: 11px` lands well under 28px tall), and a
+        # border-radius past half a widget's height makes Qt's QStyleSheetStyle silently
+        # render zero rounding instead of clamping — see build_main_content()'s own
+        # _pf_btn_radius comment for the full root-cause writeup (confirmed via a live
+        # radius-sweep screenshot test).
+        _pf_footer_btn_radius = "10px" if self.current_theme == "modern" else "4px"
         footer_btn_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_button')};
@@ -17456,16 +17558,32 @@ function filterAliases(q) {{
         if not hasattr(self, 'viewer_tab_buttons'):
             return
 
+        # Mirrors build_main_content()'s own _pf_btn_radius computation — this function
+        # restyles the SAME buttons that build_main_content() just styled, without a full
+        # rebuild (e.g. on every switch_to_viewer_mode() call), so it needs the identical
+        # theme-aware radius or a "modern" rebuild's rounded tabs snap back to light/dark's
+        # small literal radius the instant any tab switch runs update_viewer_tab_styling().
+        # Deliberately 10px, not radius_card (14px) — see build_main_content()'s own
+        # _pf_btn_radius comment for the full root-cause writeup: these buttons are sized
+        # to header_btn_height (26-32px), and a border-radius past half that height makes
+        # Qt's QStyleSheetStyle silently render zero rounding instead of clamping, a real
+        # bug confirmed via a live radius-sweep screenshot test.
+        _pf_btn_radius = "10px" if self.current_theme == "modern" else "3px"
+
         # Normal and active button styles — mirrors tab_btn_style/active_tab_style in
-        # build_main_content() (bg_green_1 resting, bg_green_3 active, no border — see that
-        # definition's comment for the fuller history of what was tried and reverted).
+        # build_main_content() (bg_green_1 resting, bg_green_3 active — see that
+        # definition's comment for the fuller history of what was tried: no border, then
+        # `border: none;`, then `border: 1px solid transparent;`, all confirmed
+        # insufficient live — landed on a real visible `border: 1px solid {self.t('border')};`
+        # instead, matching the two elements that were confirmed working the whole time).
         normal_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_green_1')};
                 color: {self.t('fg_on_dark')};
                 font-weight: bold;
-                border-radius: 3px;
-                padding: 5px 8px;
+                border: 1px solid {self.t('border')};
+                border-radius: {_pf_btn_radius};
+                padding: 8px 8px;
                 font-size: 11px;
             }}
             QPushButton:hover {{
@@ -17479,8 +17597,9 @@ function filterAliases(q) {{
                 background-color: {self.t('bg_green_3')};
                 color: {self.t('fg_on_dark')};
                 font-weight: bold;
-                border-radius: 3px;
-                padding: 5px 8px;
+                border: 1px solid {self.t('border')};
+                border-radius: {_pf_btn_radius};
+                padding: 8px 8px;
                 font-size: 11px;
             }}
             QPushButton:hover {{
@@ -17489,15 +17608,17 @@ function filterAliases(q) {{
             }}
         """
 
-        # Mirrors console_tab_btn_style in build_main_content() — no special border, see
-        # that definition's comment for why (used to always have one, read as "selected").
+        # Mirrors console_tab_btn_style in build_main_content() — no special visible
+        # border, see that definition's comment for why (used to always have one, read as
+        # "selected").
         console_normal_style = f"""
             QPushButton {{
                 background-color: {self.t('bg_green_1')};
                 color: {self.t('fg_on_dark')};
                 font-weight: bold;
-                border-radius: 3px;
-                padding: 5px 8px;
+                border: 1px solid {self.t('border')};
+                border-radius: {_pf_btn_radius};
+                padding: 8px 8px;
                 font-size: 11px;
             }}
             QPushButton:hover {{
@@ -17516,8 +17637,9 @@ function filterAliases(q) {{
                 background-color: {self.t('bg_secondary')};
                 color: {self.t('fg_secondary')};
                 font-weight: normal;
-                border-radius: 3px;
-                padding: 5px 8px;
+                border: 1px solid {self.t('border')};
+                border-radius: {_pf_btn_radius};
+                padding: 8px 8px;
                 font-size: 11px;
             }}
             QPushButton:hover {{
@@ -17529,9 +17651,19 @@ function filterAliases(q) {{
         # Content checked BEFORE the console special-case — see the identical
         # ordering note in build_main_content()'s tab-construction loop.
         for mode, btn in self.viewer_tab_buttons.items():
+            # Re-set the icon here too, not just the stylesheet — this is the call site
+            # that un-dims a tab mid-session (e.g. opening a project's first-ever PDF),
+            # and a tab that un-dims needs its icon switched back from the recolored
+            # dimmed variant to the plain white asset, not just its background/text
+            # color. See _recolor_icon()'s docstring for the full reasoning.
+            is_dimmed = mode != self.column2_mode and not self._viewer_tab_has_content(mode)
+            icon_path = os.path.join(self.script_dir, "assets", "tab-icons", f"{mode}.png")
+            if os.path.exists(icon_path):
+                btn.setIcon(self._recolor_icon(icon_path, self.t('fg_secondary')) if is_dimmed else QIcon(icon_path))
+
             if mode == self.column2_mode:
                 btn.setStyleSheet(active_style)
-            elif not self._viewer_tab_has_content(mode):
+            elif is_dimmed:
                 btn.setStyleSheet(dimmed_style)
             elif mode == 'console':
                 btn.setStyleSheet(console_normal_style)
@@ -19289,6 +19421,43 @@ function filterAliases(q) {{
         cache[color_hex] = icon
         return icon
 
+    def _recolor_icon(self, path, color_hex):
+        """Load a PNG icon from disk and recolor it to color_hex, preserving its alpha
+        mask — used for the viewer tab row's bundled white tab-icons (assets/tab-icons/
+        *.png, see the Viewer tab buttons section in CLAUDE.md), which are drawn white
+        on the assumption they always sit on a colored bg_green_* fill. The "dimmed"
+        empty-tab state (see _viewer_tab_has_content()) instead uses a light
+        bg_secondary/fg_secondary fill, against which a plain white icon is invisible —
+        reported directly ("you cannot see the icon... the text looks un-centered",
+        the latter being the plain visual asymmetry of an invisible icon still eating
+        layout space next to visible text). Recoloring the existing asset at runtime
+        avoids needing a second, parallel set of dark-variant PNGs for every tab mode.
+        Standard Qt "colorize by alpha mask" technique: paint the source pixmap first to
+        establish the alpha channel, then fill with the target color using
+        CompositionMode_SourceIn, which only paints where the destination already has
+        alpha > 0 — the shape is kept, the color is replaced. Cached by (path, color_hex)
+        since this runs on every build_main_content()/update_viewer_tab_styling() call."""
+        cache_key = (path, color_hex)
+        if not hasattr(self, '_recolored_icon_cache'):
+            self._recolored_icon_cache = {}
+        if cache_key in self._recolored_icon_cache:
+            return self._recolored_icon_cache[cache_key]
+        src = QPixmap(path)
+        if src.isNull():
+            icon = QIcon(path)
+            self._recolored_icon_cache[cache_key] = icon
+            return icon
+        result = QPixmap(src.size())
+        result.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(result)
+        painter.drawPixmap(0, 0, src)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(result.rect(), QColor(color_hex))
+        painter.end()
+        icon = QIcon(result)
+        self._recolored_icon_cache[cache_key] = icon
+        return icon
+
     def _color_swatch_icon(self, color_hex, size=14):
         """A small flat colored square icon — used for the Muya Heading Colors combo boxes
         in Settings -> Themes tab (both preset-hue and custom-picked entries), so the
@@ -21038,28 +21207,21 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             else:
                 heading_rules.append(f"#editor {level} {{ color: var(--{hue.upper()}{heading_shade}); }}")
         heading_css = "\n".join(heading_rules)
-        # "modern" theme's selected bundled font (MODERN_FONT_CHOICES), registered for the
-        # webview specifically — QFontDatabase.addApplicationFont() (main()) only registers
-        # it for native Qt widgets, not the separate Chromium renderer QWebEngineView uses,
-        # so it needs its own @font-face here. url(...) is relative to editor.html's own
-        # base URL (assets/muya/, set via QUrl.fromLocalFile() in _load_muya_shell()) — same
-        # relative-path-from-base-URL convention Muya's own vendored KaTeX fonts already use
-        # in assets/muya/lib/core.css. _todo_paper_css() composes on top of this return
-        # value (notes_css + "..."), so it inherits this for free, no separate change needed.
-        modern_font_css = ""
-        if self.current_theme == "modern":
-            _font_choice = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
-            _font_entry = MODERN_FONT_CHOICES.get(_font_choice, MODERN_FONT_CHOICES[MODERN_FONT_DEFAULT])
-            _regular_file, _bold_file = _font_entry['files']
-            _family = _font_entry['family']
-            modern_font_css = f"""
-                @font-face {{ font-family: '{_family}'; src: url(../fonts/{_regular_file}) format('truetype'); font-weight: 400; }}
-                @font-face {{ font-family: '{_family}'; src: url(../fonts/{_bold_file}) format('truetype'); font-weight: 700; }}
-                body, #editor {{ font-family: '{_family}', sans-serif; }}
-            """
+        # Custom "modern" theme @font-face fonts were tried here (registering the selected
+        # MODERN_FONT_CHOICES entry for the Muya webview specifically, since
+        # QFontDatabase.addApplicationFont() in main() only reaches native Qt widgets, not
+        # the separate Chromium renderer QWebEngineView uses) and reverted the same day —
+        # reported live as making the Notes/To-Do editor barely functional (typing not
+        # registering, very slow scrolling), with no console errors to go on when run from
+        # the command line. Not root-caused (no interactive GUI access to reproduce/profile
+        # the slowness directly) — reverted on the user's own call rather than guessed-fixed
+        # blind, since editor functionality matters far more than a font swap that "wasn't
+        # very distinct" in Muya anyway. The font picker itself (MODERN_FONT_CHOICES,
+        # Settings UI, native-widget application via apply_global_styles()) and the Help
+        # viewer's own separate @font-face (a static page, not a live rich-text editor —
+        # not reported broken) are UNAFFECTED by this revert, only this one webview is.
         return f"""
             {muya_root_vars}
-            {modern_font_css}
             body {{ background: {page_bg}; color: {ink}; overflow-x: hidden; }}
             #editor {{
                 box-sizing: border-box;

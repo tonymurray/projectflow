@@ -2,6 +2,41 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-23 (Desktop, "modern" theme: real rounded-corner bug fixed, button sizing/icon polish)
+
+### Fixed
+- **Found and fixed the real cause of the "modern" theme's launcher/viewer tab buttons
+  (Docs/Resources/Files/Apps, Notes/Editor/Web/PDF/etc, +Add/Create/Upload, and the
+  pin/reset/settings icon buttons) rendering with square corners instead of rounded.**
+  After several rounds of CSS-content investigation that each turned out to be red
+  herrings (missing `border`, `border: none;`, a transparent border, border width,
+  padding shorthand, `text-align`), a real rendered screenshot (captured via
+  `QT_QPA_PLATFORM=xcb` + `QWidget.grab()` against a throwaway local instance) revealed
+  the actual bug: Qt's `QStyleSheetStyle` doesn't clamp `border-radius` to the maximum
+  valid value the way browsers do — once the radius exceeds half the widget's height (or
+  width), it silently renders **zero** rounding instead of a sharp rectangle. These
+  buttons are sized to `header_btn_height` (26px on KDE), so the modern theme's shared
+  `radius_card` (14px) sat right past that boundary. Fixed with a dedicated, smaller
+  `_pf_btn_radius` for these buttons, independent of `radius_card` (which stays correct
+  for the taller category headers/title-bar buttons it was always designed for).
+- Gave the same buttons an explicit, shared minimum-height floor (`_pf_btn_min_height`,
+  34px) instead of relying on padding alone to grow their size — padding only grows a
+  widget's *preferred* size, which layout/sibling interactions could still compress
+  below, which was producing clipped text descenders and a visible height mismatch
+  between the launcher and viewer tab rows.
+- Fixed icon-only buttons (pin, reset-order, settings, folder) rendering with their icon
+  right-aligned instead of centered — a side effect of `text-align: left` (added during
+  the investigation above, for text buttons) leaking onto buttons that have no text at
+  all via a shared style block.
+- Fixed the tab-row "reset order" button (↺) staying square even after the main fix —
+  it's a narrow, fixed-width button, and the same radius-vs-size bug was hitting it on
+  the *width* axis instead of height; widened it slightly so the radius comfortably fits.
+- Fixed dimmed (empty/unused) viewer tab icons being invisible — they're bundled as
+  plain white PNGs for use on a colored background, but the dimmed state uses a light
+  grey fill, making a white icon disappear entirely. Added a small `_recolor_icon()`
+  helper that recolors the existing icon at runtime (preserving its shape) to match the
+  dimmed text color, rather than needing a second set of icon files.
+
 ## 2026-10-21 (Desktop, Muya Heading Colors: swatches + custom color picker)
 
 ### Added
