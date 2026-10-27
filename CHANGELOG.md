@@ -2,6 +2,61 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-27 (Desktop: UI Text Size setting; fixed a real tab-button clipping bug)
+
+### Added
+- **New "UI Text Size" setting** (Settings → Themes): Smallest/Smaller/Normal/Larger/
+  Largest, applied consistently to launcher item buttons, category header buttons, the
+  Launcher Tab Bar (Docs/Resources/Files/Apps), and the Viewer Tab Row (Notes/Editor/
+  Web/PDF/etc) — the four places where text previously looked inconsistently sized.
+  Launcher items in particular had no explicit font-size at all before this, silently
+  inheriting the OS's default button font, which is why they read as noticeably bigger
+  than everything else. Settings dialogs, the Help viewer, and tooltip/hint text are
+  unaffected — a separate, already-deliberate size convention.
+- Multi-instance per-file tab strips (the small tabs shown when several Editor/PDF/
+  Notes/etc files are open at once) always render one step smaller than the main UI
+  Text Size, so more open-file tabs fit before truncating.
+
+### Fixed
+- **A real, confirmed bug found while building the above**: at "Larger"/"Largest", the
+  Launcher Tab Bar and Viewer Tab Row buttons' text rendered visibly clipped at the top
+  (a capital "T" losing its crossbar and reading as "l", etc.) — their shared minimum-
+  height floor had been tuned for the font size that used to be hardcoded and didn't
+  scale with the new setting. Fixed by growing that floor above "Normal" only, verified
+  via real `QT_QPA_PLATFORM=xcb` screenshots at every size — "Normal" and below render
+  byte-identical to before, zero behavior change for anyone not using the larger sizes.
+
+## 2026-10-27 (Desktop: relocatable project data folders — network/cloud sync)
+
+### Added
+- **Projects, notes, documents, and images can now each be redirected to a network or
+  cloud-synced folder** (e.g. Nextcloud), either individually or all at once via a
+  single shared "Project Data Folder" root — Settings tab. Previously only notes could
+  be relocated via a Settings field at all; documents/images were fully hardcoded
+  (manual symlinking was the only workaround) and the existing `projects_directory`
+  setting had no UI field, no `~` expansion, and ~26 call sites that bypassed its own
+  getter, so it didn't reliably work even by hand-editing the settings file.
+- An "Advanced: configure each location separately" checkbox reveals 4 individual
+  override fields when one shared folder isn't enough (e.g. pointing Notes at a
+  Nextcloud Notes app's own folder while Projects/Documents/Images share one root).
+- **"📋 Copy Existing Data to New Location(s)"** button: explicit, non-destructive —
+  copies (never moves/deletes) existing content into a newly-configured location, for
+  switching to a synced folder without losing what's already there. Automatically
+  skips folders that already resolve to the same real directory (e.g. an existing
+  symlink into the same Nextcloud path), rather than attempting a pointless self-copy.
+- Folders are auto-created on Apply/OK, with a warning if any location is unreachable.
+- Full explanation moved to Help → Settings rather than long inline text in the
+  Settings tab itself, to keep that tab compact.
+
+### Changed
+- "Projects per row"/"Button spacing" moved from the Settings tab to the Themes tab;
+  "Path Mappings" moved from the Settings tab to the Integrations tab — both to free up
+  room on the Settings tab for the folder-location fields above.
+- Fixed a real UI bug found while moving Path Mappings: its Add/Remove Selected
+  buttons could visually overlap the table's last row(s) — the row-height calculation
+  now sources from the table's actual measured row heights instead of a configured-
+  but-not-necessarily-accurate Qt style default.
+
 ## 2026-10-24 (Desktop, "modern" theme: font picker widened to any installed system font)
 
 ### Changed

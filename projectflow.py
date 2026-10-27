@@ -1991,7 +1991,8 @@ class ProjectFlowApp(QMainWindow):
                 # Default settings
                 self.settings = {
                     "default_project": None,  # None means use projectflow.json
-                    "projects_directory": "projects",  # Subdirectory for project files
+                    # Note: no "projects_directory" default here — absent means "use
+                    # data_root, or <script_dir>/projects" (see _resolve_data_folder()).
                     "last_used_project": None,
                     "recent_projects": [],  # List of recently used projects (max 10)
                     "folder_projects": [],  # List of .projectflow configs from folders
@@ -2016,7 +2017,6 @@ class ProjectFlowApp(QMainWindow):
             print(f"Error loading settings: {e}")
             self.settings = {
                 "default_project": None,
-                "projects_directory": "projects",
                 "last_used_project": None,
                 "recent_projects": [],
                 "folder_projects": [],
@@ -2042,6 +2042,14 @@ class ProjectFlowApp(QMainWindow):
         # Also update projects_directory if it still says "configs"
         if self.settings.get("projects_directory") == "configs":
             self.settings["projects_directory"] = "projects"
+            migrated = True
+        # The literal default used to be baked into every install's settings file
+        # (see load_settings()) — now absence means "fall through to data_root, or
+        # <script_dir>/projects" (see _resolve_data_folder()). An existing install
+        # whose value is still exactly the untouched default should fall through the
+        # same way a fresh install does, not permanently block data_root for projects.
+        if self.settings.get("projects_directory") == "projects":
+            del self.settings["projects_directory"]
             migrated = True
         # Migrate default_config -> default_project
         if "default_config" in self.settings and "default_project" not in self.settings:
@@ -2400,7 +2408,7 @@ class ProjectFlowApp(QMainWindow):
         self._settings_startup_project = QComboBox()
         self._settings_startup_project.setStyleSheet(input_style)
         self._settings_startup_project.setMinimumWidth(160)
-        _configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        _configs_dir = self.get_projects_directory()
         if os.path.isdir(_configs_dir):
             for _p in sorted(f for f in os.listdir(_configs_dir) if f.endswith('.json') and not f.startswith('.')):
                 self._settings_startup_project.addItem(
@@ -2457,7 +2465,60 @@ class ProjectFlowApp(QMainWindow):
         default_app_row.addWidget(hint_label)
         layout.addRow(default_app_label, default_app_row)
 
-        # Notes Folder
+        # Project Data Folders — network/cloud sync. Capture this tab's own QFormLayout
+        # so the Advanced disclosure below can show/hide whole rows via setRowVisible()
+        # (same mechanism as the per-project Settings viewer's Kimai/Baloo rows). Full
+        # explanations live in Help -> Settings (help/tabs/06-settings.html) rather than
+        # as wrapped multi-line QLabels here — those took up a lot of vertical space for
+        # a section a user only needs to read once, and (see git history on this file,
+        # 2026-10-27) a word-wrapped QLabel positioned near a setRowVisible()-toggled
+        # sibling row is also a real, confirmed QFormLayout rendering landmine on its
+        # own, so keeping these one-line avoids that mechanism entirely too.
+        self._settings_main_form_layout = layout
+
+        # Project Data Folder (simple default) — a single root; when set, all four
+        # subfolders (projects/, notes/, documents/, images/) live under it unless
+        # individually overridden below. See _resolve_data_folder().
+        data_root_label = QLabel("Project Data Folder:")
+        data_root_label.setStyleSheet(label_style)
+        data_root_layout = QHBoxLayout()
+        self._settings_data_root = QLineEdit()
+        self._settings_data_root.setText(self.settings.get("data_root", ""))
+        self._settings_data_root.setPlaceholderText("e.g. ~/Nextcloud/ProjectFlow — leave empty for the app's own folder")
+        self._settings_data_root.setStyleSheet(input_style)
+        data_root_browse = QPushButton("Browse...")
+        data_root_browse.clicked.connect(lambda: self._browse_folder(self._settings_data_root))
+        data_root_layout.addWidget(self._settings_data_root)
+        data_root_layout.addWidget(data_root_browse)
+        layout.addRow(data_root_label, data_root_layout)
+
+        data_folders_hint = QLabel("Share projects/notes/documents/images across computers — see Help → Settings for details.")
+        data_folders_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        layout.addRow("", data_folders_hint)
+
+        # Advanced disclosure — per-folder overrides. Pure UI convenience: resolution
+        # itself (_resolve_data_folder()) always honors an explicit override regardless
+        # of whether this checkbox is currently checked; it just controls whether the
+        # 4 rows below are visible.
+        self._settings_advanced_folders = QCheckBox("Advanced: configure each location separately")
+        self._settings_advanced_folders.setStyleSheet(f"color: {self.t('fg_primary')};")
+        layout.addRow("", self._settings_advanced_folders)
+
+        # Projects Folder (existing "projects_directory" setting — first-ever UI field for it)
+        projects_dir_label = QLabel("Projects Folder:")
+        projects_dir_label.setStyleSheet(label_style)
+        projects_dir_row = QHBoxLayout()
+        self._settings_projects_directory = QLineEdit()
+        self._settings_projects_directory.setText(self.settings.get("projects_directory", ""))
+        self._settings_projects_directory.setPlaceholderText("Path to project config folder (default: projects/)")
+        self._settings_projects_directory.setStyleSheet(input_style)
+        projects_dir_browse = QPushButton("Browse...")
+        projects_dir_browse.clicked.connect(lambda: self._browse_folder(self._settings_projects_directory))
+        projects_dir_row.addWidget(self._settings_projects_directory)
+        projects_dir_row.addWidget(projects_dir_browse)
+        layout.addRow(projects_dir_label, projects_dir_row)
+
+        # Notes Folder — same widget attribute name as before, now one of 4 siblings.
         notes_label = QLabel("Notes Folder:")
         notes_label.setStyleSheet(label_style)
         notes_layout = QHBoxLayout()
@@ -2470,6 +2531,85 @@ class ProjectFlowApp(QMainWindow):
         notes_layout.addWidget(self._settings_notes_folder)
         notes_layout.addWidget(notes_browse)
         layout.addRow(notes_label, notes_layout)
+
+        # Documents Folder (new setting)
+        documents_dir_label = QLabel("Documents Folder:")
+        documents_dir_label.setStyleSheet(label_style)
+        documents_dir_row = QHBoxLayout()
+        self._settings_documents_folder = QLineEdit()
+        self._settings_documents_folder.setText(self.settings.get("documents_folder", ""))
+        self._settings_documents_folder.setPlaceholderText("Path to documents folder (default: documents/)")
+        self._settings_documents_folder.setStyleSheet(input_style)
+        documents_dir_browse = QPushButton("Browse...")
+        documents_dir_browse.clicked.connect(lambda: self._browse_folder(self._settings_documents_folder))
+        documents_dir_row.addWidget(self._settings_documents_folder)
+        documents_dir_row.addWidget(documents_dir_browse)
+        layout.addRow(documents_dir_label, documents_dir_row)
+
+        # Images Folder (new setting)
+        images_dir_label = QLabel("Images Folder:")
+        images_dir_label.setStyleSheet(label_style)
+        images_dir_row = QHBoxLayout()
+        self._settings_images_folder = QLineEdit()
+        self._settings_images_folder.setText(self.settings.get("images_folder", ""))
+        self._settings_images_folder.setPlaceholderText("Path to images folder (default: images/)")
+        self._settings_images_folder.setStyleSheet(input_style)
+        images_dir_browse = QPushButton("Browse...")
+        images_dir_browse.clicked.connect(lambda: self._browse_folder(self._settings_images_folder))
+        images_dir_row.addWidget(self._settings_images_folder)
+        images_dir_row.addWidget(images_dir_browse)
+        layout.addRow(images_dir_label, images_dir_row)
+
+        # Disclosure wiring: show/hide the 4 rows above as one unit via setRowVisible(),
+        # same mechanism the per-project Settings viewer already uses for its Kimai/
+        # Baloo rows. Default to expanded if any override is already set, so an
+        # existing override is never hidden just because the checkbox wasn't re-checked.
+        self._settings_advanced_folder_rows = [
+            projects_dir_row, notes_layout, documents_dir_row, images_dir_row,
+        ]
+
+        def _toggle_advanced_folder_rows(checked):
+            for _row in self._settings_advanced_folder_rows:
+                self._settings_main_form_layout.setRowVisible(_row, checked)
+            # setRowVisible() changes this tab's natural content height, but the dialog
+            # that hosts it (already shown/sized once, before this toggle) won't grow on
+            # its own to fit — without this, the newly-revealed/hidden rows render
+            # squeezed into the dialog's unchanged size, overlapping neighboring rows.
+            # Confirmed via a real render (QT_QPA_PLATFORM=xcb screenshot) that this is a
+            # genuine stale geometry-cache issue, not a paint-staleness one (an explicit
+            # repaint() made no difference) — invalidate()+activate() forces the
+            # QFormLayout to synchronously recompute every row's rect (not just the ones
+            # whose own visibility changed) before the window is resized to fit.
+            self._settings_main_form_layout.invalidate()
+            self._settings_main_form_layout.activate()
+            top = widget.window()
+            top.adjustSize()
+
+        self._settings_advanced_folders.toggled.connect(_toggle_advanced_folder_rows)
+        _any_override_set = any([
+            self.settings.get("projects_directory", ""),
+            self.settings.get("notes_folder", ""),
+            self.settings.get("documents_folder", ""),
+            self.settings.get("images_folder", ""),
+        ])
+        self._settings_advanced_folders.setChecked(_any_override_set)
+        _toggle_advanced_folder_rows(_any_override_set)
+
+        # Copy Existing Data — explicit, non-destructive, separate from Apply/OK (see
+        # _copy_data_to_new_locations()). Copies (never moves/deletes) whatever already
+        # exists at the folders' CURRENT (saved) locations into wherever the fields
+        # above currently point, if that differs — lets a user who already created a
+        # couple of local projects switch to a synced folder without losing anything.
+        copy_data_btn = QPushButton("📋 Copy Existing Data to New Location(s)")
+        copy_data_btn.setStyleSheet(action_btn_style)
+        copy_data_btn.setToolTip(
+            "Copies existing projects/notes/documents/images into the folder(s) specified\n"
+            "above, if they're not already there. Does not delete or move the originals.\n"
+            "This only copies files — click Apply/OK afterward to actually start using the\n"
+            "new location(s)."
+        )
+        copy_data_btn.clicked.connect(self._copy_data_to_new_locations)
+        layout.addRow("", copy_data_btn)
 
         # Backup
         section_style = f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px; padding-top: 8px;"
@@ -2543,113 +2683,6 @@ class ProjectFlowApp(QMainWindow):
         )
         layout.addRow(show_section_label, self._settings_show_projects_section)
 
-        # Projects per row
-        spinbox_style = f"""
-            QSpinBox {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                border-radius: 4px;
-                padding: 6px;
-                min-height: 20px;
-            }}
-        """
-        per_row_label = QLabel("Projects per row:")
-        per_row_label.setStyleSheet(label_style)
-        self._settings_projects_per_row = QSpinBox()
-        self._settings_projects_per_row.setRange(3, 20)
-        self._settings_projects_per_row.setValue(self.settings.get("projects_per_row", 10))
-        self._settings_projects_per_row.setToolTip("Number of project buttons per row in all list views (default: 10)")
-        self._settings_projects_per_row.setStyleSheet(spinbox_style)
-        layout.addRow(per_row_label, self._settings_projects_per_row)
-
-        spacing_label = QLabel("Button spacing:")
-        spacing_label.setStyleSheet(label_style)
-        self._settings_projects_spacing = QSpinBox()
-        self._settings_projects_spacing.setRange(2, 15)
-        self._settings_projects_spacing.setValue(self.settings.get("projects_spacing", 5))
-        self._settings_projects_spacing.setToolTip("Horizontal gap between project buttons in pixels (default: 5)")
-        self._settings_projects_spacing.setStyleSheet(spinbox_style)
-        layout.addRow(spacing_label, self._settings_projects_spacing)
-
-        # Path Mappings
-        mappings_label = QLabel("Path Mappings:")
-        mappings_label.setStyleSheet(label_style)
-        mappings_label.setToolTip(
-            "Remap path prefixes when switching machines (e.g. a folder mounted at a\n"
-            "different location here than where it was originally saved from)."
-        )
-        mappings_outer = QVBoxLayout()
-        mappings_outer.setSpacing(4)
-
-        self._path_mappings_table = QTableWidget()
-        self._path_mappings_table.setColumnCount(2)
-        self._path_mappings_table.setHorizontalHeaderLabels(["From (local path)", "To (remote/mounted path)"])
-        self._path_mappings_table.horizontalHeader().setStretchLastSection(True)
-        self._path_mappings_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._path_mappings_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._path_mappings_table.setAlternatingRowColors(True)
-        # Fixed (not the QTableWidget default Expanding) vertical size policy, height set by
-        # _update_path_mappings_table_height() below — otherwise the table stretches to fill
-        # whatever extra vertical space the surrounding QFormLayout row happens to give it,
-        # leaving a large blank strip inside its own border below the last real row that the
-        # Add/Remove buttons then sit directly under, reading as if they overlapped the table.
-        self._path_mappings_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._path_mappings_table.setStyleSheet(f"""
-            QTableWidget {{
-                background-color: {self.t('bg_secondary')};
-                color: {self.t('fg_primary')};
-                border: 1px solid {self.t('border')};
-                gridline-color: {self.t('border')};
-            }}
-            QHeaderView::section {{
-                background-color: {self.t('bg_panel')};
-                color: {self.t('fg_on_dark')};
-                padding: 4px;
-                border: none;
-                font-size: 11px;
-            }}
-            QTableWidget::item:selected {{
-                background-color: {self.t('bg_category')};
-                color: {self.t('fg_on_dark')};
-            }}
-            QTableWidget::item:alternate {{
-                background-color: {self.t('bg_primary')};
-            }}
-        """)
-        for m in self.settings.get('path_mappings', []):
-            row = self._path_mappings_table.rowCount()
-            self._path_mappings_table.insertRow(row)
-            self._path_mappings_table.setItem(row, 0, QTableWidgetItem(m.get('from', '')))
-            self._path_mappings_table.setItem(row, 1, QTableWidgetItem(m.get('to', '')))
-        self._update_path_mappings_table_height()
-        mappings_outer.addWidget(self._path_mappings_table)
-
-        mappings_btn_layout = QHBoxLayout()
-        add_mapping_btn = QPushButton("+ Add")
-        add_mapping_btn.setStyleSheet(action_btn_style)
-        add_mapping_btn.clicked.connect(self._add_path_mapping_row)
-        remove_mapping_btn = QPushButton("Remove Selected")
-        remove_mapping_btn.setStyleSheet(action_btn_style)
-        remove_mapping_btn.clicked.connect(self._remove_path_mapping_row)
-        mappings_btn_layout.addWidget(add_mapping_btn)
-        mappings_btn_layout.addWidget(remove_mapping_btn)
-        mappings_btn_layout.addStretch()
-        mappings_outer.addLayout(mappings_btn_layout)
-
-        mappings_desc = QLabel(
-            "Applied automatically as a fallback, only when a saved folder or launcher path "
-            "isn't found on this machine — e.g. a project folder saved as ~/Public/key that's "
-            "only reachable here as ~/gtr7/Public/key. The original path is never changed; "
-            "when a mapping is used, the folder browser's path shows in pale blue to make it "
-            "clear you're viewing a mapped location, not the one actually saved in the project."
-        )
-        mappings_desc.setWordWrap(True)
-        mappings_desc.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
-        mappings_outer.addWidget(mappings_desc)
-
-        layout.addRow(mappings_label, mappings_outer)
-
         return widget
 
     def _create_themes_tab(self):
@@ -2696,6 +2729,34 @@ class ProjectFlowApp(QMainWindow):
         theme_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
         layout.addRow("", theme_hint)
 
+        # UI Text Size — applies to launcher item buttons, category header buttons, the
+        # Launcher Tab Bar (Docs/Resources/Files/Apps), and the Viewer Tab Row (Notes/
+        # Editor/Web/PDF/etc) — see UI_FONT_SIZES/_ui_font_size() for the fixed array this
+        # indexes into, modeled directly on the folder-icon-grid zoom slider's own
+        # fixed-array + index shape. Deliberately NOT app-wide — Settings dialogs, the
+        # Help viewer, and tooltip/hint text keep their own existing sizes untouched, a
+        # separate convention this doesn't touch. Multi-instance per-file tab strips (open
+        # Editor/PDF/Notes/etc tabs) always render one step smaller than whatever's picked
+        # here, with no separate control of their own.
+        ui_font_size_label = QLabel("UI Text Size:")
+        ui_font_size_label.setStyleSheet(label_style)
+        self._settings_ui_font_size = QComboBox()
+        for _idx, _size_label in enumerate(self.UI_FONT_SIZE_LABELS):
+            self._settings_ui_font_size.addItem(_size_label, _idx)
+            _preview_font = QFont()
+            _preview_font.setPixelSize(self.UI_FONT_SIZES[_idx])
+            self._settings_ui_font_size.setItemData(_idx, _preview_font, Qt.ItemDataRole.FontRole)
+        _current_font_size_idx = self.settings.get("ui_font_size_index", self.UI_FONT_SIZE_DEFAULT_INDEX)
+        self._settings_ui_font_size.setCurrentIndex(
+            max(0, min(_current_font_size_idx, len(self.UI_FONT_SIZE_LABELS) - 1))
+        )
+        self._settings_ui_font_size.setStyleSheet(input_style)
+        layout.addRow(ui_font_size_label, self._settings_ui_font_size)
+
+        ui_font_size_hint = QLabel("Open-file tabs (Editor, PDF, etc) always render one step smaller.")
+        ui_font_size_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        layout.addRow("", ui_font_size_hint)
+
         # Modern Theme Font — every font QFontDatabase sees on this machine (system fonts
         # plus anything separately installed, e.g. via NixOS/home-manager — see
         # _discover_system_fonts()'s own comment for why this needs no awareness of the
@@ -2739,6 +2800,46 @@ class ProjectFlowApp(QMainWindow):
         )
         font_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
         layout.addRow("", font_hint)
+
+        layout.addRow(QLabel(""))
+
+        # Projects Section Layout — moved here from the Settings tab to free up room
+        # there for the folder-location fields (Settings -> Project Data Folder etc.).
+        # Plain addRow()s, matching this tab's prevailing flat style — not wrapped in
+        # the one QFrame "card" precedent below (Muya Heading Colors), which its own
+        # comment already flags as a proof-of-pattern for later, not yet a convention
+        # to extend to every section.
+        spinbox_style = f"""
+            QSpinBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 6px;
+                min-height: 20px;
+            }}
+        """
+        projects_layout_label = QLabel("Projects Section Layout:")
+        projects_layout_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
+        layout.addRow(projects_layout_label)
+
+        per_row_label = QLabel("Projects per row:")
+        per_row_label.setStyleSheet(label_style)
+        self._settings_projects_per_row = QSpinBox()
+        self._settings_projects_per_row.setRange(3, 20)
+        self._settings_projects_per_row.setValue(self.settings.get("projects_per_row", 10))
+        self._settings_projects_per_row.setToolTip("Number of project buttons per row in all list views (default: 10)")
+        self._settings_projects_per_row.setStyleSheet(spinbox_style)
+        layout.addRow(per_row_label, self._settings_projects_per_row)
+
+        spacing_label = QLabel("Button spacing:")
+        spacing_label.setStyleSheet(label_style)
+        self._settings_projects_spacing = QSpinBox()
+        self._settings_projects_spacing.setRange(2, 15)
+        self._settings_projects_spacing.setValue(self.settings.get("projects_spacing", 5))
+        self._settings_projects_spacing.setToolTip("Horizontal gap between project buttons in pixels (default: 5)")
+        self._settings_projects_spacing.setStyleSheet(spinbox_style)
+        layout.addRow(spacing_label, self._settings_projects_spacing)
 
         layout.addRow(QLabel(""))
 
@@ -3195,6 +3296,103 @@ class ProjectFlowApp(QMainWindow):
         bulk_tag_row.addWidget(bulk_tag_btn)
         bulk_tag_row.addWidget(bulk_tag_desc)
         layout.addRow(bulk_tag_row)
+
+        # === Path Mappings === (moved here from the Settings tab — a cross-machine
+        # path-resolution fallback, which reads more like an integration/compatibility
+        # concern than a core app setting)
+        action_btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 4px;
+                padding: 8px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+        mappings_section = QLabel("Path Mappings")
+        mappings_section.setStyleSheet(section_style)
+        layout.addRow(mappings_section)
+
+        mappings_label = QLabel("Path Mappings:")
+        mappings_label.setStyleSheet(label_style)
+        mappings_label.setToolTip(
+            "Remap path prefixes when switching machines (e.g. a folder mounted at a\n"
+            "different location here than where it was originally saved from)."
+        )
+        mappings_outer = QVBoxLayout()
+        mappings_outer.setSpacing(4)
+
+        self._path_mappings_table = QTableWidget()
+        self._path_mappings_table.setColumnCount(2)
+        self._path_mappings_table.setHorizontalHeaderLabels(["From (local path)", "To (remote/mounted path)"])
+        self._path_mappings_table.horizontalHeader().setStretchLastSection(True)
+        self._path_mappings_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._path_mappings_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._path_mappings_table.setAlternatingRowColors(True)
+        # Fixed (not the QTableWidget default Expanding) vertical size policy, height set by
+        # _update_path_mappings_table_height() below — otherwise the table stretches to fill
+        # whatever extra vertical space the surrounding QFormLayout row happens to give it,
+        # leaving a large blank strip inside its own border below the last real row that the
+        # Add/Remove buttons then sit directly under, reading as if they overlapped the table.
+        self._path_mappings_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._path_mappings_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                gridline-color: {self.t('border')};
+            }}
+            QHeaderView::section {{
+                background-color: {self.t('bg_panel')};
+                color: {self.t('fg_on_dark')};
+                padding: 4px;
+                border: none;
+                font-size: 11px;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+            }}
+            QTableWidget::item:alternate {{
+                background-color: {self.t('bg_primary')};
+            }}
+        """)
+        for m in self.settings.get('path_mappings', []):
+            row = self._path_mappings_table.rowCount()
+            self._path_mappings_table.insertRow(row)
+            self._path_mappings_table.setItem(row, 0, QTableWidgetItem(m.get('from', '')))
+            self._path_mappings_table.setItem(row, 1, QTableWidgetItem(m.get('to', '')))
+        self._update_path_mappings_table_height()
+        mappings_outer.addWidget(self._path_mappings_table)
+
+        mappings_btn_layout = QHBoxLayout()
+        add_mapping_btn = QPushButton("+ Add")
+        add_mapping_btn.setStyleSheet(action_btn_style)
+        add_mapping_btn.clicked.connect(self._add_path_mapping_row)
+        remove_mapping_btn = QPushButton("Remove Selected")
+        remove_mapping_btn.setStyleSheet(action_btn_style)
+        remove_mapping_btn.clicked.connect(self._remove_path_mapping_row)
+        mappings_btn_layout.addWidget(add_mapping_btn)
+        mappings_btn_layout.addWidget(remove_mapping_btn)
+        mappings_btn_layout.addStretch()
+        mappings_outer.addLayout(mappings_btn_layout)
+
+        mappings_desc = QLabel(
+            "Applied automatically as a fallback, only when a saved folder or launcher path "
+            "isn't found on this machine — e.g. a project folder saved as ~/Public/key that's "
+            "only reachable here as ~/gtr7/Public/key. The original path is never changed; "
+            "when a mapping is used, the folder browser's path shows in pale blue to make it "
+            "clear you're viewing a mapped location, not the one actually saved in the project."
+        )
+        mappings_desc.setWordWrap(True)
+        mappings_desc.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        mappings_outer.addWidget(mappings_desc)
+
+        layout.addRow(mappings_label, mappings_outer)
 
         return widget
 
@@ -6026,19 +6224,128 @@ class ProjectFlowApp(QMainWindow):
         if folder_path:
             line_edit.setText(folder_path)
 
+    def _copy_data_to_new_locations(self):
+        """"📋 Copy Existing Data to New Location(s)" button, Settings tab. Explicit,
+        non-destructive, and entirely separate from Apply/OK — only ever copies files,
+        never deletes/moves anything, and never touches self.settings. Lets someone who
+        already created a couple of local projects switch to a synced folder (e.g.
+        Nextcloud) without losing what they already have, by copying (not moving) the
+        old content into the new location before they click Apply to start using it.
+
+        Compares each of the 4 folders' CURRENTLY SAVED resolved path ("old") against
+        what the dialog's not-yet-applied field values would resolve to ("new", built by
+        overlaying the 5 folder-location fields onto a copy of self.settings and running
+        the same _resolve_data_folder() logic — a pure preview, self.settings itself is
+        never mutated here)."""
+        pending = dict(self.settings)
+        for key, widget in [
+            ("data_root", self._settings_data_root),
+            ("projects_directory", self._settings_projects_directory),
+            ("notes_folder", self._settings_notes_folder),
+            ("documents_folder", self._settings_documents_folder),
+            ("images_folder", self._settings_images_folder),
+        ]:
+            text = widget.text().strip()
+            if text:
+                pending[key] = text
+            elif key in pending:
+                del pending[key]
+
+        folders = [
+            ("Projects", "projects_directory", "projects"),
+            ("Notes", "notes_folder", "notes"),
+            ("Documents", "documents_folder", "documents"),
+            ("Images", "images_folder", "images"),
+        ]
+        jobs = []
+        for label, override_key, subfolder in folders:
+            old_path = self._resolve_data_folder(self.settings, override_key, subfolder)
+            new_path = self._resolve_data_folder(pending, override_key, subfolder)
+            # realpath (not just a plain string compare) — a very real case for this
+            # app specifically: today's documented workaround for relocating documents/
+            # images is manually symlinking <script_dir>/documents -> ~/Nextcloud/...,
+            # so pointing the new "Documents Folder" field at that SAME already-synced
+            # Nextcloud path (now that there's a real setting for it) would otherwise
+            # read as "old != new" by plain string comparison alone — even though both
+            # paths resolve to the identical real directory through the symlink. A
+            # same-directory "copy" in that case would mean shutil.copytree() reading
+            # and writing the same real files it's reading from, at best a wasted no-op,
+            # at worst an error — skipped entirely via realpath, which resolves symlinks
+            # without requiring either path to actually exist yet.
+            if old_path == new_path or os.path.realpath(old_path) == os.path.realpath(new_path):
+                continue
+            if os.path.isdir(old_path) and os.listdir(old_path):
+                jobs.append((label, old_path, new_path))
+
+        if not jobs:
+            self.status_label.setText("Nothing to copy — folder locations unchanged, or source folders are empty.")
+            self.status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; margin: 10px;")
+            return
+
+        job_lines = "\n".join(f"  {label}: {old} → {new}" for label, old, new in jobs)
+        reply = QMessageBox.question(
+            self,
+            "Copy Existing Data",
+            f"This will copy existing data into the new location(s):\n\n{job_lines}\n\n"
+            f"Originals are left in place — nothing is deleted or moved. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        succeeded = []
+        failed = []
+        for label, old_path, new_path in jobs:
+            try:
+                os.makedirs(new_path, exist_ok=True)
+                shutil.copytree(old_path, new_path, dirs_exist_ok=True)
+                succeeded.append((label, old_path, new_path))
+            except Exception as e:
+                failed.append((label, old_path, new_path, str(e)))
+
+        summary_lines = []
+        if succeeded:
+            summary_lines.append("Copied successfully:")
+            summary_lines.extend(f"  {label}: {old} → {new}" for label, old, new in succeeded)
+        if failed:
+            summary_lines.append("\nFailed:")
+            summary_lines.extend(f"  {label}: {old} → {new} ({err})" for label, old, new, err in failed)
+        if succeeded:
+            summary_lines.append(
+                "\nTo avoid confusion between two active copies, consider renaming or "
+                "moving your old folder(s) once you've confirmed the new location works "
+                "correctly:"
+            )
+            summary_lines.extend(f"  {old}" for _, old, _ in succeeded)
+        summary_lines.append("\nClick Apply/OK to start using the new location(s).")
+
+        QMessageBox.information(self, "Copy Existing Data", "\n".join(summary_lines))
+
     def _update_path_mappings_table_height(self):
         """Fix the path-mappings table's height to its actual row count (header + rows,
         clamped to a sensible [60, 140] range — beyond that it scrolls instead of growing
         unbounded). Paired with the Fixed vertical size policy set at construction; must be
         re-called whenever rowCount() changes (_add_path_mapping_row/_remove_path_mapping_row)
         so the table never reserves stale blank space the Add/Remove buttons could sit
-        against. See that size-policy comment for why this exists."""
+        against. See that size-policy comment for why this exists.
+
+        Sources row height from the table's own real, measured rows (resizeRowsToContents()
+        + summed rowHeight()) rather than verticalHeader().defaultSectionSize() — the latter
+        is a configured Qt/style metric, not a measurement of what a row actually renders
+        at, and was found to under-count enough (especially before the dialog's first show)
+        to leave the table a few pixels short of its real content, reading as if the
+        Add/Remove buttons below it overlapped the last row."""
         if not hasattr(self, '_path_mappings_table'):
             return
         table = self._path_mappings_table
+        table.resizeRowsToContents()
         header_h = table.horizontalHeader().height()
-        row_h = table.verticalHeader().defaultSectionSize()
-        content_h = header_h + table.rowCount() * row_h + 4  # small frame/border allowance
+        if table.rowCount() > 0:
+            rows_h = sum(table.rowHeight(r) for r in range(table.rowCount()))
+        else:
+            rows_h = table.verticalHeader().defaultSectionSize()
+        content_h = header_h + rows_h + 6  # small frame/border allowance (was 4, bumped for safety)
         table.setFixedHeight(min(max(content_h, 60), 140))
 
     def _add_path_mapping_row(self):
@@ -6225,11 +6532,58 @@ class ProjectFlowApp(QMainWindow):
             if hasattr(self, '_folder_theme_icon_cache'):
                 self._folder_theme_icon_cache = {}  # pack changed — old cached icon is stale
 
+            data_root = self._settings_data_root.text().strip()
+            if data_root:
+                self.settings["data_root"] = data_root
+            elif "data_root" in self.settings:
+                del self.settings["data_root"]
+
+            projects_directory = self._settings_projects_directory.text().strip()
+            if projects_directory:
+                self.settings["projects_directory"] = projects_directory
+            elif "projects_directory" in self.settings:
+                del self.settings["projects_directory"]
+
             notes_folder = self._settings_notes_folder.text().strip()
             if notes_folder:
                 self.settings["notes_folder"] = notes_folder
             elif "notes_folder" in self.settings:
                 del self.settings["notes_folder"]
+
+            documents_folder = self._settings_documents_folder.text().strip()
+            if documents_folder:
+                self.settings["documents_folder"] = documents_folder
+            elif "documents_folder" in self.settings:
+                del self.settings["documents_folder"]
+
+            images_folder = self._settings_images_folder.text().strip()
+            if images_folder:
+                self.settings["images_folder"] = images_folder
+            elif "images_folder" in self.settings:
+                del self.settings["images_folder"]
+
+            # Proactively create whatever folder(s) this round's settings now point at —
+            # mirrors Backup Now's unthrottled, synchronous warn-every-time style (an
+            # unmounted/permission-denied network path failing silently here would just
+            # reproduce the original sync-failure scenario that feature exists to guard
+            # against), not Backup Directory's throttled-once-a-day startup check, since
+            # this is a deliberate, synchronous save action, not an ambient background one.
+            _folder_create_failures = []
+            for _label, _getter in [
+                ("Projects", self.get_projects_directory),
+                ("Notes", self.get_notes_folder),
+                ("Documents", self.get_documents_folder),
+                ("Images", self.get_images_folder),
+            ]:
+                try:
+                    os.makedirs(_getter(), exist_ok=True)
+                except Exception as e:
+                    _folder_create_failures.append(f"{_label}: {_getter()} — {e}")
+            if _folder_create_failures:
+                QMessageBox.warning(
+                    self, "Settings",
+                    "Could not create one or more data folders:\n\n" + "\n".join(_folder_create_failures)
+                )
 
             backup_dir = self._settings_backup_dir.text().strip()
             if backup_dir:
@@ -6260,6 +6614,7 @@ class ProjectFlowApp(QMainWindow):
             self.settings["browser_new_tab"] = self._settings_browser_new_tab.isChecked()
             self.settings["projects_per_row"] = self._settings_projects_per_row.value()
             self.settings["projects_spacing"] = self._settings_projects_spacing.value()
+            self.settings["ui_font_size_index"] = self._settings_ui_font_size.currentData()
 
             default_app = self._settings_default_app.currentText().strip()
             if default_app:
@@ -6472,6 +6827,37 @@ class ProjectFlowApp(QMainWindow):
             print(f"Error saving icon preferences: {e}")
             QMessageBox.warning(self, "Error", f"Failed to save icon preferences: {e}")
 
+    # UI Text Size (Settings -> Themes tab) — a user-adjustable base font size applied to
+    # launcher item buttons, category header buttons, the Launcher Tab Bar (Docs/Resources/
+    # Files/Apps), and the Viewer Tab Row (Notes/Editor/Web/PDF/etc) — the four places
+    # reported as visually inconsistent with each other (launcher items had no explicit
+    # font-size at all, silently inheriting the OS/Qt default button font, which is why
+    # they read as noticeably bigger than everything else; the other three were already
+    # pinned to small literal px values). Deliberately scoped to just these four — Settings
+    # dialogs, the Help viewer, and tooltip/hint text keep their own existing sizes, a
+    # separate established convention not part of this request. Modeled directly on
+    # ICON_ZOOM_FACTORS/ICON_ZOOM_DEFAULT_INDEX just above (same "fixed array + index into
+    # settings" shape) rather than inventing a new pattern. Index 2 ("Normal", 12px) is the
+    # default — matches today's category-header size, the closest existing anchor once
+    # launcher items are pulled down to match rather than everything else being pushed up.
+    UI_FONT_SIZES = [10, 11, 12, 13, 14]
+    UI_FONT_SIZE_LABELS = ["Smallest", "Smaller", "Normal", "Larger", "Largest"]
+    UI_FONT_SIZE_DEFAULT_INDEX = 2
+
+    def _ui_font_size(self, smaller=False):
+        """Resolve the current UI Text Size setting to a concrete px value. `smaller=True`
+        returns the next step DOWN — used exclusively by the multi-instance per-file tab
+        strips (open Editor/PDF/Notes/etc tabs), which stay one step smaller than the main
+        Launcher/Viewer tab rows so more open-file tabs fit in the same width, per direct
+        request. Clamped at the smallest available step (never goes below/out of range) —
+        picking the smallest size for the main UI simply means tab-strip labels match it
+        exactly rather than requesting a size that doesn't exist in UI_FONT_SIZES."""
+        idx = self.settings.get("ui_font_size_index", self.UI_FONT_SIZE_DEFAULT_INDEX)
+        idx = max(0, min(idx, len(self.UI_FONT_SIZES) - 1))
+        if smaller:
+            idx = max(0, idx - 1)
+        return self.UI_FONT_SIZES[idx]
+
     def get_item_button_style(self, clicked=False, mapped=False):
         """Get stylesheet for item buttons (normal, clicked, or mapped-path state).
 
@@ -6498,6 +6884,7 @@ class ProjectFlowApp(QMainWindow):
                     color: {fg};
                     border: 1px solid {border};
                     border-radius: {_radius};
+                    font-size: {self._ui_font_size()}px;
                 }}
                 QPushButton:hover {{
                     background-color: {self.t('bg_button_hover')};
@@ -6514,6 +6901,7 @@ class ProjectFlowApp(QMainWindow):
                     color: {self.t('fg_on_dark')};
                     border: 1px solid {self.t('bg_success_hover')};
                     border-radius: {_radius};
+                    font-size: {self._ui_font_size()}px;
                 }}
                 QPushButton:hover {{
                     background-color: {self.t('bg_button_hover')};
@@ -6530,6 +6918,7 @@ class ProjectFlowApp(QMainWindow):
                     color: {self.t('fg_primary')};
                     border: 1px solid {self.t('border')};
                     border-radius: {_radius};
+                    font-size: {self._ui_font_size()}px;
                 }}
                 QPushButton:hover {{
                     background-color: {self.t('bg_button_hover')};
@@ -6651,19 +7040,22 @@ class ProjectFlowApp(QMainWindow):
     def setup_first_run(self):
         """Copy example files to projects/notes directories on first run"""
         examples_dir = os.path.join(self.script_dir, "examples")
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
-        notes_dir = self.settings.get("notes_folder", os.path.join(self.script_dir, "notes"))
-        notes_dir = os.path.expanduser(notes_dir)
+        projects_dir = self.get_projects_directory()
+        notes_dir = self.get_notes_folder()
 
         # Check if examples directory exists
         if not os.path.exists(examples_dir):
             return
 
-        # Migration: if old "configs" directory exists but "projects" doesn't, rename it
+        # Migration: if old "configs" directory exists but "projects" doesn't, move it.
+        # shutil.move() (not os.rename()) — projects_dir can now resolve onto a
+        # network/cloud mount (data_root/projects_directory override), and a plain
+        # rename raises OSError ("Invalid cross-device link") across filesystems;
+        # shutil.move() falls back to a copy+delete automatically in that case.
         old_configs_dir = os.path.join(self.script_dir, "configs")
         if os.path.exists(old_configs_dir) and not os.path.exists(projects_dir):
             try:
-                os.rename(old_configs_dir, projects_dir)
+                shutil.move(old_configs_dir, projects_dir)
                 print(f"Migrated configs/ to projects/")
             except Exception as e:
                 print(f"Could not migrate configs/ to projects/: {e}")
@@ -7084,7 +7476,7 @@ StartupNotify=true
                 return config_path
             print(f"Warning: Config file '{self.config_file_arg}' not found. Using default config.")
 
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         startup_mode = self.settings.get("startup_mode", "last_used")
 
         # Specific project
@@ -7708,7 +8100,7 @@ StartupNotify=true
             self.status_label.setStyleSheet("color: #e74c3c; margin: 10px; font-weight: bold;")
             return
 
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         if not os.path.isdir(projects_dir):
             return
 
@@ -7823,27 +8215,46 @@ StartupNotify=true
             self.status_label.setText("Nothing to tag — no notes file and no existing local launcher paths in this project")
             self.status_label.setStyleSheet(f"color: {self.t('fg_secondary')}; margin: 10px;")
 
+    def _resolve_data_folder(self, settings_dict, override_key, subfolder):
+        """Shared 3-tier resolution for the four relocatable data folders (projects
+        config JSONs, notes, documents, images): an explicit per-folder override
+        (settings_dict[override_key]) wins if set; else a single shared "Project Data
+        Folder" root (settings_dict['data_root']) is used, with `subfolder` appended
+        (e.g. 'notes', 'documents') — this is what lets all four live under one
+        Nextcloud/cloud folder at once; else falls back to today's hardcoded
+        <script_dir>/<subfolder>. Both override and data_root are expanduser()'d so
+        `~/Nextcloud/...` works. A pure function of `settings_dict` (not hardcoded to
+        self.settings) so it can also preview not-yet-saved Settings-dialog field
+        values without mutating real settings — see _copy_data_to_new_locations()."""
+        override = settings_dict.get(override_key, "")
+        if override:
+            return os.path.expanduser(override)
+        data_root = settings_dict.get("data_root", "")
+        if data_root:
+            return os.path.join(os.path.expanduser(data_root), subfolder)
+        return os.path.join(self.script_dir, subfolder)
+
     def get_notes_folder(self):
         """Get the folder where notes are stored as markdown files"""
-        # Use configured folder, or default to 'notes' subdirectory
-        folder = self.settings.get("notes_folder", os.path.join(self.script_dir, "notes"))
-        return os.path.expanduser(folder)
+        return self._resolve_data_folder(self.settings, "notes_folder", "notes")
 
     def get_projects_directory(self):
         """Get the folder where project config JSON files are stored"""
-        return os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        return self._resolve_data_folder(self.settings, "projects_directory", "projects")
 
     def get_images_folder(self):
-        """Folder where images pasted into notes are stored as real files. Fixed
-        location, like get_projects_directory() — symlink it to a synced folder (e.g.
-        Nextcloud) if you want images to travel across devices; no separate setting."""
-        return os.path.join(self.script_dir, "images")
+        """Folder where images pasted into notes are stored as real files. See
+        _resolve_data_folder() — overridable directly (Settings -> "Images Folder"),
+        or via the shared "Project Data Folder" root, or symlink it yourself; falls
+        back to <script_dir>/images if none of those apply."""
+        return self._resolve_data_folder(self.settings, "images_folder", "images")
 
     def get_documents_folder(self):
-        """Root folder for per-project documents subfolders. Fixed location, like
-        get_images_folder()/get_projects_directory() — symlink it to a synced folder if
-        you want documents to travel across devices; no separate setting."""
-        return os.path.join(self.script_dir, "documents")
+        """Root folder for per-project documents subfolders. See _resolve_data_folder()
+        — overridable directly (Settings -> "Documents Folder"), or via the shared
+        "Project Data Folder" root, or symlink it yourself; falls back to
+        <script_dir>/documents if none of those apply."""
+        return self._resolve_data_folder(self.settings, "documents_folder", "documents")
 
     def _slugify_project_name(self, name):
         """Lowercase, spaces/hyphens -> underscores, strip anything else that isn't
@@ -8179,7 +8590,7 @@ StartupNotify=true
     # ------------------------------------------------------------------
 
     def get_aliases_file_path(self):
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         return os.path.join(projects_dir, "projectflow_aliases")
 
     def _validate_alias(self, name, command):
@@ -8334,7 +8745,7 @@ StartupNotify=true
     def _scan_all_project_aliases(self):
         """Rebuild projectflow_aliases from scratch from all project JSON files.
         Returns (alias_count, projects_scanned) counts."""
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         aliases_file = self.get_aliases_file_path()
         header = (
             "# ProjectFlow Aliases\n"
@@ -8432,7 +8843,7 @@ StartupNotify=true
         # Scan project JSONs to map alias_name → project_name
         alias_to_project = {}
         aliases_by_project = {}
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         archive_dir = os.path.join(projects_dir, '.archive')
         regen_files = [
             os.path.join(projects_dir, f) for f in sorted(os.listdir(projects_dir))
@@ -8603,7 +9014,7 @@ function filterAliases(q) {{
 
     def _build_aliases_config(self, all_aliases):
         """Write projects/aliases.json from the given alias dict."""
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         config_path = os.path.join(projects_dir, "aliases.json")
         notes_folder = self.get_notes_folder()
         html_path = os.path.join(notes_folder, "aliases.html")
@@ -8628,7 +9039,7 @@ function filterAliases(q) {{
     def open_aliases_project(self):
         """Regenerate alias files and switch to the aliases project."""
         self._regenerate_aliases_project()
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         aliases_config = os.path.join(projects_dir, "aliases.json")
         if os.path.exists(aliases_config):
             self.switch_to_config(aliases_config)
@@ -8709,11 +9120,7 @@ function filterAliases(q) {{
     def _migrate_archive_filenames(self):
         """MIGRATION (temporary): rename {name}.md → {name}-archive.md in the global notes .archive folder.
         Safe to remove once all installs have run this at least once."""
-        notes_folder = self.settings.get("notes_folder", "")
-        if not notes_folder:
-            notes_folder = os.path.join(self.script_dir, "notes")
-        else:
-            notes_folder = os.path.expanduser(notes_folder)
+        notes_folder = self.get_notes_folder()
         archive_dir = os.path.join(notes_folder, ".archive")
         if not os.path.isdir(archive_dir):
             return
@@ -9717,7 +10124,7 @@ function filterAliases(q) {{
         config_name = config_name.replace('_', ' ').replace('-', ' ').upper()
 
         # Get available configs for search
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         config_paths = []
         if os.path.isdir(configs_dir):
             config_paths = [os.path.join(configs_dir, f) for f in os.listdir(configs_dir)
@@ -10103,7 +10510,7 @@ function filterAliases(q) {{
 
         # Computed once, up front, since both "By Color" and "All Projects" derive from the
         # same full project list — By Color is just a different ordering of it.
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         all_paths = []
         if os.path.isdir(configs_dir):
             all_paths = sorted(
@@ -10685,7 +11092,7 @@ function filterAliases(q) {{
         recent_projects = [c for c in recent_projects if os.path.exists(c) and '/.archive/' not in c]
 
         # Add remaining projects from projects/ dir not already tracked, sorted by mtime
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         if os.path.exists(configs_dir):
             untracked = []
             for f in os.listdir(configs_dir):
@@ -10874,7 +11281,7 @@ function filterAliases(q) {{
         if self.pinned_compact:
             return
 
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         if not os.path.exists(configs_dir):
             return
 
@@ -10900,7 +11307,7 @@ function filterAliases(q) {{
 
     def _populate_alphabetical_projects(self):
         """Populate with all projects alphabetically in a grid of 10 columns"""
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
 
         if not os.path.exists(configs_dir):
             return
@@ -10930,7 +11337,7 @@ function filterAliases(q) {{
         of any entries that no longer exist on disk, with the prune persisted). Shared by
         _populate_archived_projects() (main Projects section) and the mega-menu's own
         bottom-right archive block (_build_project_mega_menu_content())."""
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         archive_dir = os.path.join(configs_dir, ".archive")
         archived_main = []
         if os.path.exists(archive_dir):
@@ -11258,7 +11665,7 @@ function filterAliases(q) {{
     def _build_color_cache(self):
         """Scan all known project files and cache their project_color values."""
         cache = {}
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         # Main projects directory
         if os.path.exists(configs_dir):
             for fname in os.listdir(configs_dir):
@@ -11368,7 +11775,7 @@ function filterAliases(q) {{
 
     def _resolve_path(self, path):
         """Substitute a matching global path-mapping 'from' prefix with its 'to' replacement
-        (settings['path_mappings'], configured in Settings → Advanced). Pure string transform —
+        (settings['path_mappings'], configured in Settings → Integrations). Pure string transform —
         doesn't check whether the result exists on disk, and doesn't check whether path even
         looks like a local path (a non-matching prefix is simply a no-op, safe to call on any
         string). See _resolve_existing_path() for the fallback-when-missing behavior actually
@@ -11647,7 +12054,7 @@ function filterAliases(q) {{
 
     def _populate_uncolored_projects(self):
         """Show only projects with no color assigned."""
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         project_colors = getattr(self, '_color_cache', {})
         uncolored = []
         if os.path.exists(configs_dir):
@@ -11690,7 +12097,7 @@ function filterAliases(q) {{
 
     def _populate_color_sorted_projects(self):
         """Show all main projects sorted by their assigned color hue, uncolored last."""
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         if not os.path.exists(configs_dir):
             return
         config_files = [
@@ -11837,7 +12244,7 @@ function filterAliases(q) {{
                 self.switch_to_config(p)
                 return
         # Fall back to any project in projects/
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
         if os.path.exists(configs_dir):
             for f in sorted(os.listdir(configs_dir)):
                 if f.endswith('.json'):
@@ -12226,7 +12633,21 @@ function filterAliases(q) {{
         # icon buttons, AND the search box right alongside them) now shares this exact same
         # explicit floor — guarantees they render at a consistent, aligned height instead of
         # each settling wherever its own sizeHint happens to land.
+        # This floor was tuned for the font size that was hardcoded (11px) at the time —
+        # now that UI Text Size is user-adjustable (see _ui_font_size()), a real, confirmed
+        # bug surfaced: at "Larger"/"Largest" (13-14px), these buttons' REAL rendered
+        # height stays pinned to this exact floor (confirmed via direct widget
+        # measurement: height == minimumHeight, not sizeHint — something in this layout
+        # chain clamps to the floor rather than letting buttons grow to their natural
+        # sizeHint), so text started rendering clipped at the top (a capital "T" losing its
+        # crossbar, etc. — confirmed via a real QT_QPA_PLATFORM=xcb screenshot). Scaled only
+        # ABOVE "Normal" (index UI_FONT_SIZE_DEFAULT_INDEX, 12px) — at 12px and below this
+        # is byte-identical to before (26/32/34), zero behavior change for anyone not using
+        # the new larger settings; the +5px/step above Normal was tuned against the real
+        # button's own measured sizeHint() at "Largest" (36 on KDE) rather than guessed.
         _pf_btn_min_height = 34 if self.current_theme == "modern" else self.d('header_btn_height')
+        _ui_font_size_delta = max(0, self._ui_font_size() - self.UI_FONT_SIZES[self.UI_FONT_SIZE_DEFAULT_INDEX])
+        _pf_btn_min_height += _ui_font_size_delta * 5
 
         # Projects section widgets (projects_layout/color_strip_widget/color_sort_btn) are
         # only (re)built below when settings["show_projects_section"] is True. Reset them to
@@ -12426,7 +12847,7 @@ function filterAliases(q) {{
                                 border: 1px solid {self.t('border')};
                                 border-radius: {_pf_btn_radius};
                                 padding: 8px 8px;
-                                font-size: 11px;
+                                font-size: {self._ui_font_size()}px;
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('bg_category_hover')};
@@ -12451,7 +12872,7 @@ function filterAliases(q) {{
                                 border: 1px solid {self.t('border')};
                                 border-radius: {_pf_btn_radius};
                                 padding: 8px 8px;
-                                font-size: 11px;
+                                font-size: {self._ui_font_size()}px;
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('tab_launcher_active')};
@@ -12753,7 +13174,7 @@ function filterAliases(q) {{
                                 border: 2px solid {self.t('bg_category_hover')};
                                 border-radius: {_header_radius};
                                 font-weight: bold;
-                                font-size: 12px;
+                                font-size: {self._ui_font_size()}px;
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('bg_category_hover')};
@@ -12931,7 +13352,7 @@ function filterAliases(q) {{
                                 )
                             tooltip = f"[{app}] {path}"
                             if is_ai_via_mapping:
-                                tooltip += "\n⇄ Project folder not found directly — showing via path mapping (Settings → Advanced)"
+                                tooltip += "\n⇄ Project folder not found directly — showing via path mapping (Settings → Integrations)"
                             btn.setToolTip(tooltip)
                             # No context menu here — neither AI items nor the pinned-notes entry
                             # have a real category backing them (true_category is None, see above).
@@ -12985,7 +13406,7 @@ function filterAliases(q) {{
                             # since pooled (non-draggable) items are handled separately above.
                             tooltip = f"[{app}] {path}\n(Drag to reorder)"
                             if is_mapped_item:
-                                tooltip += "\n⇄ Not found directly — showing via path mapping (Settings → Advanced)"
+                                tooltip += "\n⇄ Not found directly — showing via path mapping (Settings → Integrations)"
                             btn.setToolTip(tooltip)
                             if true_category is not None:
                                 self._wire_launcher_context_menu(btn, col_idx, true_category, true_idx)
@@ -13631,7 +14052,7 @@ function filterAliases(q) {{
                         border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
                         padding: 8px 8px;
-                        font-size: 11px;
+                        font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_green_2')};
@@ -13663,7 +14084,7 @@ function filterAliases(q) {{
                         border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
                         padding: 8px 8px;
-                        font-size: 11px;
+                        font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_green_3')};
@@ -13686,7 +14107,7 @@ function filterAliases(q) {{
                         border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
                         padding: 8px 8px;
-                        font-size: 11px;
+                        font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_green_2')};
@@ -13709,7 +14130,7 @@ function filterAliases(q) {{
                         border: 1px solid {self.t('border')};
                         border-radius: {_pf_btn_radius};
                         padding: 8px 8px;
-                        font-size: 11px;
+                        font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
                         background-color: {self.t('bg_button_hover')};
@@ -14945,7 +15366,7 @@ function filterAliases(q) {{
     def set_as_default_project(self):
         """Set the current config as the default for this computer"""
         # Get relative path if file is in configs directory
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
 
         if self.current_config_file.startswith(configs_dir):
             # Store relative path from configs directory
@@ -14990,9 +15411,7 @@ function filterAliases(q) {{
             new_name += '.json'
 
         # Determine destination path (in configs directory)
-        configs_dir = self.settings.get("projects_directory", "projects")
-        if not os.path.isabs(configs_dir):
-            configs_dir = os.path.join(self.script_dir, configs_dir)
+        configs_dir = self.get_projects_directory()
         new_config_path = os.path.join(configs_dir, new_name)
 
         # Check if file already exists
@@ -15214,7 +15633,7 @@ function filterAliases(q) {{
     def load_different_config(self):
         """Let user select a different config file and load it"""
         # Get the configs directory
-        configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        configs_dir = self.get_projects_directory()
 
         # Start in configs directory if it exists, otherwise current config dir
         start_dir = configs_dir if os.path.exists(configs_dir) else os.path.dirname(self.current_config_file)
@@ -16854,7 +17273,9 @@ function filterAliases(q) {{
     def _viewer_tab_button_style(self, active):
         """Shared style for both the label and close button of one multi-instance tab
         (PDF, Image, and future Web/Notes/Editor tabs) — active tab gets the same
-        brighter-fill = selected convention as the main viewer tab row."""
+        brighter-fill = selected convention as the main viewer tab row. Deliberately one
+        step smaller than the main Launcher/Viewer tab rows (_ui_font_size(smaller=True))
+        — per direct request, so more open-file tabs fit before truncating/wrapping."""
         if active:
             return f"""
                 QPushButton {{
@@ -16862,7 +17283,7 @@ function filterAliases(q) {{
                     color: {self.t('fg_on_dark')};
                     border: none;
                     padding: 3px 6px;
-                    font-size: 11px;
+                    font-size: {self._ui_font_size(smaller=True)}px;
                 }}
             """
         return f"""
@@ -16871,7 +17292,7 @@ function filterAliases(q) {{
                 color: {self.t('fg_primary')};
                 border: 1px solid {self.t('border')};
                 padding: 3px 6px;
-                font-size: 11px;
+                font-size: {self._ui_font_size(smaller=True)}px;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_button_hover')};
@@ -16919,7 +17340,7 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
                 border: 1px solid {self.t('border')};
                 padding: 3px 8px;
-                font-size: 11px;
+                font-size: {self._ui_font_size(smaller=True)}px;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_green_2')};
@@ -17658,7 +18079,7 @@ function filterAliases(q) {{
                 border: 1px solid {self.t('border')};
                 border-radius: {_pf_btn_radius};
                 padding: 8px 8px;
-                font-size: 11px;
+                font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_green_2')};
@@ -17674,7 +18095,7 @@ function filterAliases(q) {{
                 border: 1px solid {self.t('border')};
                 border-radius: {_pf_btn_radius};
                 padding: 8px 8px;
-                font-size: 11px;
+                font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_green_3')};
@@ -17693,7 +18114,7 @@ function filterAliases(q) {{
                 border: 1px solid {self.t('border')};
                 border-radius: {_pf_btn_radius};
                 padding: 8px 8px;
-                font-size: 11px;
+                font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_green_2')};
@@ -17714,7 +18135,7 @@ function filterAliases(q) {{
                 border: 1px solid {self.t('border')};
                 border-radius: {_pf_btn_radius};
                 padding: 8px 8px;
-                font-size: 11px;
+                font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
                 background-color: {self.t('bg_button_hover')};
@@ -20052,7 +20473,7 @@ function filterAliases(q) {{
         """Style a folder-browser path label — plain secondary text normally, or a pale-blue
         badge (background + tooltip) when via_mapping is set, so it's visually obvious the
         folder shown isn't the one actually saved in the project (see
-        _resolve_existing_path()/Settings → Advanced's path mappings table). Hand-picked pale
+        _resolve_existing_path()/Settings → Integrations' path mappings table). Hand-picked pale
         blue per theme rather than a themes.py color, same reasoning as the Notes paper theme
         and code-editor syntax colors — a one-off accent, not part of the general palette."""
         if via_mapping:
@@ -20066,7 +20487,7 @@ function filterAliases(q) {{
             )
             label.setToolTip(
                 "This folder wasn't found directly — showing the result of a path mapping "
-                "(Settings → Advanced → Path Mappings) instead. The project's own saved path "
+                "(Settings → Integrations → Path Mappings) instead. The project's own saved path "
                 "is unchanged."
             )
         else:
@@ -22194,7 +22615,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def _code_route_extensions(self):
         """_CODE_ROUTE_EXTENSIONS plus whatever the user's added via the
-        `code_editor_extensions` setting (Settings -> Advanced) — a comma-separated list
+        `code_editor_extensions` setting (Settings tab) — a comma-separated list
         like "vue,rs,go", letting someone route an unusual format into the editor without a
         code change. Extends rather than replaces the built-in set, same way custom launch
         handlers extend (never remove) the built-in ones. An extra extension with no entry
@@ -23267,7 +23688,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
     def show_add_to_project_dialog(self, file_path):
         """Show dialog to select which project to add the file/folder to"""
         # Get list of project files
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         projects = []
 
         if os.path.isdir(projects_dir):
@@ -23569,7 +23990,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
     def show_add_to_documentation_dialog(self, file_path):
         """Show dialog to select which project to add the file to as a Docs entry"""
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         projects = []
 
         if os.path.isdir(projects_dir):
@@ -23684,7 +24105,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         upload_resource_to_project_files() instead of add_resource_to_documentation()
         on accept. Files under "Documents", not Docs — see the calling
         menu's own comment for why."""
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
         projects = []
 
         if os.path.isdir(projects_dir):
@@ -24739,7 +25160,7 @@ Project created: {date_str}
                 # Link to another config file
                 # If just a filename, look in configs directory
                 if os.path.sep not in path and not path.startswith('/'):
-                    configs_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+                    configs_dir = self.get_projects_directory()
                     config_path = os.path.join(configs_dir, path)
                 else:
                     config_path = os.path.expanduser(path)
@@ -25054,7 +25475,7 @@ Project created: {date_str}
 
         # Desktop file named after current project
         desktop_file = os.path.join(os_integration.applications_dir(), f"projectflow-{project_id}.desktop")
-        projects_dir = os.path.join(self.script_dir, self.settings.get("projects_directory", "projects"))
+        projects_dir = self.get_projects_directory()
 
         # Use projectflow-nix wrapper if available (for NixOS), otherwise projectflow.py
         nix_wrapper = os.path.join(self.script_dir, "projectflow-nix")

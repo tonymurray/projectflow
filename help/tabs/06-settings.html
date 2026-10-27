@@ -15,6 +15,33 @@
     for the built-in ones).</li>
 </ul>
 
+<h2>Relocatable Data Folders</h2>
+<p>
+  By default, your projects, notes, documents, and images all live inside ProjectFlow's own install
+  folder. The <strong>Settings</strong> tab has a "Project Data Folder" section to move any or all of
+  them to a network or cloud-synced folder instead (e.g. Nextcloud), so your data follows you across
+  computers.
+</p>
+<ul>
+  <li><strong>Project Data Folder</strong> — the simple option. Point this at one shared folder (e.g.
+    <code>~/Nextcloud/ProjectFlow</code>) and projects/notes/documents/images all live under it,
+    created automatically if it doesn't exist yet.</li>
+  <li><strong>Advanced: configure each location separately</strong> — a checkbox that reveals four
+    individual folder fields, for when one location isn't enough. A common case: pointing Notes at a
+    Nextcloud <em>Notes app's</em> own folder specifically, so your notes also show up there, while
+    Projects/Documents/Images still share the one Project Data Folder above. An individual override
+    always wins over the shared folder.</li>
+  <li><strong>📋 Copy Existing Data to New Location(s)</strong> — after pointing a field at a new
+    folder, click this to copy (never move or delete) whatever you already have into the new location.
+    Useful if you already created a few projects locally before deciding to switch to a synced folder.
+    Your originals are left untouched — once you've confirmed everything works in the new location,
+    go back and rename or move the old folder(s) yourself to avoid confusion between two live copies.</li>
+</ul>
+<p class="lede" style="font-size: 0.9em;">
+  Changing a location only affects where ProjectFlow looks/writes going forward — nothing is moved
+  automatically unless you click Copy Existing Data.
+</p>
+
 <h2>Project Settings</h2>
 <p>
   Click <strong>✏️ Edit Project</strong> to open a project's own settings — a persistent form covering
