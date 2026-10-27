@@ -2,6 +2,27 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-24 (Desktop, "modern" theme: font picker widened to any installed system font)
+
+### Changed
+- **Settings → Themes tab → "Modern Theme Font" now offers every font installed on the
+  machine, not just the original curated 5-font bundle (Lato/Roboto/Work Sans/DM
+  Sans/Poppins).** Requested directly — the user was installing a new font via
+  NixOS/home-manager and wanted it to show up without ProjectFlow needing any awareness
+  of their nix config. `_discover_system_fonts()` lists everything `QFontDatabase` sees
+  (which lines up with `fc-list` on Linux); the combo is now editable with a real
+  type-to-filter `QCompleter` rather than a short fixed dropdown.
+- The 5 originally-bundled fonts are kept and still registered at startup — they're the
+  only fonts this app ships actual files for, so they're still what the Help viewer
+  embeds via `@font-face` when selected. Any other (system) font selection gets a bare
+  `font-family` reference instead, relying on Chromium's own fontconfig lookup — the
+  same way any Linux browser renders an installed font with no embedding.
+- `_resolve_modern_font()` resolves a saved setting through both forms (bundled-entry
+  display name, for back-compat with settings saved before this change, or a literal
+  system font name) — existing `modern_font` settings keep working unchanged.
+- A freshly-installed font needs a ProjectFlow restart to appear in the list (fontconfig
+  has to pick it up first) — noted directly under the picker.
+
 ## 2026-10-23 (Desktop, "modern" theme: real rounded-corner bug fixed, button sizing/icon polish)
 
 ### Fixed

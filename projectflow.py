@@ -44,14 +44,21 @@ from PyQt6.QtCore import QUrl
 from themes import get_theme, detect_system_theme, THEMES, get_dimensions, MODERN_ACCENT_DEFAULTS
 import os_integration
 
-# Bundled fonts available for the "modern" theme (Settings -> Themes tab -> "Modern Theme
-# Font"), all under assets/fonts/ — a curated set, not an arbitrary-system-font picker,
-# specifically so the choice renders identically everywhere regardless of what's installed
-# on a given machine (the same reason Lato alone needed bundling in the first place: the
-# Notes/Help QWebEngineView's Chromium renderer doesn't see fonts registered only via
-# QFontDatabase.addApplicationFont(), so every choice here needs its own @font-face too —
-# see apply_global_styles()/_notes_paper_css()/_build_help_html()). Display name (dict key)
-# is kept deliberately separate from `family` (the exact string passed to QFont()/CSS
+# Bundled fonts for the "modern" theme (Settings -> Themes tab -> "Modern Theme Font"),
+# all under assets/fonts/. Originally this dict WAS the entire font picker (a curated,
+# arbitrary-system-font-excluding set, so every choice was guaranteed to render
+# identically everywhere via @font-face, regardless of what's installed on a given
+# machine). The picker was later widened to also offer every font QFontDatabase can see
+# on the running system (see _discover_system_fonts()/_resolve_modern_font()) — directly
+# requested, by the user, specifically so a font installed via NixOS/home-manager (or any
+# other system mechanism) shows up without ProjectFlow needing to know or bundle anything
+# about it. This dict now serves two narrower, still-real purposes: (1) a handful of
+# fonts guaranteed present and renderable even on a bare-bones/font-poor machine — "Lato"
+# in particular is the hardcoded fallback default — and (2) the ONLY entries that can use
+# @font-face in the Help viewer (see _build_help_html()'s _pf_font_face_css) rather than
+# a bare CSS font-family reference, since @font-face needs an actual file to point at and
+# these are the only fonts this app ships files for. Display name (dict key) is kept
+# deliberately separate from `family` (the exact string passed to QFont()/CSS
 # font-family) — e.g. "DM Sans"'s nixpkgs package embeds "DeepMind Sans" as its real
 # internal family name, confirmed via `fc-scan`, not the commonly-known branded name.
 MODERN_FONT_CHOICES = {
@@ -2089,6 +2096,45 @@ class ProjectFlowApp(QMainWindow):
         """Get a dimension value by key (shorthand helper)"""
         return self.dimensions.get(key, 0)
 
+    def _discover_system_fonts(self):
+        """Every font family QFontDatabase can see on this machine — system fonts plus
+        whatever's been separately installed (e.g. via NixOS/home-manager's fontconfig
+        integration, ~/.local/share/fonts, a Flatpak, etc.), sorted. Confirmed empirically
+        on a real NixOS machine that this lines up with `fc-list`'s own family list (Qt
+        uses fontconfig on Linux the same way), so a freshly Nix-installed font shows up
+        here automatically — no ProjectFlow-side bundling, code change, or awareness of
+        the user's nix config required, just a normal app restart after installing it (so
+        fontconfig's cache — rebuilt by the Nix activation itself — has already picked it
+        up before Qt queries it here). Deliberately unfiltered: a full desktop font
+        collection can be large, but the user explicitly asked for every installed font to
+        be reachable, "unwieldy" accepted as the tradeoff for not silently hiding options.
+        QFontDatabase.families() already includes every font this app's own main() loaded
+        via addApplicationFont() (confirmed — Qt doesn't distinguish "system" from
+        "application-registered" fonts in this list), so the 5 originally-bundled fonts
+        need no special-casing here; they just appear alongside everything else."""
+        return sorted(set(QFontDatabase.families()))
+
+    def _resolve_modern_font(self):
+        """Resolve settings['modern_font'] to (family, bundled_entry) — the real font
+        family string to actually request via QFont()/CSS font-family, and, when the
+        selection happens to be one of MODERN_FONT_CHOICES' originally-bundled fonts, that
+        entry (so callers needing @font-face file paths — currently only
+        _build_help_html() — can still use them; every other selection gets None here and
+        falls back to a bare system font-family reference, see that method's own comment).
+
+        Two possible stored shapes, both handled: a legacy saved value is one of
+        MODERN_FONT_CHOICES' display-name keys (e.g. "DM Sans") from before this picker
+        was widened to arbitrary system fonts — resolved via that dict exactly as before.
+        Anything else is treated as a literal font family name chosen directly from
+        _discover_system_fonts() (or hand-typed into the now-editable combo), used as-is
+        with no indirection. An unset setting defaults to MODERN_FONT_DEFAULT ("Lato"),
+        unchanged from before this feature existed."""
+        stored = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
+        if stored in MODERN_FONT_CHOICES:
+            entry = MODERN_FONT_CHOICES[stored]
+            return entry['family'], entry
+        return stored, None
+
     def apply_global_styles(self):
         """Apply application-wide stylesheet for tooltips and global elements, and the
         "modern" theme's bundled Lato font for native widgets. This is the one shared place
@@ -2121,18 +2167,18 @@ class ProjectFlowApp(QMainWindow):
             """
             app.setStyleSheet(tooltip_style)
 
-            # Native-widget font: the selected MODERN_FONT_CHOICES entry for "modern", the
-            # real pre-custom-font system default otherwise. QFontDatabase.addApplicationFont()
-            # (main()) registers every bundled choice up front, so any of them is a valid
-            # family name to request here — this is what actually makes every native widget
+            # Native-widget font: the resolved modern_font family for "modern" (any
+            # installed system font, or one of the originally-bundled ones — see
+            # _resolve_modern_font()), the real pre-custom-font system default otherwise.
+            # Any family QFontDatabase.families() reports is already a valid name to
+            # request via QFont() here — this is what actually makes every native widget
             # use it, via QApplication's own default font cascading to any widget without a
             # more specific override. getattr() default covers constructing ProjectFlowApp
             # directly without going through main() first (e.g. isolated test harnesses).
             default_font = getattr(app, '_pf_default_font', None) or QFont()
             if self.current_theme == "modern":
-                font_choice = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
-                font_entry = MODERN_FONT_CHOICES.get(font_choice, MODERN_FONT_CHOICES[MODERN_FONT_DEFAULT])
-                app.setFont(QFont(font_entry['family']))
+                family, _bundled_entry = self._resolve_modern_font()
+                app.setFont(QFont(family))
             else:
                 app.setFont(default_font)
 
@@ -2650,21 +2696,49 @@ class ProjectFlowApp(QMainWindow):
         theme_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
         layout.addRow("", theme_hint)
 
-        # Modern Theme Font — a curated set of bundled fonts (not an arbitrary-system-font
-        # picker — see MODERN_FONT_CHOICES's own comment for why), applied to native
-        # widgets, the Notes/To-Do editor, and the Help viewer alike. Only affects "modern".
+        # Modern Theme Font — every font QFontDatabase sees on this machine (system fonts
+        # plus anything separately installed, e.g. via NixOS/home-manager — see
+        # _discover_system_fonts()'s own comment for why this needs no awareness of the
+        # user's nix config to pick up a freshly-installed font), applied to native
+        # widgets and the Help viewer. Deliberately NOT narrowed back down to a short
+        # curated list — requested directly: "(a) common fonts on the system, (b) any
+        # installed extra fonts" — and Qt/fontconfig has no notion of "common" vs "extra"
+        # to split on; it's one flat list of whatever's registered, so a single searchable
+        # picker over the whole list is the honest implementation, "unwieldy" accepted as
+        # the tradeoff (confirmed acceptable) rather than silently hiding real options.
+        # Does NOT reach the Notes/To-Do webview — that @font-face path was tried and
+        # reverted (see _notes_paper_css()'s own comment) and hasn't been revisited.
         font_label = QLabel("Modern Theme Font:")
         font_label.setStyleSheet(label_style)
         self._settings_modern_font_combo = QComboBox()
-        for _display_name, _entry in MODERN_FONT_CHOICES.items():
-            self._settings_modern_font_combo.addItem(_display_name)
+        self._settings_modern_font_combo.setEditable(True)
+        self._settings_modern_font_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for _family in self._discover_system_fonts():
+            self._settings_modern_font_combo.addItem(_family)
             _idx = self._settings_modern_font_combo.count() - 1
-            # Live preview — each item renders in its own actual typeface, since every
-            # bundled font is already registered with Qt by main() before Settings opens.
-            self._settings_modern_font_combo.setItemData(_idx, QFont(_entry['family']), Qt.ItemDataRole.FontRole)
-        self._settings_modern_font_combo.setCurrentText(self.settings.get('modern_font', MODERN_FONT_DEFAULT))
+            # Live preview — each item renders in its own actual typeface, since this
+            # entire list came from Qt's own live font database.
+            self._settings_modern_font_combo.setItemData(_idx, QFont(_family), Qt.ItemDataRole.FontRole)
+        # A real QCompleter in popup+contains mode, not the bare default inline completer
+        # setEditable(True) gives you for free — with a list this long (a full desktop
+        # font collection easily runs into the hundreds), typing needs to filter a visible
+        # dropdown of matches, not just autocomplete the single best prefix match inline.
+        _font_completer = QCompleter(self._discover_system_fonts(), self._settings_modern_font_combo)
+        _font_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        _font_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        _font_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._settings_modern_font_combo.setCompleter(_font_completer)
+        _resolved_family, _ = self._resolve_modern_font()
+        self._settings_modern_font_combo.setCurrentText(_resolved_family)
         self._settings_modern_font_combo.setStyleSheet(input_style)
         layout.addRow(font_label, self._settings_modern_font_combo)
+
+        font_hint = QLabel(
+            "Any font installed on this system — type to search. Installed a new font "
+            "and don't see it? Restart ProjectFlow (fontconfig needs to pick it up first)."
+        )
+        font_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        layout.addRow("", font_hint)
 
         layout.addRow(QLabel(""))
 
@@ -21216,10 +21290,13 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # the command line. Not root-caused (no interactive GUI access to reproduce/profile
         # the slowness directly) — reverted on the user's own call rather than guessed-fixed
         # blind, since editor functionality matters far more than a font swap that "wasn't
-        # very distinct" in Muya anyway. The font picker itself (MODERN_FONT_CHOICES,
-        # Settings UI, native-widget application via apply_global_styles()) and the Help
-        # viewer's own separate @font-face (a static page, not a live rich-text editor —
-        # not reported broken) are UNAFFECTED by this revert, only this one webview is.
+        # very distinct" in Muya anyway. The font picker itself (_discover_system_fonts()/
+        # _resolve_modern_font(), Settings UI, native-widget application via
+        # apply_global_styles()) and the Help viewer's own separate @font-face (a static
+        # page, not a live rich-text editor — not reported broken) are UNAFFECTED by this
+        # revert, only this one webview is — including the later widening of that picker
+        # from a curated bundled-font set to arbitrary installed system fonts, which never
+        # touched this function.
         return f"""
             {muya_root_vars}
             body {{ background: {page_bg}; color: {ink}; overflow-x: hidden; }}
@@ -24102,18 +24179,29 @@ Project created: {date_str}
             _pf_fg = self.t('fg_primary')
             _pf_bg_card = self.t('bg_example_card')
 
-        # "modern" theme's selected bundled font (MODERN_FONT_CHOICES) — see shell.html's
-        # own comment on __PF_FONT_FACE_CSS__ for why this needs a separate @font-face here
-        # rather than relying on main()'s QFontDatabase.addApplicationFont() registration.
+        # "modern" theme's selected font — see shell.html's own comment on
+        # __PF_FONT_FACE_CSS__. Two cases, since the picker now covers arbitrary system
+        # fonts, not just the originally-bundled curated set: a bundled font (still
+        # resolvable via MODERN_FONT_CHOICES, see _resolve_modern_font()) gets an explicit
+        # @font-face pointing at its shipped file, exactly as before — guaranteed to
+        # render regardless of what's installed. Any OTHER selection is a font this app
+        # doesn't ship a file for, so no @font-face is emitted at all — just a bare
+        # font-family reference by name, relying on Chromium's own fontconfig-based system
+        # font resolution to find it, the same mechanism any Linux Chromium browser uses
+        # to render an installed system font with no embedding. Confirmed on a real NixOS
+        # machine that Qt's own font database (which _discover_system_fonts() reads) and
+        # fontconfig agree closely on what's installed, so this should find the same fonts
+        # Settings' picker offered.
         if self.current_theme == "modern":
-            _font_choice = self.settings.get('modern_font', MODERN_FONT_DEFAULT)
-            _font_entry = MODERN_FONT_CHOICES.get(_font_choice, MODERN_FONT_CHOICES[MODERN_FONT_DEFAULT])
-            _regular_file, _bold_file = _font_entry['files']
-            _family = _font_entry['family']
-            _pf_font_face_css = (
-                f"@font-face {{ font-family: '{_family}'; src: url(../assets/fonts/{_regular_file}) format('truetype'); font-weight: 400; }}\n"
-                f"@font-face {{ font-family: '{_family}'; src: url(../assets/fonts/{_bold_file}) format('truetype'); font-weight: 700; }}"
-            )
+            _family, _bundled_entry = self._resolve_modern_font()
+            if _bundled_entry is not None:
+                _regular_file, _bold_file = _bundled_entry['files']
+                _pf_font_face_css = (
+                    f"@font-face {{ font-family: '{_family}'; src: url(../assets/fonts/{_regular_file}) format('truetype'); font-weight: 400; }}\n"
+                    f"@font-face {{ font-family: '{_family}'; src: url(../assets/fonts/{_bold_file}) format('truetype'); font-weight: 700; }}"
+                )
+            else:
+                _pf_font_face_css = ""
             _pf_font_family = f"'{_family}', -apple-system, \"Segoe UI\", Roboto, sans-serif"
         else:
             _pf_font_face_css = ""
@@ -25074,15 +25162,18 @@ Examples:
 
     app = QApplication(sys.argv)
 
-    # Bundled fonts for the "modern" theme (SIL Open Font License / similarly
-    # redistributable — see MODERN_FONT_CHOICES), used only when "modern" is active (see
-    # apply_global_styles()) — ALL of them loaded unconditionally here regardless of which
-    # one ends up selected, since registration is cheap and has to happen before any widget
-    # that might need it is constructed, and switching the picker at runtime should never
-    # need a fresh addApplicationFont() call. Capture the real pre-custom-font default app
-    # font on the QApplication instance itself (not on ProjectFlowApp, which doesn't exist
-    # yet) so apply_global_styles() has something well-defined to restore when switching
-    # away from "modern" later.
+    # The handful of fonts this app actually BUNDLES for the "modern" theme (SIL Open Font
+    # License / similarly redistributable — see MODERN_FONT_CHOICES) — not the full font
+    # picker, which now also offers every other font already installed on the system (see
+    # _discover_system_fonts()/_resolve_modern_font()) and needs no registration here,
+    # since Qt already knows about those via fontconfig. These bundled ones still need
+    # registering because they're not necessarily installed system-wide — ALL of them
+    # loaded unconditionally regardless of which one ends up selected, since registration
+    # is cheap and has to happen before any widget that might need it is constructed, and
+    # switching the picker at runtime should never need a fresh addApplicationFont() call.
+    # Capture the real pre-custom-font default app font on the QApplication instance
+    # itself (not on ProjectFlowApp, which doesn't exist yet) so apply_global_styles() has
+    # something well-defined to restore when switching away from "modern" later.
     app._pf_default_font = QApplication.font()
     _script_dir_for_fonts = os.path.dirname(os.path.abspath(__file__))
     for _font_entry in MODERN_FONT_CHOICES.values():
