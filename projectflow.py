@@ -2692,6 +2692,22 @@ class ProjectFlowApp(QMainWindow):
         genuinely "appearance" settings distinct from startup behavior/paths/notes-folder
         location etc. The theme dropdown here is a secondary way to change it — the footer
         🌙/☀️ button remains the fast, one-click way to toggle light/dark day-to-day."""
+        # This tab's content (Theme/UI Text Size/Modern Font, Projects Section Layout,
+        # Modern Theme Colors, Muya Heading Colors) has grown well past the dialog's own
+        # fixed show_settings_dialog() size over time, with no scroll area to absorb the
+        # overflow — on a screen too short (or a window manager too eager to keep the
+        # dialog within the screen's available geometry) to let the dialog grow to fit,
+        # Qt is left trying to lay out more content than the space it's given, and
+        # QFormLayout's rows compress into each other rather than clipping cleanly —
+        # the real cause of a reported "Muya Heading Colors all bunched together" bug
+        # (confirmed via an offscreen reproduction: identical squashed/overlapping rows
+        # appear the moment the dialog can't grow past its requested size). Wrapped in a
+        # QScrollArea, matching the Project Settings viewer's own `settings_scroll`
+        # pattern, so excess content scrolls instead of compressing.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
         widget = QWidget()
         layout = QFormLayout(widget)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -2987,7 +3003,8 @@ class ProjectFlowApp(QMainWindow):
             heading_card_layout.addRow(level_label, row_layout)
 
         layout.addRow(QLabel(""))
-        return widget
+        scroll.setWidget(widget)
+        return scroll
 
     def _create_applications_tab(self):
         """Create the Applications tab (external apps used by launchers and viewers)"""
