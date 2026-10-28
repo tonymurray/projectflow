@@ -12634,6 +12634,25 @@ function filterAliases(q) {{
         # blocks below that reference it.
         _pf_btn_radius = "12px" if self.current_theme == "modern" else "3px"
 
+        # "modern" theme's vertical padding on this same button family — originally a
+        # flat 8px top/bottom for every theme (see _pf_btn_min_height's own comment for
+        # why it was bumped from 5px), but on "modern" that padding stacks with the
+        # larger min-height floor below to read as noticeably taller/airier than
+        # light/dark's own buttons, reported directly as wanting a more compact look
+        # (then, on a follow-up "still too tall" request, pushed further still — see
+        # _pf_btn_min_height's own comment for the matching height cut). Scoped to
+        # "modern" only — light/dark keep their original 8px unchanged.
+        _pf_btn_vpad = "2px" if self.current_theme == "modern" else "8px"
+
+        # A second, smaller radius just for this same compact button family — NOT the
+        # shared _pf_btn_radius above, which stays 12px for taller elements elsewhere
+        # (category headers, launcher item rows) that can safely carry it. At this
+        # family's much shorter height, 12px would trip the exact "border-radius
+        # exceeds half the widget's height renders zero rounding instead of clamping"
+        # Qt bug _pf_btn_radius's own comment documents — 8px keeps 2x comfortably
+        # under the new, much shorter min-height floor.
+        _pf_btn_radius_compact = "8px" if self.current_theme == "modern" else _pf_btn_radius
+
         # A real, explicit minimum-height floor for the same set of buttons — added after
         # the padding bump above (5px -> 8px top/bottom, to make these buttons read as
         # visually significant as the category headers) turned out to be insufficient on
@@ -12662,7 +12681,15 @@ function filterAliases(q) {{
         # is byte-identical to before (26/32/34), zero behavior change for anyone not using
         # the new larger settings; the +5px/step above Normal was tuned against the real
         # button's own measured sizeHint() at "Largest" (36 on KDE) rather than guessed.
-        _pf_btn_min_height = 34 if self.current_theme == "modern" else self.d('header_btn_height')
+        # Lowered 34 -> 28 -> 22 across two rounds (2026-10-28, direct requests to make
+        # "modern" theme's buttons more compact, the second explicitly "a lot smaller")
+        # in step with _pf_btn_vpad shrinking alongside it each time — 22px still
+        # comfortably covers a 12px-bold line + 2x2px padding + 2px border with no
+        # clipping (re-verified via the same xcb-screenshot technique the original 34px
+        # value was tuned with, including at "Largest" UI text size). Now BELOW
+        # light/dark's own 26px KDE floor — "modern" no longer keeps extra breathing
+        # room over the plain themes at this size, by direct request.
+        _pf_btn_min_height = 22 if self.current_theme == "modern" else self.d('header_btn_height')
         _ui_font_size_delta = max(0, self._ui_font_size() - self.UI_FONT_SIZES[self.UI_FONT_SIZE_DEFAULT_INDEX])
         _pf_btn_min_height += _ui_font_size_delta * 5
 
@@ -12820,8 +12847,8 @@ function filterAliases(q) {{
                             color: {self.t('fg_on_dark')};
                             font-weight: bold;
                             border: 1px solid {self.t('border')};
-                            border-radius: {_pf_btn_radius};
-                            padding: 8px 8px;
+                            border-radius: {_pf_btn_radius_compact};
+                            padding: {_pf_btn_vpad} 8px;
                             font-size: 11px;
                         }}
                         QPushButton:hover {{
@@ -12856,14 +12883,24 @@ function filterAliases(q) {{
                         # the resting and active values in brightness, so the three states
                         # still form one continuous dim->medium->bright progression:
                         # resting -> hover -> active.
+                        # "modern" theme: a transparent border on the RESTING tab only (not
+                        # the active one below — see that style's own comment for why a
+                        # transparent/missing border was already tried and reverted there
+                        # specifically). self.t('border') reads as a flat grey ring around an
+                        # otherwise saturated blue pill, reported directly as wanting a
+                        # cleaner, more "modern" borderless look. `transparent`, not `none` —
+                        # see _pf_btn_radius's own comment: a bare `border: none;` is itself a
+                        # second signal telling Qt's style engine "no border styling here,"
+                        # which silently drops border-radius rounding too.
+                        _pf_tab_border = "transparent" if self.current_theme == "modern" else self.t('border')
                         launcher_tab_style = f"""
                             QPushButton {{
                                 background-color: {self.t('tab_launcher_resting')};
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
-                                border: 1px solid {self.t('border')};
-                                border-radius: {_pf_btn_radius};
-                                padding: 8px 8px;
+                                border: 1px solid {_pf_tab_border};
+                                border-radius: {_pf_btn_radius_compact};
+                                padding: {_pf_btn_vpad} 8px;
                                 font-size: {self._ui_font_size()}px;
                             }}
                             QPushButton:hover {{
@@ -12887,8 +12924,8 @@ function filterAliases(q) {{
                                 color: {self.t('fg_on_dark')};
                                 font-weight: bold;
                                 border: 1px solid {self.t('border')};
-                                border-radius: {_pf_btn_radius};
-                                padding: 8px 8px;
+                                border-radius: {_pf_btn_radius_compact};
+                                padding: {_pf_btn_vpad} 8px;
                                 font-size: {self._ui_font_size()}px;
                             }}
                             QPushButton:hover {{
@@ -13182,20 +13219,31 @@ function filterAliases(q) {{
                         # drop shadow here — repeated on every category header, it would
                         # read as cluttered rather than polished; radius alone is enough.
                         _header_radius = self.t('radius_card') if self.current_theme == "modern" else "5px"
+                        # "modern" theme: borderless header, by direct request — the resting
+                        # border (bg_category_hover, close to the fill) was barely visible,
+                        # but the hover state's border_dark is a distinctly grey "secondary"
+                        # ring around an otherwise solid blue pill, reported as reading as
+                        # less clean/modern. `transparent`, not `none` — a bare `border:
+                        # none;` itself tells Qt's style engine "no border styling here,"
+                        # which silently drops border-radius rounding too (see
+                        # _pf_btn_radius's own comment for the full root-cause writeup).
+                        # light/dark keep their original 2px borders, unchanged.
+                        _header_border = "transparent" if self.current_theme == "modern" else self.t('bg_category_hover')
+                        _header_hover_border = "transparent" if self.current_theme == "modern" else self.t('border_dark')
                         title_btn.setStyleSheet(f"""
                             QPushButton {{
                                 text-align: left;
                                 padding-left: 10px;
                                 background-color: {self.t('bg_category')};
                                 color: {self.t('fg_on_dark')};
-                                border: 2px solid {self.t('bg_category_hover')};
+                                border: 2px solid {_header_border};
                                 border-radius: {_header_radius};
                                 font-weight: bold;
                                 font-size: {self._ui_font_size()}px;
                             }}
                             QPushButton:hover {{
                                 background-color: {self.t('bg_category_hover')};
-                                border: 2px solid {self.t('border_dark')};
+                                border: 2px solid {_header_hover_border};
                                 color: {self.t('fg_on_dark')};
                             }}
                         """)
@@ -14067,8 +14115,8 @@ function filterAliases(q) {{
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
                         border: 1px solid {self.t('border')};
-                        border-radius: {_pf_btn_radius};
-                        padding: 8px 8px;
+                        border-radius: {_pf_btn_radius_compact};
+                        padding: {_pf_btn_vpad} 8px;
                         font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
@@ -14099,8 +14147,8 @@ function filterAliases(q) {{
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
                         border: 1px solid {self.t('border')};
-                        border-radius: {_pf_btn_radius};
-                        padding: 8px 8px;
+                        border-radius: {_pf_btn_radius_compact};
+                        padding: {_pf_btn_vpad} 8px;
                         font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
@@ -14122,8 +14170,8 @@ function filterAliases(q) {{
                         color: {self.t('fg_on_dark')};
                         font-weight: bold;
                         border: 1px solid {self.t('border')};
-                        border-radius: {_pf_btn_radius};
-                        padding: 8px 8px;
+                        border-radius: {_pf_btn_radius_compact};
+                        padding: {_pf_btn_vpad} 8px;
                         font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
@@ -14145,8 +14193,8 @@ function filterAliases(q) {{
                         color: {self.t('fg_secondary')};
                         font-weight: normal;
                         border: 1px solid {self.t('border')};
-                        border-radius: {_pf_btn_radius};
-                        padding: 8px 8px;
+                        border-radius: {_pf_btn_radius_compact};
+                        padding: {_pf_btn_vpad} 8px;
                         font-size: {self._ui_font_size()}px;
                     }}
                     QPushButton:hover {{
@@ -18082,6 +18130,17 @@ function filterAliases(q) {{
         # bug confirmed via a live radius-sweep screenshot test.
         _pf_btn_radius = "10px" if self.current_theme == "modern" else "3px"
 
+        # Mirrors build_main_content()'s own _pf_btn_vpad — these buttons' height floor
+        # was already set at build time (setMinimumHeight isn't touched here, only the
+        # stylesheet), but the padding must still match exactly or a tab subtly
+        # resizes/jumps the instant a mode switch runs this restyle-without-rebuild path.
+        _pf_btn_vpad = "2px" if self.current_theme == "modern" else "8px"
+
+        # Mirrors build_main_content()'s own _pf_btn_radius_compact — must match exactly
+        # for the same reason as _pf_btn_vpad above (this function only restyles, never
+        # resizes, so a mismatched radius would flicker on every mode switch).
+        _pf_btn_radius_compact = "8px" if self.current_theme == "modern" else _pf_btn_radius
+
         # Normal and active button styles — mirrors tab_btn_style/active_tab_style in
         # build_main_content() (bg_green_1 resting, bg_green_3 active — see that
         # definition's comment for the fuller history of what was tried: no border, then
@@ -18094,8 +18153,8 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
                 font-weight: bold;
                 border: 1px solid {self.t('border')};
-                border-radius: {_pf_btn_radius};
-                padding: 8px 8px;
+                border-radius: {_pf_btn_radius_compact};
+                padding: {_pf_btn_vpad} 8px;
                 font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
@@ -18110,8 +18169,8 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
                 font-weight: bold;
                 border: 1px solid {self.t('border')};
-                border-radius: {_pf_btn_radius};
-                padding: 8px 8px;
+                border-radius: {_pf_btn_radius_compact};
+                padding: {_pf_btn_vpad} 8px;
                 font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
@@ -18129,8 +18188,8 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
                 font-weight: bold;
                 border: 1px solid {self.t('border')};
-                border-radius: {_pf_btn_radius};
-                padding: 8px 8px;
+                border-radius: {_pf_btn_radius_compact};
+                padding: {_pf_btn_vpad} 8px;
                 font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{
@@ -18150,8 +18209,8 @@ function filterAliases(q) {{
                 color: {self.t('fg_secondary')};
                 font-weight: normal;
                 border: 1px solid {self.t('border')};
-                border-radius: {_pf_btn_radius};
-                padding: 8px 8px;
+                border-radius: {_pf_btn_radius_compact};
+                padding: {_pf_btn_vpad} 8px;
                 font-size: {self._ui_font_size()}px;
             }}
             QPushButton:hover {{

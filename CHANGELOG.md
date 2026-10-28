@@ -2,6 +2,42 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-29 (Desktop: more compact "modern" theme buttons; fixed a Settings dialog overlap bug)
+
+### Changed
+- **"modern" theme's launcher/viewer tab buttons are noticeably more compact**, by
+  direct request: the shared minimum-height floor for the Launcher Tab Bar
+  (Docs/Resources/Files/Apps), the Viewer Tab Row (Notes/Editor/Web/PDF/etc), and the
+  +Add/Create/Upload Doc/Upload File row dropped from 34px to 22px, with vertical
+  padding reduced to match (8px -> 2px). A dedicated smaller corner radius (8px,
+  was 12px) keeps these shorter buttons rounding correctly rather than tripping the
+  "radius exceeds half the widget's height renders square instead of clamping" Qt
+  quirk already documented for this button family. Re-verified via real
+  `QT_QPA_PLATFORM=xcb` screenshots that no text clips at any UI Text Size setting,
+  including "Largest." light/dark themes are unaffected.
+- **Borderless "modern" theme category headers and resting launcher tabs** — the
+  light-grey border previously visible around category header buttons (e.g. "Docs")
+  on hover, and around the resting (non-active) Launcher Tab Bar buttons, read as a
+  dated "secondary" outline clashing with the saturated accent-color fill. Both now
+  render with a transparent border in "modern" theme (not `none`, which would also
+  silently disable the rounded corners — a known Qt stylesheet quirk). The *active*
+  launcher tab's border is deliberately left alone — a prior round already tried and
+  reverted a transparent border there specifically, for contrast reasons. light/dark
+  themes are unaffected.
+
+### Fixed
+- **Settings → Themes tab content (Muya Heading Colors, Modern Theme Colors, etc.)
+  could render with rows visibly overlapping/compressed into each other** on a
+  screen too short (or a window manager too eager to keep dialogs within the
+  screen's available geometry) for the dialog to grow past its fixed 780x700 size —
+  `QFormLayout` rows compress rather than clip cleanly when given less space than
+  their true minimum. Reproduced offscreen by constraining a test dialog to a fixed
+  size, which produced the exact "everything bunched together" look reported
+  against Muya Heading Colors specifically (the section furthest down the tab).
+  Fixed by wrapping the tab's content in a `QScrollArea`, matching the existing
+  Project Settings viewer's own pattern — excess content now scrolls instead of
+  compressing.
+
 ## 2026-10-27 (Desktop: UI Text Size setting; fixed a real tab-button clipping bug)
 
 ### Added
