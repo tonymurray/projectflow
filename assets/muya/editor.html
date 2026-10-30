@@ -172,6 +172,31 @@
     dirty = false;
   };
 
+  // Splices text in at a given cursor position in a LIVE session — used by the voice
+  // dictation feature (see start_speechnote_dictation()/_insert_dictated_text() in
+  // projectflow.py). cursorState is the same {cursor: {line, ch}, scrollTop} shape
+  // __getMuyaCursorState() returns, captured fresh right before this call (not cached
+  // from earlier) since the gap between a dictation starting and finishing can be many
+  // seconds, during which the user may have kept editing/moved the caret themselves.
+  // Uses document.execCommand('insertText', ...) against the live contenteditable
+  // rather than a round-trip through getMarkdown()/replaceContent() — this is a real
+  // browser editing action (same mechanism actual typing uses), so it participates in
+  // Muya's own undo history as one normal step and fires the same 'json-change' event
+  // that already drives the dirty flag, rather than needing this function to manage
+  // either of those itself.
+  window.__insertTextAtCursor = function (text, cursorState) {
+    if (!muya) return false;
+    if (cursorState && cursorState.cursor) {
+      try { muya.setCursorByOffset(cursorState.cursor); } catch (e) {}
+    }
+    document.getElementById('editor').focus();
+    try {
+      return document.execCommand('insertText', false, text || '');
+    } catch (e) {
+      return false;
+    }
+  };
+
   // Muya's own built-in image shortcut (Shift+Ctrl+I, see
   // FORMAT_SHORTCUTS_SHIFT in inlineFormatToolbar) collides with Chromium's
   // reserved "open DevTools" accelerator — QtWebEngine swallows it before it

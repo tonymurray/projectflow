@@ -1559,6 +1559,30 @@ class ProjectFlowApp(QMainWindow):
             lambda: self._muya_autosave_tick(self._notes_muya_session)
         )
 
+        # Voice dictation state (see UI Features -> Voice Dictation (Speech Note) in
+        # CLAUDE.md, and start_speechnote_dictation()/_poll_speechnote_state() below).
+        # Plain ProjectFlowApp instance state, not MuyaSession fields -> dictation is
+        # Notes-only, MuyaSession is shared by three independent sessions (main viewer,
+        # Notes, To-Do). A single persistent QTimer, created once here and started/
+        # stopped (never recreated) -- same convention as autosave_timer/dirty_poll_timer
+        # above -- not a new thread; this codebase has no QThread/QRunnable anywhere.
+        self._dictation_active = False
+        self._dictation_poll_timer = QTimer()
+        self._dictation_poll_timer.setInterval(400)
+        self._dictation_poll_timer.timeout.connect(self._poll_speechnote_state)
+        self._dictation_elapsed_ms = 0
+        self._dictation_max_wait_ms = 30000
+        # Distinct, earlier timeout for "TaskState never left its baseline at all" -
+        # almost always means Speech Note's own "action invocation" setting is still
+        # disabled (see _speechnote_available()/start_speechnote_dictation() -- this
+        # is a real, confirmed-live failure mode, not a hypothetical one), so it gets
+        # its own more specific, more actionable message rather than waiting the full
+        # 30s to report a generic timeout.
+        self._dictation_never_started_wait_ms = 5000
+        self._dictation_baseline_taskstate = None
+        self._dictation_left_baseline = False
+        self._dictation_prior_clipboard = ""
+
         # Third, independent Muya-hosting webview for the per-project To-Do list —
         # same "created once here, detach/re-add on rebuild" pattern as notes_webview
         # above, since it's also a persistent QWebEngineView. Unlike Notes, there is
@@ -3287,6 +3311,43 @@ class ProjectFlowApp(QMainWindow):
         self._settings_joplin.setEchoMode(QLineEdit.EchoMode.Password)
         self._settings_joplin.setStyleSheet(input_style)
         layout.addRow(joplin_label, self._settings_joplin)
+
+        # === Speech Note (Voice Dictation) section ===
+        # See UI Features -> Voice Dictation (Speech Note) in CLAUDE.md for the full
+        # design writeup, including why this is a clipboard-capture design rather than
+        # listening for a D-Bus text signal (net.mkiol.SpeechNote's own D-Bus interface,
+        # confirmed via live introspection, exposes only status integers — no property
+        # or signal carries the transcribed text itself).
+        speechnote_section = QLabel("Speech Note (Voice Dictation)")
+        speechnote_section.setStyleSheet(section_style)
+        layout.addRow(speechnote_section)
+
+        self._settings_speechnote = QCheckBox("Enable Speech Note dictation button in Notes")
+        self._settings_speechnote.setChecked(self.settings.get("speechnote_enabled", False))
+        self._settings_speechnote.setStyleSheet(f"color: {self.t('fg_primary')};")
+        layout.addRow(self._settings_speechnote)
+
+        # Deliberately single-line, not wrapped — a wrapped multi-line QLabel added via
+        # layout.addRow("", label) in a QFormLayout reliably gets clipped to a stale,
+        # too-short single-line row height in this codebase (a real, previously-hit Qt
+        # quirk, see ai/CLAUDE_ARCHIVE.md -> "Relocatable Data Folders" for the earlier
+        # occurrence and why trimming to one line was the fix adopted there too, rather
+        # than fighting it with a computed setMinimumHeight() floor every time).
+        speechnote_desc_style = f"color: {self.t('fg_secondary')}; font-size: 11px;"
+        self._settings_speechnote_missing_label = QLabel(
+            "⚠ net.mkiol.SpeechNote flatpak not found"
+        )
+        self._settings_speechnote_missing_label.setStyleSheet(
+            f"color: {self.t('status_warning')}; font-size: 11px; font-weight: bold;"
+        )
+        self._settings_speechnote_missing_label.setVisible(not self._speechnote_available())
+        layout.addRow("", self._settings_speechnote_missing_label)
+
+        speechnote_hint = QLabel(
+            "Also enable \"action invocation\" in Speech Note's own Settings (one-time, done there)."
+        )
+        speechnote_hint.setStyleSheet(speechnote_desc_style)
+        layout.addRow("", speechnote_hint)
 
         # === Baloo File Tags section === (moved here from the Settings tab — this is
         # more an integration with KDE's file indexer than a core app setting)
@@ -6616,6 +6677,7 @@ class ProjectFlowApp(QMainWindow):
                 del self.settings["code_editor_extensions"]
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
+            self.settings["speechnote_enabled"] = self._settings_speechnote.isChecked()
             if hasattr(self, '_settings_launcher_tab_checks'):
                 self.settings["disabled_launcher_tabs"] = [
                     tid for tid, cb in self._settings_launcher_tab_checks.items() if not cb.isChecked()
@@ -9656,6 +9718,38 @@ function filterAliases(q) {{
         """Whether the vendored Monaco assets (assets/monaco/vs/) are present on disk."""
         return os.path.isdir(os.path.join(self.script_dir, "assets", "monaco", "vs"))
 
+    def _external_tool_env(self):
+        """Environment for subprocess calls that launch an UNRELATED app with its own
+        independent Qt/graphics stack (currently just the Speech Note flatpak — see
+        start_speechnote_dictation() and friends). Strips QT_QPA_PLATFORM, which
+        projectflow-nix/shell.nix export for ProjectFlow's OWN Qt build (xcb,
+        specifically to work around the QtWebEngine GPU-compositor crash bug — see
+        ai/issues.md) — confirmed live (real reproduction, not theorized) that leaking
+        this one variable into `flatpak run net.mkiol.SpeechNote ...` breaks the
+        flatpak's own bundled Qt from connecting to the display at all ("could not
+        connect to display ... even though it was found", the exact error reported),
+        even though the flatpak runs fine with its own auto-detected platform when this
+        var isn't forced on it. Confirmed via isolated testing that the nix-shell
+        LD_LIBRARY_PATH export is NOT part of this problem on its own — left untouched,
+        this fix is scoped to the one variable actually shown to cause it."""
+        env = os.environ.copy()
+        env.pop('QT_QPA_PLATFORM', None)
+        return env
+
+    def _speechnote_available(self):
+        """Whether the net.mkiol.SpeechNote flatpak (used by the Notes panel's "🎤
+        Dictate" button, see start_speechnote_dictation()) is installed. A quick
+        `flatpak info` check, same subprocess+timeout convention as every other
+        external-tool check in this file (e.g. open_config_in_new_desktop())."""
+        try:
+            result = subprocess.run(
+                ['flatpak', 'info', 'net.mkiol.SpeechNote'],
+                capture_output=True, text=True, timeout=3, env=self._external_tool_env()
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
     def resolve_code_editor_backend(self):
         """Resolve the "code_editor_backend" setting to an actual backend to use:
         "codemirror" (default — no behavior change for existing users) or "monaco"
@@ -12681,15 +12775,19 @@ function filterAliases(q) {{
         # is byte-identical to before (26/32/34), zero behavior change for anyone not using
         # the new larger settings; the +5px/step above Normal was tuned against the real
         # button's own measured sizeHint() at "Largest" (36 on KDE) rather than guessed.
-        # Lowered 34 -> 28 -> 22 across two rounds (2026-10-28, direct requests to make
-        # "modern" theme's buttons more compact, the second explicitly "a lot smaller")
-        # in step with _pf_btn_vpad shrinking alongside it each time — 22px still
-        # comfortably covers a 12px-bold line + 2x2px padding + 2px border with no
-        # clipping (re-verified via the same xcb-screenshot technique the original 34px
-        # value was tuned with, including at "Largest" UI text size). Now BELOW
-        # light/dark's own 26px KDE floor — "modern" no longer keeps extra breathing
-        # room over the plain themes at this size, by direct request.
-        _pf_btn_min_height = 22 if self.current_theme == "modern" else self.d('header_btn_height')
+        # Lowered 34 -> 28 -> 22 -> 26 across three rounds (2026-10-28/29). The first two
+        # cuts were direct requests to make "modern" theme's buttons more compact; the
+        # third round's "a lot smaller" request to 22px turned out to be judged while on
+        # "Largest" UI Text Size (per direct follow-up), which inflates every one of
+        # these buttons by `_ui_font_size_delta * 5` below — the 22px *base* looked fine
+        # scaled up, but was genuinely too tight once actually viewed at "Normal." 26px
+        # restores real breathing room above/below the text while keeping _pf_btn_vpad's
+        # 2px QSS padding unchanged (also a direct request) — the floor, not the padding,
+        # is what's supplying the extra space here: natural sizeHint from a 12px-bold
+        # line + 2x2px padding + 2px border lands under 26px, so this floor genuinely
+        # binds rather than being a no-op. Matches light/dark's own 26px KDE floor
+        # exactly — "modern" no longer undercuts the plain themes' own baseline.
+        _pf_btn_min_height = 26 if self.current_theme == "modern" else self.d('header_btn_height')
         _ui_font_size_delta = max(0, self._ui_font_size() - self.UI_FONT_SIZES[self.UI_FONT_SIZE_DEFAULT_INDEX])
         _pf_btn_min_height += _ui_font_size_delta * 5
 
@@ -15011,6 +15109,7 @@ function filterAliases(q) {{
         # layout rebuild leaves these pointing at widgets from a stale Focus-layout build.
         self.notes_tab_strip_widget = None
         self.notes_tab_strip_layout = None
+        self.dictate_btn = None
         if self.layout_mode == "focus":
             self.create_notes_toolbar(notes_panel_layout)
 
@@ -15103,6 +15202,19 @@ function filterAliases(q) {{
             joplin_btn.setToolTip("Sync to Joplin")
             joplin_btn.clicked.connect(self.sync_to_joplin)
             archive_bar.addWidget(joplin_btn)
+
+        # Voice dictation button — gated on both the setting AND actual availability
+        # (not just the setting) so flipping it on without the flatpak installed never
+        # produces a button that silently fails every click; see _speechnote_available().
+        # Lives in archive_bar (part of notes_panel itself, not the Focus-only
+        # create_notes_toolbar()), so this one insertion point covers both Standard and
+        # Focus layout, same as the Joplin button right above it.
+        if self.settings.get("speechnote_enabled") and self._speechnote_available():
+            self.dictate_btn = QPushButton("🎤 Dictate")
+            self.dictate_btn.setStyleSheet(archive_btn_style)
+            self.dictate_btn.setToolTip("Dictate via Speech Note (click, speak, auto-inserts at cursor)")
+            self.dictate_btn.clicked.connect(self.start_speechnote_dictation)
+            archive_bar.addWidget(self.dictate_btn)
 
         archive_bar.addStretch()
 
@@ -22274,6 +22386,182 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 f"window.__setMuyaMarkdown && window.__setMuyaMarkdown({json.dumps(new_markdown)})"
             )
             session.dirty = False
+
+    def start_speechnote_dictation(self):
+        """Notes panel "🎤 Dictate" button: starts Speech Note listening for one
+        utterance via its CLI action, then polls for completion (see
+        _poll_speechnote_state()) and inserts the result at the cursor once it's done
+        (see _insert_dictated_text()). See UI Features -> Voice Dictation (Speech Note)
+        in CLAUDE.md for the full design writeup, including why this is a clipboard-
+        capture design (net.mkiol.SpeechNote's D-Bus interface exposes no property or
+        signal carrying the transcribed text itself — confirmed via live introspection)."""
+        if self._dictation_active:
+            return  # already listening; button is disabled while active, but guard anyway
+
+        self._dictation_prior_clipboard = QApplication.clipboard().text()
+
+        # Capture a baseline TaskState value before triggering — the poll loop below is
+        # self-calibrating against this baseline rather than a hardcoded "idle" integer,
+        # since the exact enum values Speech Note uses weren't empirically pinned down
+        # (see Step 0 of the design plan) and don't need to be: "differs from baseline"
+        # means busy, "back to exactly the baseline" means done, regardless of what the
+        # literal numbers are.
+        try:
+            baseline_result = subprocess.run(
+                ['qdbus', 'net.mkiol.SpeechNote', '/net/mkiol/SpeechNote',
+                 'net.mkiol.SpeechNote.TaskState'],
+                capture_output=True, text=True, timeout=3, env=self._external_tool_env()
+            )
+            self._dictation_baseline_taskstate = baseline_result.stdout.strip() or None
+        except Exception:
+            self._dictation_baseline_taskstate = None
+
+        # subprocess.run (not Popen) deliberately — confirmed live that this exact CLI
+        # call returns in well under a second even against an already-running instance,
+        # and can fail with a specific, actionable stderr message ("Action invocation is
+        # not enabled in settings", Speech Note's own opt-in gate for external triggers)
+        # that needs to be caught and shown, not silently discarded by a fire-and-forget
+        # launch. Generous 10s timeout to tolerate a cold start (Speech Note not yet
+        # running at all) — observed live to take several seconds to spin up.
+        try:
+            result = subprocess.run(
+                ['flatpak', 'run', 'net.mkiol.SpeechNote', '--action', 'start-listening-clipboard'],
+                capture_output=True, text=True, timeout=10, env=self._external_tool_env()
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Dictate", f"Could not start Speech Note:\n{str(e)}")
+            return
+
+        if result.returncode != 0:
+            if 'not enabled in settings' in (result.stderr or ''):
+                QMessageBox.warning(
+                    self, "Dictate",
+                    "Speech Note needs \"action invocation\" enabled in its own Settings "
+                    "before ProjectFlow can trigger it. Open Speech Note, enable that, "
+                    "then try again."
+                )
+            else:
+                QMessageBox.warning(self, "Dictate", f"Could not start Speech Note:\n{result.stderr}")
+            return
+
+        self._dictation_active = True
+        self._dictation_elapsed_ms = 0
+        self._dictation_left_baseline = False
+        if self.dictate_btn:
+            self.dictate_btn.setText("🔴 Listening…")
+            self.dictate_btn.setEnabled(False)
+        self.set_status("🎤 Listening — speak now…", "info")
+        self._dictation_poll_timer.start()
+
+    def _poll_speechnote_state(self):
+        """Ticks every 400ms while a dictation is in progress (started by
+        start_speechnote_dictation()). Self-calibrating against the TaskState baseline
+        captured before listening started — see that method's own comment for why no
+        hardcoded "idle" value is needed."""
+        self._dictation_elapsed_ms += self._dictation_poll_timer.interval()
+
+        try:
+            result = subprocess.run(
+                ['qdbus', 'net.mkiol.SpeechNote', '/net/mkiol/SpeechNote',
+                 'net.mkiol.SpeechNote.TaskState'],
+                capture_output=True, text=True, timeout=2, env=self._external_tool_env()
+            )
+            current = result.stdout.strip() or None
+        except Exception:
+            current = None  # transient failure (e.g. still cold-starting) — just retry next tick
+
+        if current is not None and self._dictation_baseline_taskstate is not None:
+            if current != self._dictation_baseline_taskstate:
+                self._dictation_left_baseline = True
+            elif self._dictation_left_baseline:
+                # Left baseline at some point, now back to it — a full cycle completed.
+                self._finish_speechnote_dictation(timed_out=False)
+                return
+
+        if not self._dictation_left_baseline and self._dictation_elapsed_ms >= self._dictation_never_started_wait_ms:
+            # Never even left the baseline state — almost certainly the action-invocation
+            # -disabled case (though that specific failure is already caught synchronously
+            # in start_speechnote_dictation() above; this covers any other reason listening
+            # never actually began) or Speech Note otherwise failing to start.
+            self._finish_speechnote_dictation(timed_out=True, never_started=True)
+            return
+
+        if self._dictation_elapsed_ms >= self._dictation_max_wait_ms:
+            self._finish_speechnote_dictation(timed_out=True, never_started=False)
+
+    def _finish_speechnote_dictation(self, timed_out, never_started=False):
+        """Ends the current dictation cycle — called either on real completion (poll
+        detected TaskState return to baseline) or on timeout (see _poll_speechnote_state())."""
+        self._dictation_poll_timer.stop()
+        self._dictation_active = False
+        if self.dictate_btn:
+            self.dictate_btn.setText("🎤 Dictate")
+            self.dictate_btn.setEnabled(True)
+
+        if timed_out:
+            # Best-effort cleanup so Speech Note isn't left listening in the background —
+            # fire-and-forget, failures here aren't worth surfacing on top of the timeout
+            # message itself.
+            try:
+                subprocess.Popen(
+                    ['flatpak', 'run', 'net.mkiol.SpeechNote', '--action', 'stop-listening'],
+                    start_new_session=True, env=self._external_tool_env()
+                )
+            except Exception:
+                pass
+            if never_started:
+                self.set_status("✗ Speech Note never started listening", "warning")
+            else:
+                self.set_status("✗ Dictation timed out — no speech detected", "warning")
+            return
+
+        text = QApplication.clipboard().text()
+        # Restore whatever was on the clipboard before dictation started — this feature
+        # shouldn't silently clobber something the user had copied beforehand. Done here
+        # (after reading the dictated text out, before inserting it) regardless of
+        # whether the dictated text turns out to be usable below.
+        QApplication.clipboard().setText(self._dictation_prior_clipboard)
+
+        if not text.strip():
+            self.set_status("✗ Dictation finished but no text was captured", "warning")
+            return
+
+        self._insert_dictated_text(text)
+
+    def _insert_dictated_text(self, text):
+        """Splices `text` into the live Notes editor at the current cursor position, via
+        the __insertTextAtCursor() bridge function (assets/muya/editor.html)."""
+        session = self._notes_muya_session
+        if not (session.editing and session.webview):
+            # Notes session isn't currently loaded — e.g. the user navigated away from
+            # Notes during the (up to several-second) listening wait.
+            self.set_status("✗ Dictation captured, but the Notes editor isn't loaded", "warning")
+            return
+
+        def do_insert(cursor_state):
+            js = (
+                "window.__insertTextAtCursor && window.__insertTextAtCursor("
+                f"{json.dumps(text)}, {json.dumps(cursor_state)})"
+            )
+            session.webview.page().runJavaScript(js, on_inserted)
+
+        def on_inserted(ok):
+            if ok:
+                # Unlike _write_todo_line()'s session.dirty = False (that case writes to
+                # disk and clears Muya's own dirty flag) — this is live, unsaved content,
+                # same as normal typing, so dirty goes TRUE here, not False.
+                session.dirty = True
+                self._update_notes_save_btn()
+                self.set_status("✓ Dictated text inserted", "success")
+            else:
+                self.set_status("✗ Could not insert dictated text into the editor", "error")
+
+        # Fetch a FRESH cursor position right now, not one captured back when listening
+        # started — the user may have kept editing/moved the cursor during the wait, so
+        # only the position right before this insert actually happens is meaningful.
+        session.webview.page().runJavaScript(
+            "window.__getMuyaCursorState ? window.__getMuyaCursorState() : null", do_insert
+        )
 
     def _notes_tab_title(self, tab):
         """Short display label for one Notes tab's strip button."""

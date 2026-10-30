@@ -2,6 +2,38 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-30 (Desktop: voice dictation into Notes via Speech Note)
+
+### Added
+- **"🎤 Dictate" button in the Notes panel** (both Standard and Focus layout) dictates
+  speech directly into the open note at the cursor position, via the separately-installed
+  [Speech Note](https://github.com/mkiol/dsnote) flatpak. Click, speak, stop talking —
+  Speech Note auto-detects silence and stops on its own (confirmed ~12-13s), and the
+  transcribed text is spliced in exactly where the cursor was. Off by default
+  (`speechnote_enabled`, Settings → Integrations), and gated on the flatpak actually
+  being installed so enabling the setting alone never produces a button that silently
+  fails.
+- Requires enabling **"Allow external applications to invoke actions"** in Speech Note's
+  own Settings once — Speech Note refuses external CLI/D-Bus triggers by default. Not to
+  be confused with Speech Note's separate "insert into active window"/`ydotool` feature,
+  which this integration doesn't use at all (a clipboard-capture design was chosen
+  instead, after live D-Bus introspection showed Speech Note exposes no property/signal
+  carrying the transcribed text itself — only a start/stop action API and status
+  integers).
+
+### Fixed
+- **A real `QT_QPA_PLATFORM` environment leak**: the Dictate button initially failed with
+  `qt.qpa.xcb: could not connect to display`/`Could not load the Qt platform plugin "xcb"`.
+  Root cause: `projectflow-nix`/`shell.nix` export `QT_QPA_PLATFORM=xcb` for ProjectFlow's
+  own Qt build, and that variable was leaking into the `flatpak run net.mkiol.SpeechNote`
+  subprocess calls, breaking Speech Note's own independent Qt runtime (which otherwise
+  auto-selects a working platform on its own). Fixed by stripping that one variable
+  specifically before launching Speech Note or querying its D-Bus state.
+- **Settings → Integrations**: two new multi-line hint labels for the above were
+  rendering clipped/unreadable (a `QFormLayout` row-height quirk already seen once before
+  in this codebase, see the 2026-10-27 relocatable-folders entry) — fixed by trimming
+  both to a single line each, same approach as last time.
+
 ## 2026-10-29 (Desktop: more compact "modern" theme buttons; fixed a Settings dialog overlap bug)
 
 ### Changed
