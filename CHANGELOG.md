@@ -2,6 +2,25 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-30.2 (Desktop: voice dictation fixes from second-machine testing)
+
+### Fixed
+- **Duplicate dictated text, inserted at the start of the note instead of the cursor**:
+  the Dictate button's re-entrancy guard was only set after its (up to several seconds,
+  on a cold start) blocking launch calls returned, leaving a window where a second click
+  could fire an overlapping cycle — now set synchronously, first thing. Separately, if
+  the cursor was never actually placed in the note body before clicking Dictate, the
+  insert used to silently land wherever the browser's leftover default selection
+  happened to be (document start) — now falls back explicitly to the end of the
+  document instead.
+- **Stale/unrelated clipboard content inserted as if it were the dictation** (e.g. an
+  old copied URL): Speech Note finishing and going idle doesn't guarantee it actually
+  wrote anything new to the clipboard — now only treated as real dictated text if it's
+  both non-empty and different from what was on the clipboard before dictation started.
+- Corrected the Settings hint and warning-dialog wording for Speech Note's prerequisite
+  setting to its exact location: Speech Note → Accessibility → "Allow external
+  applications to invoke actions".
+
 ## 2026-10-30 (Desktop: voice dictation into Notes via Speech Note)
 
 ### Added

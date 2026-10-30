@@ -3344,7 +3344,7 @@ class ProjectFlowApp(QMainWindow):
         layout.addRow("", self._settings_speechnote_missing_label)
 
         speechnote_hint = QLabel(
-            "Also enable \"action invocation\" in Speech Note's own Settings (one-time, done there)."
+            "Also enable Speech Note → Accessibility → \"Allow external applications to invoke actions\"."
         )
         speechnote_hint.setStyleSheet(speechnote_desc_style)
         layout.addRow("", speechnote_hint)
@@ -22398,6 +22398,19 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if self._dictation_active:
             return  # already listening; button is disabled while active, but guard anyway
 
+        # Set the re-entrancy guard FIRST, before any blocking call below — a real,
+        # confirmed bug: this used to happen only after the subprocess.run() calls
+        # returned, leaving a window of up to ~10s (cold start) where the button was
+        # still enabled and clickable. A quick double-click in that window fired a
+        # second, overlapping start_speechnote_dictation() call — confirmed live to
+        # produce duplicate inserted text (two independent completions, each reading
+        # the clipboard and inserting). Disabling synchronously here closes that
+        # window entirely; any failure path below re-enables the button again.
+        self._dictation_active = True
+        if self.dictate_btn:
+            self.dictate_btn.setText("🔴 Listening…")
+            self.dictate_btn.setEnabled(False)
+
         self._dictation_prior_clipboard = QApplication.clipboard().text()
 
         # Capture a baseline TaskState value before triggering — the poll loop below is
@@ -22429,29 +22442,35 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 capture_output=True, text=True, timeout=10, env=self._external_tool_env()
             )
         except Exception as e:
+            self._reset_dictate_button()
             QMessageBox.warning(self, "Dictate", f"Could not start Speech Note:\n{str(e)}")
             return
 
         if result.returncode != 0:
+            self._reset_dictate_button()
             if 'not enabled in settings' in (result.stderr or ''):
                 QMessageBox.warning(
                     self, "Dictate",
-                    "Speech Note needs \"action invocation\" enabled in its own Settings "
-                    "before ProjectFlow can trigger it. Open Speech Note, enable that, "
-                    "then try again."
+                    "Speech Note needs this enabled first:\n\n"
+                    "Speech Note → Accessibility → \"Allow external applications "
+                    "to invoke actions\"\n\nThen try again."
                 )
             else:
                 QMessageBox.warning(self, "Dictate", f"Could not start Speech Note:\n{result.stderr}")
             return
 
-        self._dictation_active = True
         self._dictation_elapsed_ms = 0
         self._dictation_left_baseline = False
-        if self.dictate_btn:
-            self.dictate_btn.setText("🔴 Listening…")
-            self.dictate_btn.setEnabled(False)
         self.set_status("🎤 Listening — speak now…", "info")
         self._dictation_poll_timer.start()
+
+    def _reset_dictate_button(self):
+        """Reverts the Dictate button/state after a launch failure (success path
+        doesn't need this — see _finish_speechnote_dictation() instead)."""
+        self._dictation_active = False
+        if self.dictate_btn:
+            self.dictate_btn.setText("🎤 Dictate")
+            self.dictate_btn.setEnabled(True)
 
     def _poll_speechnote_state(self):
         """Ticks every 400ms while a dictation is in progress (started by
@@ -22493,10 +22512,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         """Ends the current dictation cycle — called either on real completion (poll
         detected TaskState return to baseline) or on timeout (see _poll_speechnote_state())."""
         self._dictation_poll_timer.stop()
-        self._dictation_active = False
-        if self.dictate_btn:
-            self.dictate_btn.setText("🎤 Dictate")
-            self.dictate_btn.setEnabled(True)
+        self._reset_dictate_button()
 
         if timed_out:
             # Best-effort cleanup so Speech Note isn't left listening in the background —
@@ -22522,7 +22538,14 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # whether the dictated text turns out to be usable below.
         QApplication.clipboard().setText(self._dictation_prior_clipboard)
 
-        if not text.strip():
+        # A real, confirmed bug: TaskState returning to baseline does NOT guarantee
+        # Speech Note actually wrote anything new to the clipboard (e.g. nothing
+        # intelligible was picked up before it gave up and went idle again) — in that
+        # case the clipboard is simply whatever it already was, and inserting it would
+        # silently paste in unrelated prior clipboard content (confirmed live: an
+        # old copied URL got inserted this way). Only treat it as real dictated text
+        # if it's non-empty AND actually differs from what was there before.
+        if not text.strip() or text == self._dictation_prior_clipboard:
             self.set_status("✗ Dictation finished but no text was captured", "warning")
             return
 

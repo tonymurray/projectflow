@@ -186,10 +186,28 @@
   // either of those itself.
   window.__insertTextAtCursor = function (text, cursorState) {
     if (!muya) return false;
+    var editorEl = document.getElementById('editor');
     if (cursorState && cursorState.cursor) {
       try { muya.setCursorByOffset(cursorState.cursor); } catch (e) {}
+    } else {
+      // A real, confirmed bug: no cursor at all (the user clicked the Dictate button
+      // without ever clicking into the note body first, so there's no real browser
+      // Selection/Range established) used to silently fall through to whatever the
+      // DOM's leftover/default selection happened to be — observed live landing at
+      // the very start of the document, not anywhere a user would expect. Explicit,
+      // predictable fallback instead: place the cursor at the END of the document
+      // (append), via the plain Selection/Range API rather than Muya's own {line, ch}
+      // coordinate system (simpler and doesn't depend on knowing Muya's internals).
+      try {
+        var range = document.createRange();
+        range.selectNodeContents(editorEl);
+        range.collapse(false);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) {}
     }
-    document.getElementById('editor').focus();
+    editorEl.focus();
     try {
       return document.execCommand('insertText', false, text || '');
     } catch (e) {
