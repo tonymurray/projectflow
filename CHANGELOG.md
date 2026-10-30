@@ -2,6 +2,18 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-10-30.3 (Desktop: optional keyboard shortcut for voice dictation)
+
+### Added
+- **Optional keyboard shortcut for Dictate** (Settings → Integrations → "Dictation
+  Shortcut"): fires the same action as clicking "🎤 Dictate" from anywhere in the app
+  while ProjectFlow's window has focus. Captured via a key-press field rather than
+  typed by name, so a spare key remapped at the hardware/OS level (e.g. a programmable
+  keyboard remapping Caps Lock to send F21/F22/etc.) can just be pressed directly.
+  Blank (the default) disables it. This is an in-app shortcut, not a system-wide
+  hotkey — it only fires while ProjectFlow itself has focus, so the same physical key
+  can safely be reused for an unrelated trigger elsewhere with no conflict.
+
 ## 2026-10-30.2 (Desktop: voice dictation fixes from second-machine testing)
 
 ### Fixed

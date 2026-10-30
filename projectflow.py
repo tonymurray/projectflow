@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QHeaderView, QSizePolicy,
     QPlainTextEdit, QStackedWidget, QCompleter, QMenu, QStyledItemDelegate, QStyle, QFileIconProvider,
     QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton, QSlider,
-    QGraphicsDropShadowEffect
+    QGraphicsDropShadowEffect, QKeySequenceEdit
 )
 from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics, QFontDatabase
@@ -3348,6 +3348,28 @@ class ProjectFlowApp(QMainWindow):
         )
         speechnote_hint.setStyleSheet(speechnote_desc_style)
         layout.addRow("", speechnote_hint)
+
+        # Optional in-app shortcut for Dictate — fires start_speechnote_dictation()
+        # from anywhere while ProjectFlow's window has focus (see
+        # _trigger_dictation_shortcut()). Captured via QKeySequenceEdit so a spare
+        # key remapped at the hardware/OS level (e.g. a Keychron-remapped Caps Lock
+        # sending F21) can just be pressed directly rather than typed by name.
+        # Blank = disabled. This is a QShortcut, not a global/system-wide hotkey —
+        # it only fires while this window (or a focused child widget inside it) has
+        # input focus, so reusing the same physical key for an unrelated dictation
+        # trigger elsewhere (e.g. Speech Note's own global action) is safe: whichever
+        # window currently has focus is the only one that ever sees the keypress.
+        self._settings_speechnote_shortcut = QKeySequenceEdit(
+            QKeySequence(self.settings.get("speechnote_shortcut", ""))
+        )
+        layout.addRow("Dictation Shortcut (optional):", self._settings_speechnote_shortcut)
+
+        speechnote_shortcut_hint = QLabel(
+            "Press a key to bind it (e.g. a hardware-remapped spare key like F21). "
+            "In-app only — fires while ProjectFlow has focus. Leave blank to disable."
+        )
+        speechnote_shortcut_hint.setStyleSheet(speechnote_desc_style)
+        layout.addRow("", speechnote_shortcut_hint)
 
         # === Baloo File Tags section === (moved here from the Settings tab — this is
         # more an integration with KDE's file indexer than a core app setting)
@@ -6678,6 +6700,13 @@ class ProjectFlowApp(QMainWindow):
 
             self.settings["enable_baloo_tags"] = self._settings_baloo.isChecked()
             self.settings["speechnote_enabled"] = self._settings_speechnote.isChecked()
+            speechnote_shortcut_text = self._settings_speechnote_shortcut.keySequence().toString()
+            if speechnote_shortcut_text:
+                self.settings["speechnote_shortcut"] = speechnote_shortcut_text
+            elif "speechnote_shortcut" in self.settings:
+                del self.settings["speechnote_shortcut"]
+            if hasattr(self, '_dictation_shortcut'):
+                self._dictation_shortcut.setKey(QKeySequence(speechnote_shortcut_text))
             if hasattr(self, '_settings_launcher_tab_checks'):
                 self.settings["disabled_launcher_tabs"] = [
                     tid for tid, cb in self._settings_launcher_tab_checks.items() if not cb.isChecked()
@@ -10263,6 +10292,14 @@ function filterAliases(q) {{
             fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
             zen_shortcut = QShortcut(QKeySequence("Ctrl+F11"), self)
             zen_shortcut.activated.connect(self.toggle_zen_mode)
+            # Optional configurable Dictate shortcut (settings['speechnote_shortcut'],
+            # see Settings -> Integrations) — empty QKeySequence if unset, which never
+            # fires. _apply_settings() updates this shortcut's key live via setKey()
+            # rather than recreating it, since this whole block only ever runs once.
+            self._dictation_shortcut = QShortcut(
+                QKeySequence(self.settings.get("speechnote_shortcut", "")), self
+            )
+            self._dictation_shortcut.activated.connect(self._trigger_dictation_shortcut)
             self._search_shortcuts_created = True
 
         title_bar.addStretch()
@@ -22386,6 +22423,15 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 f"window.__setMuyaMarkdown && window.__setMuyaMarkdown({json.dumps(new_markdown)})"
             )
             session.dirty = False
+
+    def _trigger_dictation_shortcut(self):
+        """Fires from the optional configurable shortcut (settings['speechnote_shortcut'],
+        see Settings -> Integrations and the QShortcut created in create_title_bar()) --
+        same action as clicking the Notes panel's "Dictate" button. Gated identically to
+        that button (setting + actual flatpak availability) since the shortcut can be
+        active even when the button itself isn't currently visible/built."""
+        if self.settings.get("speechnote_enabled") and self._speechnote_available():
+            self.start_speechnote_dictation()
 
     def start_speechnote_dictation(self):
         """Notes panel "🎤 Dictate" button: starts Speech Note listening for one
