@@ -15147,6 +15147,7 @@ function filterAliases(q) {{
         self.notes_tab_strip_widget = None
         self.notes_tab_strip_layout = None
         self.dictate_btn = None
+        self.insert_clipboard_btn = None
         if self.layout_mode == "focus":
             self.create_notes_toolbar(notes_panel_layout)
 
@@ -15252,6 +15253,27 @@ function filterAliases(q) {{
             self.dictate_btn.setToolTip("Dictate via Speech Note (click, speak, auto-inserts at cursor)")
             self.dictate_btn.clicked.connect(self.start_speechnote_dictation)
             archive_bar.addWidget(self.dictate_btn)
+
+            # "Insert Clipboard" — a manual companion to Dictate, not itself Speech-Note-
+            # specific: Speech Note's own window has no D-Bus/CLI way to hand over its
+            # current text directly (see start_speechnote_dictation()'s docstring), so for
+            # text already sitting in Speech Note's own note window (dictated/typed there
+            # directly, rather than via the Dictate button above), the user copies it out
+            # manually and this just inserts whatever's currently on the clipboard at the
+            # cursor -- no listening, no waiting, and (deliberately, unlike Dictate) no
+            # save/restore of prior clipboard content, since the user explicitly asked for
+            # this paste. Works on clipboard text from any source, not just Speech Note;
+            # kept inside this same settings gate anyway since it has no standalone purpose
+            # without the voice-note workflow it's meant to speed up.
+            self.insert_clipboard_btn = QPushButton("📋 Insert Clipboard")
+            self.insert_clipboard_btn.setStyleSheet(archive_btn_style)
+            self.insert_clipboard_btn.setToolTip(
+                "Insert current clipboard text at cursor (e.g. text copied from Speech "
+                "Note's own window) -- double-check the clipboard actually holds what you "
+                "expect first, since other copies can easily overwrite it in between"
+            )
+            self.insert_clipboard_btn.clicked.connect(self.insert_clipboard_at_cursor)
+            archive_bar.addWidget(self.insert_clipboard_btn)
 
         archive_bar.addStretch()
 
@@ -22598,13 +22620,35 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self._insert_dictated_text(text)
 
     def _insert_dictated_text(self, text):
+        """Splices dictated `text` into the live Notes editor at the current cursor
+        position — thin wrapper around the shared _insert_text_at_notes_cursor()."""
+        self._insert_text_at_notes_cursor(
+            text, success_label="Dictated text", empty_session_label="Dictation"
+        )
+
+    def insert_clipboard_at_cursor(self):
+        """'📋 Insert Clipboard' button (Notes archive bar): inserts whatever's
+        currently on the system clipboard at the cursor, with no listening/waiting —
+        a manual companion to Dictate for text already sitting in Speech Note's own
+        note window (or copied from anywhere else; see the button's own construction
+        comment in build_main_content())."""
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            self.set_status("✗ Clipboard is empty", "warning")
+            return
+        self._insert_text_at_notes_cursor(text, success_label="Clipboard text")
+
+    def _insert_text_at_notes_cursor(self, text, success_label="Text", empty_session_label=None):
         """Splices `text` into the live Notes editor at the current cursor position, via
-        the __insertTextAtCursor() bridge function (assets/muya/editor.html)."""
+        the __insertTextAtCursor() bridge function (assets/muya/editor.html). Shared by
+        the Dictate flow (_insert_dictated_text()) and insert_clipboard_at_cursor()."""
         session = self._notes_muya_session
         if not (session.editing and session.webview):
             # Notes session isn't currently loaded — e.g. the user navigated away from
-            # Notes during the (up to several-second) listening wait.
-            self.set_status("✗ Dictation captured, but the Notes editor isn't loaded", "warning")
+            # Notes during the (up to several-second) listening wait, or just isn't on
+            # the Notes tab when clicking Insert Clipboard.
+            label = empty_session_label or success_label
+            self.set_status(f"✗ {label} captured, but the Notes editor isn't loaded", "warning")
             return
 
         def do_insert(cursor_state):
@@ -22621,9 +22665,9 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 # same as normal typing, so dirty goes TRUE here, not False.
                 session.dirty = True
                 self._update_notes_save_btn()
-                self.set_status("✓ Dictated text inserted", "success")
+                self.set_status(f"✓ {success_label} inserted", "success")
             else:
-                self.set_status("✗ Could not insert dictated text into the editor", "error")
+                self.set_status(f"✗ Could not insert {success_label.lower()} into the editor", "error")
 
         # Fetch a FRESH cursor position right now, not one captured back when listening
         # started — the user may have kept editing/moved the cursor during the wait, so

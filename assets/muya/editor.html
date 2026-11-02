@@ -173,46 +173,104 @@
   };
 
   // Splices text in at a given cursor position in a LIVE session — used by the voice
-  // dictation feature (see start_speechnote_dictation()/_insert_dictated_text() in
-  // projectflow.py). cursorState is the same {cursor: {line, ch}, scrollTop} shape
-  // __getMuyaCursorState() returns, captured fresh right before this call (not cached
-  // from earlier) since the gap between a dictation starting and finishing can be many
-  // seconds, during which the user may have kept editing/moved the caret themselves.
-  // Uses document.execCommand('insertText', ...) against the live contenteditable
-  // rather than a round-trip through getMarkdown()/replaceContent() — this is a real
-  // browser editing action (same mechanism actual typing uses), so it participates in
-  // Muya's own undo history as one normal step and fires the same 'json-change' event
-  // that already drives the dirty flag, rather than needing this function to manage
-  // either of those itself.
+  // dictation feature (start_speechnote_dictation()/_insert_dictated_text()) and the
+  // "Insert Clipboard" button (insert_clipboard_at_cursor()), both in projectflow.py.
+  // cursorState is the same {cursor: {anchor:{line,ch}, focus:{line,ch}}, scrollTop}
+  // shape __getMuyaCursorState() returns, captured fresh right before this call (not
+  // cached from earlier) since real time can pass between "where the cursor was" and
+  // "now" (several seconds of Dictate listening; or just a moment for a button click),
+  // during which the user may have kept editing/moved the caret themselves.
+  //
+  // DELIBERATELY NOT execCommand('insertText', ...) against the live contenteditable —
+  // an earlier version did that, and it's a real, confirmed bug (not just theorized):
+  // Muya's own DOM nests MULTIPLE independent contentEditable regions (the outer
+  // #editor div is itself contentEditable=true, AND each block's own `.mu-content`
+  // span is explicitly contentEditable=true again, nested inside it — confirmed via a
+  // live DOM dump). The old code unconditionally called editorEl.focus() on that OUTER
+  // div right before execCommand, which resets the caret to the start of the OUTER
+  // div's own separate editable scope — discarding whatever position was just set a
+  // moment earlier inside a child block's own nested editable span, regardless of
+  // whether that position came from a real cursor or the "no cursor" fallback below.
+  // Net effect, confirmed live: text always landed at the very top of the note,
+  // regardless of the actual cursor position. A live offscreen-QWebEngineView test
+  // additionally showed execCommand('insertText', ...) returning true while silently
+  // inserting nothing at all when the page lacks real OS-level focus (always the case
+  // for a programmatic/headless trigger) — a second, independent fragility with the
+  // execCommand approach, on top of the focus-reset bug above.
+  //
+  // Fix: splice `text` directly into the markdown STRING at the cursor's {line, ch}
+  // position (same coordinate system getCursorOffset()/setCursorByOffset() already use
+  // — confirmed self-consistent, since __initMuya()'s own tab-switch cursor restore
+  // round-trips through exactly this coordinate system) and apply it via
+  // muya.replaceContent() — the same diff-based, undo-history-preserving call
+  // __setMuyaMarkdown() already uses for live-session edits. No DOM Selection, no
+  // focus(), no execCommand — sidesteps the nested-contentEditable interaction
+  // entirely. The caret is then explicitly reseated right after the inserted text via
+  // setCursorByOffset(), so typing continues naturally from there (matching where a
+  // real paste would leave it) rather than wherever replaceContent()'s diff happens to
+  // leave Muya's internal selection.
   window.__insertTextAtCursor = function (text, cursorState) {
     if (!muya) return false;
-    var editorEl = document.getElementById('editor');
-    if (cursorState && cursorState.cursor) {
-      try { muya.setCursorByOffset(cursorState.cursor); } catch (e) {}
+    var markdown = muya.getMarkdown();
+    var lines = markdown.split('\n');
+    var cursor = cursorState && cursorState.cursor;
+    var startLine, startCh, endLine, endCh;
+
+    if (cursor && cursor.anchor && cursor.focus) {
+      var a = cursor.anchor, f = cursor.focus;
+      // Order anchor/focus into (start <= end) so a real text SELECTION gets replaced
+      // by the inserted text, not just inserted at whichever edge happens to be "focus".
+      var aFirst = (a.line < f.line) || (a.line === f.line && a.ch <= f.ch);
+      var start = aFirst ? a : f;
+      var end = aFirst ? f : a;
+      // Clamp defensively — the markdown may have changed since cursorState was
+      // captured (e.g. autosave/external edit in the gap), so a stale {line, ch}
+      // could otherwise point past the end of the current content.
+      startLine = Math.min(Math.max(start.line, 0), lines.length - 1);
+      endLine = Math.min(Math.max(end.line, 0), lines.length - 1);
+      startCh = Math.min(Math.max(start.ch, 0), lines[startLine].length);
+      endCh = Math.min(Math.max(end.ch, 0), lines[endLine].length);
     } else {
-      // A real, confirmed bug: no cursor at all (the user clicked the Dictate button
-      // without ever clicking into the note body first, so there's no real browser
-      // Selection/Range established) used to silently fall through to whatever the
-      // DOM's leftover/default selection happened to be — observed live landing at
-      // the very start of the document, not anywhere a user would expect. Explicit,
-      // predictable fallback instead: place the cursor at the END of the document
-      // (append), via the plain Selection/Range API rather than Muya's own {line, ch}
-      // coordinate system (simpler and doesn't depend on knowing Muya's internals).
-      try {
-        var range = document.createRange();
-        range.selectNodeContents(editorEl);
-        range.collapse(false);
-        var sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch (e) {}
+      // No real cursor at all (e.g. the editor was never clicked into this session) —
+      // explicit, predictable fallback: append at the END of the document.
+      startLine = endLine = lines.length - 1;
+      startCh = endCh = lines[startLine].length;
     }
-    editorEl.focus();
+
+    var beforeLines = lines.slice(0, startLine);
+    var afterLines = lines.slice(endLine + 1);
+    var mergedLine = lines[startLine].slice(0, startCh) + text + lines[endLine].slice(endCh);
+    var newMarkdown = beforeLines.concat([mergedLine], afterLines).join('\n');
+
+    // Wrapped: confirmed live (offscreen QWebEngineView test) that the vendored Muya
+    // bundle's own internal rebuild/diff path can throw a SPURIOUS error from unrelated
+    // bundled logging code ("ReferenceError: process is not defined", a Node-style
+    // process.env dev-warning check left in a browser build) — AFTER it has already
+    // applied the content change underneath. Don't let that abort this function or get
+    // mistaken for a real failure; verify success empirically against the document
+    // itself afterward instead of trusting replaceContent()'s own throw/return.
     try {
-      return document.execCommand('insertText', false, text || '');
-    } catch (e) {
-      return false;
-    }
+      muya.replaceContent(newMarkdown);
+    } catch (e) {}
+    dirty = true;
+
+    try {
+      var insertedLines = String(text).split('\n');
+      var newLine = startLine + insertedLines.length - 1;
+      var newCh = insertedLines.length === 1
+        ? startCh + text.length
+        : insertedLines[insertedLines.length - 1].length;
+      var newCursor = { line: newLine, ch: newCh };
+      muya.setCursorByOffset({ anchor: newCursor, focus: newCursor });
+    } catch (e) {}
+
+    // Compare trailing-newline-insensitively — confirmed live that Muya's own
+    // getMarkdown() serialization normalizes the document to always end in exactly one
+    // newline, which doesn't necessarily match the literal count our own lines.join('\n')
+    // reconstruction produced (e.g. appending after a trailing blank line), causing a
+    // strict === to read as "failed" on a perfectly successful insert.
+    var normalize = function (s) { return s.replace(/\n+$/, ''); };
+    return normalize(muya.getMarkdown()) === normalize(newMarkdown);
   };
 
   // Muya's own built-in image shortcut (Shift+Ctrl+I, see

@@ -2,6 +2,30 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-11-02 (Desktop: "Insert Clipboard" button + voice dictation insert-position fix)
+
+### Added
+- **"📋 Insert Clipboard" button** in the Notes panel, right next to "🎤 Dictate" (same
+  settings gate): inserts whatever's currently on the system clipboard at the cursor,
+  with no listening/waiting. Not itself Speech-Note-specific — works on clipboard text
+  from any source — but exists as a manual companion for text already sitting in Speech
+  Note's own note window (dictated/typed there directly), since Speech Note has no
+  D-Bus/CLI way to hand that text over directly; copy it out manually, then click this
+  to paste it in.
+
+### Fixed
+- **Dictated/pasted text landing at the top of the note instead of the cursor position**
+  (even with a genuine, correctly-captured cursor): root-caused to Muya's own DOM having
+  *nested* contentEditable regions — focusing the outer editor div before inserting text
+  reset the caret to the start of that outer region's own scope, discarding the real
+  cursor position. Rewrote the insertion mechanism (`__insertTextAtCursor()` in
+  `assets/muya/editor.html`) to splice text directly into the markdown source at the
+  cursor position and apply it via `replaceContent()` instead of simulating a DOM paste
+  — sidesteps the nested-editable issue entirely, and also fixes a related bug where a
+  spurious internal error from the vendored Muya bundle's own logging code could cause a
+  successful insert to be misreported as failed. Applies to both the new Insert
+  Clipboard button and the existing Dictate button, since they share this code path.
+
 ## 2026-10-30.3 (Desktop: optional keyboard shortcut for voice dictation)
 
 ### Added
