@@ -148,20 +148,108 @@
   };
 
   window.__setMuyaMarkdown = function (markdown) {
-    if (muya) {
-      // muya.setContent() unconditionally clears the undo/redo history as a side effect
-      // (confirmed in the vendored bundle: Editor.prototype.setContent always calls
-      // this.history.clear()) — fine for a fresh load (nothing to lose yet), but this
-      // function is also called against a LIVE, already-open session (the To-Do tab's
-      // "Add as To-Do" quick-capture writes a new line in and pushes the updated markdown
-      // back in here while that tab may still be open) where wiping history is a real,
-      // silent loss of the user's undo stack. muya.replaceContent() computes a diff against
-      // the current state and applies it as one recorded, undoable history entry instead
-      // (via history.recordRebuild()/suppressRecording()) — same net content, but Ctrl+Z
-      // still works afterward, and everything typed before this call is still undoable too.
-      muya.replaceContent(markdown || '');
-      dirty = false;
+    if (!muya) {
+      console.error('[__setMuyaMarkdown] muya is not initialized -- content NOT applied');
+      return false;
     }
+    // muya.setContent() unconditionally clears the undo/redo history as a side effect
+    // (confirmed in the vendored bundle: Editor.prototype.setContent always calls
+    // this.history.clear()) — fine for a fresh load (nothing to lose yet), but this
+    // function is also called against a LIVE, already-open session (the To-Do tab's
+    // "Add as To-Do" quick-capture writes a new line in and pushes the updated markdown
+    // back in here while that tab may still be open; Live View's external-change pickup,
+    // see projectflow.py's _muya_live_view_apply_pending_reload()) where wiping history is
+    // a real, silent loss of the user's undo stack. muya.replaceContent() computes a diff
+    // against the current state and applies it as one recorded, undoable history entry
+    // instead (via history.recordRebuild()/suppressRecording()) — same net content, but
+    // Ctrl+Z still works afterward, and everything typed before this call is still
+    // undoable too.
+    //
+    // Wrapped in try/catch — confirmed live that replaceContent() can throw a SPURIOUS,
+    // unrelated error from the vendored bundle's own internal logging code (a Node-style
+    // process.env dev-warning check left in the browser build) AFTER already applying the
+    // change underneath — see the 2026-11-02 dictation bug writeup. Harmless; don't let it
+    // read as a real failure.
+    try {
+      muya.replaceContent(markdown || '');
+    } catch (e) {
+      console.error('[__setMuyaMarkdown] replaceContent threw (usually harmless, see comment above):', e && e.message);
+    }
+    // Confirmed live (2026-11-11): when this runs while the app's window is occluded
+    // (another window covering it, or a different virtual desktop), Chromium's own Page
+    // Visibility throttling means the DOM mutation above lands correctly but no new frame
+    // gets composited -- confirmed via document.hidden/visibilityState logging below, and
+    // confirmed that even switching back to the window afterward did NOT trigger Chromium's
+    // normal repaint-on-visible-again behavior (only a full page reload, i.e. clicking
+    // Refresh, did). Forcing a resize event is a known, pragmatic trick for unsticking an
+    // embedded Chromium view stuck in this state -- it isn't the "correct" visibility-
+    // change signal, but it reliably forces a relayout/repaint in practice regardless.
+    try {
+      window.dispatchEvent(new Event('resize'));
+    } catch (e) {}
+    dirty = false;
+    // Deliberately NOT verified via string-equality against `markdown` (an earlier version
+    // of this function, and of __refreshMuyaMarkdown below, did exactly that) --
+    // confirmed live (2026-11-11) that Muya's own markdown serialization legitimately
+    // normalizes formatting on re-render (table column padding, e.g. "| a | b |" ->
+    // "| a   | b   |"; consecutive blank lines collapsed to one), neither of which means
+    // the content failed to apply. A strict comparison here produced real, confirmed false
+    // "push failed" reports for perfectly successful updates. The only genuine failure
+    // signal available is "muya didn't exist at all" (handled above) -- once
+    // replaceContent() has actually been called, treat it as applied.
+    //
+    // Diagnostic-only (does not affect the return value above): confirms the DATA MODEL
+    // actually changed, and reports Chromium's own page-visibility state -- added while
+    // chasing a report where Live View's status said "picked up" but nothing appeared on
+    // screen, alongside a Qt-level "Compositor returned null texture" message (not a JS
+    // console line) around the same moment. That combination points at a stale/suppressed
+    // REPAINT (likely tied to the window not having focus when the push happens) rather
+    // than the content genuinely not updating -- this log is what will confirm or rule
+    // that out directly.
+    console.log(
+      '[__setMuyaMarkdown] resultLen=' + muya.getMarkdown().length +
+      ' documentHidden=' + document.hidden + ' visibilityState=' + document.visibilityState
+    );
+    return true;
+  };
+
+  // Used by the Notes "Refresh" button (_notes_refresh_from_disk() in projectflow.py) to
+  // reload this session's file from disk into an ALREADY-OPEN session without wiping undo
+  // history (muya.replaceContent(), same reasoning as __setMuyaMarkdown above) while
+  // restoring the caret as closely as possible. Captures/reseats the cursor internally,
+  // synchronously, in one call — no Python round-trip needed, since there's no gap for the
+  // cursor to move in between capture and apply the way there would be across two separate
+  // runJavaScript calls.
+  window.__refreshMuyaMarkdown = function (markdown) {
+    if (!muya) return false;
+    var prevCursor = null;
+    try { prevCursor = muya.getCursorOffset(); } catch (e) {}
+
+    try {
+      muya.replaceContent(markdown || '');
+    } catch (e) {}
+    dirty = false;
+
+    if (prevCursor && prevCursor.anchor) {
+      try {
+        var lines = (markdown || '').split('\n');
+        var clamp = function (pos) {
+          var line = Math.min(Math.max(pos.line, 0), lines.length - 1);
+          var ch = Math.min(Math.max(pos.ch, 0), lines[line].length);
+          return { line: line, ch: ch };
+        };
+        var anchor = clamp(prevCursor.anchor);
+        var focus = clamp(prevCursor.focus || prevCursor.anchor);
+        muya.setCursorByOffset({ anchor: anchor, focus: focus });
+      } catch (e) {}
+    }
+
+    // Deliberately not verified via string-equality against `markdown` -- see
+    // __setMuyaMarkdown's comment above for why that's unreliable (Muya's own markdown
+    // serialization legitimately normalizes formatting on re-render, e.g. table column
+    // padding or collapsing consecutive blank lines, neither of which means the content
+    // failed to apply). Once replaceContent() has been called, treat it as applied.
+    return true;
   };
 
   window.__muyaIsDirty = function () {

@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QSpinBox, QDateEdit, QTimeEdit, QWidgetAction, QWIDGETSIZE_MAX, QRadioButton, QSlider,
     QGraphicsDropShadowEffect, QKeySequenceEdit
 )
-from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime
+from PyQt6.QtCore import Qt, QMimeData, QTimer, QPoint, QSize, QRect, pyqtSignal, QStringListModel, QEvent, QFileInfo, QByteArray, QDate, QTime, QFileSystemWatcher
 from PyQt6.QtGui import QIcon, QFont, QKeySequence, QShortcut, QTextListFormat, QImage, QPixmap, QDrag, QColor, QPainter, QFontMetrics, QFontDatabase
 import re
 import configparser
@@ -1206,6 +1206,15 @@ class MuyaSession:
         self.dirty = False
         self.autosave_timer = QTimer()
         self.autosave_timer.setInterval(autosave_interval_ms)
+        # Live View: when active, this session's file is watched on disk and external
+        # changes are pushed into the live editor (see _muya_live_view_*). Ephemeral,
+        # never persisted, always starts False — mirrors autosave_timer's own "created
+        # once here, started/stopped not recreated" convention.
+        self.live_view_active = False
+        self.live_view_watcher = QFileSystemWatcher()
+        self.live_view_debounce_timer = QTimer()
+        self.live_view_debounce_timer.setSingleShot(True)
+        self.live_view_debounce_timer.setInterval(250)
 
 
 class CodeEditorSession:
@@ -1529,6 +1538,12 @@ class ProjectFlowApp(QMainWindow):
         self._muya_session.autosave_timer.timeout.connect(
             lambda: self._muya_autosave_tick(self._muya_session)
         )
+        self._muya_session.live_view_watcher.fileChanged.connect(
+            lambda p: self._muya_live_view_file_changed(self._muya_session, p)
+        )
+        self._muya_session.live_view_debounce_timer.timeout.connect(
+            lambda: self._muya_live_view_apply_pending_reload(self._muya_session)
+        )
 
         # Second, independent Muya-hosting webview dedicated to the Notes panel — created here
         # (not in build_main_content()) and never recreated on refresh, for the same reason as
@@ -1557,6 +1572,12 @@ class ProjectFlowApp(QMainWindow):
         )
         self._notes_muya_session.autosave_timer.timeout.connect(
             lambda: self._muya_autosave_tick(self._notes_muya_session)
+        )
+        self._notes_muya_session.live_view_watcher.fileChanged.connect(
+            lambda p: self._muya_live_view_file_changed(self._notes_muya_session, p)
+        )
+        self._notes_muya_session.live_view_debounce_timer.timeout.connect(
+            lambda: self._muya_live_view_apply_pending_reload(self._notes_muya_session)
         )
 
         # Voice dictation state (see UI Features -> Voice Dictation (Speech Note) in
@@ -1603,6 +1624,12 @@ class ProjectFlowApp(QMainWindow):
         )
         self._todo_muya_session.autosave_timer.timeout.connect(
             lambda: self._muya_autosave_tick(self._todo_muya_session)
+        )
+        self._todo_muya_session.live_view_watcher.fileChanged.connect(
+            lambda p: self._muya_live_view_file_changed(self._todo_muya_session, p)
+        )
+        self._todo_muya_session.live_view_debounce_timer.timeout.connect(
+            lambda: self._muya_live_view_apply_pending_reload(self._todo_muya_session)
         )
         # Tracks an explicitly-opened non-project note in the Focus-layout Notes tab (see
         # _open_note_in_notes_tab()/_open_markdown_file()) — None means "show the project's
@@ -8500,7 +8527,20 @@ StartupNotify=true
         """Create a zip backup of the projects dir, notes dir, documents dir, images
         dir, and app settings file at zip_path. Returns (success, message) — never
         raises, so callers can decide how loudly to surface a failure (status bar vs.
-        modal dialog)."""
+        modal dialog).
+
+        Symlinks are deliberately skipped (os.path.islink(full)), not followed —
+        found live after a broken symlink (documents/<slug>/paste.html, pointing at
+        a since-moved/deleted target) made the ENTIRE backup fail with ENOENT, since
+        zipfile.write() stats through the link. Even a working symlink's target
+        usually lives outside whichever of the four folders is actually being backed
+        up here, so silently following it would pull in unrelated data rather than
+        this folder's own contents — skipping is the predictable behavior either way.
+        Any other single file that fails to read (permission denied, deleted mid-walk)
+        is similarly skipped rather than aborting the whole backup, since a safety-net
+        feature shouldn't lose an otherwise-complete backup over one bad file — but
+        unlike silently skipping, the count is surfaced in the returned message."""
+        skipped = 0
         try:
             os.makedirs(os.path.dirname(zip_path), exist_ok=True)
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -8516,11 +8556,18 @@ StartupNotify=true
                     for root, _dirs, files in os.walk(src_dir):
                         for fname in files:
                             full = os.path.join(root, fname)
+                            if os.path.islink(full):
+                                skipped += 1
+                                continue
                             rel = os.path.join(arc_prefix, os.path.relpath(full, src_dir))
-                            zf.write(full, rel)
+                            try:
+                                zf.write(full, rel)
+                            except OSError:
+                                skipped += 1
                 if os.path.isfile(self.settings_file):
                     zf.write(self.settings_file, os.path.basename(self.settings_file))
-            return True, f"Backup created: {os.path.basename(zip_path)}"
+            suffix = f" ({skipped} symlink/unreadable file(s) skipped)" if skipped else ""
+            return True, f"Backup created: {os.path.basename(zip_path)}{suffix}"
         except Exception as e:
             if os.path.exists(zip_path):
                 try:
@@ -15148,6 +15195,8 @@ function filterAliases(q) {{
         self.notes_tab_strip_layout = None
         self.dictate_btn = None
         self.insert_clipboard_btn = None
+        self.notes_refresh_btn = None
+        self.notes_live_view_btn = None
         if self.layout_mode == "focus":
             self.create_notes_toolbar(notes_panel_layout)
 
@@ -15195,6 +15244,80 @@ function filterAliases(q) {{
             self._todo_loaded_for = todo_reload_key
             self._open_todo_in_muya()
 
+        # Refresh / Live View — reload the CURRENTLY LOADED note from disk, or watch it
+        # continuously for external edits (e.g. another synced device, or an AI agent
+        # editing the file directly). Deliberately a separate row, NOT inside
+        # notes_archive_section below — unlike Archive/View Archive/Joplin (hardcoded to
+        # the PROJECT's own notes/archive file, see the comment on that section),
+        # Refresh/Live View already operate generically on
+        # self._notes_muya_session.path, whatever that currently is (the project's own
+        # note, or an arbitrary one opened via _open_note_in_notes_tab() — Focus layout
+        # only) — so they stay visible and working regardless of which note is shown,
+        # rather than being hidden along with the project-note-only controls.
+        notes_action_row = QWidget()
+        notes_action_layout = QHBoxLayout(notes_action_row)
+        notes_action_layout.setContentsMargins(0, 5, 0, 0)
+
+        notes_action_btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+        # Stashed so _notes_refresh_from_disk()'s _flash_button_saved() restore callback can
+        # reset the Refresh button's text/style back to normal afterward (this style is
+        # otherwise just a local variable here, unlike notes_save_btn's own restore path
+        # which rebuilds its stylesheet via _update_notes_save_btn() instead).
+        self._notes_archive_btn_style = notes_action_btn_style
+
+        self.notes_refresh_btn = QPushButton("↻ Refresh")
+        self.notes_refresh_btn.setStyleSheet(notes_action_btn_style)
+        self.notes_refresh_btn.setToolTip("Reload this note from disk (discards unsaved changes, with confirmation)")
+        self.notes_refresh_btn.clicked.connect(self._notes_refresh_from_disk)
+        notes_action_layout.addWidget(self.notes_refresh_btn)
+
+        # Toggle style modeled on folder_show_images_btn — this app's existing convention
+        # for a persistent on/off switch (as opposed to a glyph-swap button like the
+        # fit-mode/wrap toggles), since Live View is exactly that: a mode that stays on
+        # until explicitly turned off, not a one-shot action.
+        live_view_btn_style = notes_action_btn_style + f"""
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+        self.notes_live_view_btn = QPushButton("👁 Live View")
+        self.notes_live_view_btn.setStyleSheet(live_view_btn_style)
+        self.notes_live_view_btn.setToolTip(
+            "Watch this note's file on disk and show external edits near-instantly "
+            "(e.g. an AI agent editing it) -- suspends autosave while on"
+        )
+        self.notes_live_view_btn.setCheckable(True)
+        self.notes_live_view_btn.clicked.connect(self._notes_toggle_live_view)
+        notes_action_layout.addWidget(self.notes_live_view_btn)
+        notes_action_layout.addStretch()
+
+        # notes_action_row (and these two buttons) is rebuilt fresh on EVERY
+        # build_main_content() call, including incidental rebuilds that don't touch Notes
+        # at all — resync their checked/enabled state against the actual, persistent
+        # session state immediately (Live View itself only ever starts off at the
+        # app/project level, via the auto-disable hook in _load_muya_shell() — not by
+        # hardcoding it here, which would incorrectly reset an unrelated rebuild's fresh
+        # button back to unchecked even while Live View is legitimately still active).
+        self._update_notes_live_view_btn()
+
+        notes_panel_layout.addWidget(notes_action_row)
+        self._immersive_hide_widgets.append(notes_action_row)
+
         # Archive/Joplin/external-editor controls — all keyed to the project's own
         # get_notes_file_path()/get_archive_file_path() (archive_notes(), view_archive(),
         # sync_to_joplin(), open_note_in_external_editor() none of them take a path
@@ -15232,6 +15355,11 @@ function filterAliases(q) {{
                 color: {self.t('fg_on_dark')};
             }}
         """
+        # Stashed so _notes_refresh_from_disk()'s _flash_button_saved() restore callback can
+        # reset the Refresh button's text/style back to normal afterward (archive_btn_style
+        # is otherwise just a local variable here, unlike notes_save_btn's own restore path
+        # which rebuilds its stylesheet via _update_notes_save_btn() instead).
+        self._notes_archive_btn_style = archive_btn_style
 
         # Joplin sync / external editor buttons (only shown if configured)
         if self.settings.get("joplin_token"):
@@ -21773,15 +21901,28 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             f.write(markdown_content)
         return markdown_content
 
-    def _load_muya_shell(self, session, path, content, extra_css="", view_state=None):
+    def _load_muya_shell(self, session, path, content, extra_css="", view_state=None, preserve_live_view=False):
         """Load the Muya editor shell into session.webview with the given content, targeting
         path as the save destination. Shared by the file-backed and notes-backed openers below.
         extra_css is injected verbatim into the shell's <style> block (used for the Notes-view
         paper effect; empty for the plain file editor). view_state, if given, is a
         {"cursor": {...}, "scrollTop": N} dict captured by __getMuyaCursorState() before this
-        tab was last switched away from — see _activate_notes_tab()."""
+        tab was last switched away from — see _activate_notes_tab().
+
+        preserve_live_view=True skips the auto-disable below and keeps the autosave timer
+        suspended — used ONLY by _muya_live_view_apply_pending_reload(), which deliberately
+        reuses this full-reload path for its own external-change pickups (see that method's
+        docstring for why) and needs Live View to stay ON through its own reload, not be
+        treated as "the note is being replaced out from under it"."""
         if not session.webview:
             return
+        # Every full-reload path (tab switch, project switch, theme toggle) funnels through
+        # here — one chokepoint to auto-disable Live View whenever the note it was watching
+        # is about to be replaced out from under it (see _muya_live_view_set_active()).
+        if session.live_view_active and not preserve_live_view:
+            self._muya_live_view_set_active(session, False)
+            if session is getattr(self, '_notes_muya_session', None):
+                self._update_notes_live_view_btn()
         editor_dir = os.path.join(self.script_dir, "assets", "muya")
         editor_html = os.path.join(editor_dir, "editor.html")
         if not os.path.exists(editor_html):
@@ -21802,7 +21943,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         session.pending_view_state = view_state
         session.dirty = False  # a freshly-loaded document is clean until edited
         session.webview.setHtml(shell_html, QUrl.fromLocalFile(editor_dir + os.sep))
-        if not session.autosave_timer.isActive():
+        if not session.live_view_active and not session.autosave_timer.isActive():
             session.autosave_timer.start()
 
     def _open_path_in_muya_session(self, session, path, extra_css="", view_state=None):
@@ -22258,6 +22399,21 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         right after a (re)load. No-op if the button doesn't exist (Standard layout)."""
         if not getattr(self, 'notes_save_btn', None):
             return
+        live_view_active = self._notes_muya_session.live_view_active
+        self.notes_save_btn.setEnabled(not live_view_active)
+        if live_view_active:
+            self.notes_save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.t('bg_secondary')};
+                    color: {self.t('border')};
+                    border: 1px solid {self.t('bg_secondary')};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                }}
+            """)
+            self.notes_save_btn.setToolTip("Autosave suspended while Live View is on")
+            return
         dirty = self._notes_muya_session.dirty
         if dirty:
             self.notes_save_btn.setStyleSheet(f"""
@@ -22328,6 +22484,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 extra_css=self._notes_paper_css(), view_state=view_state
             )
         self._update_notes_toolbar()
+        self._update_notes_live_view_btn()
 
     def _open_todo_in_muya(self):
         """Load this project's todo.md into the persistent To-Do Muya session. Much
@@ -22955,6 +23112,13 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         immediate manual save (the Notes toolbar's Save button)."""
         if not session.editing or not session.path or not session.webview:
             return
+        # Live View is watching this file for EXTERNAL changes right now — writing our own
+        # (possibly stale, pre-external-update) editor content back over it would race with,
+        # and could clobber, whatever the external process just wrote. Covers every caller
+        # of this method at once: the autosave tick, the Save button, Ctrl+S, and the
+        # closeEvent() exit flush.
+        if session.live_view_active:
+            return
 
         def on_markdown(markdown):
             if markdown is None:
@@ -22991,6 +23155,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if not (session.editing and session.path and session.webview):
             callback()
             return
+        # Same reasoning as the guard in _muya_save() -- don't write stale editor content
+        # over a file Live View is actively watching for external changes.
+        if session.live_view_active:
+            callback()
+            return
 
         def on_dirty(is_dirty):
             if not is_dirty:
@@ -23008,6 +23177,234 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             session.webview.page().runJavaScript("window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null", on_markdown)
 
         session.webview.page().runJavaScript("window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty)
+
+    # --- Live View / Refresh (see MuyaSession's live_view_* fields) -----------------------
+    # Live View watches a session's file on disk (QFileSystemWatcher) and pushes external
+    # changes into the already-open editor near-instantly, suspending normal autosave for as
+    # long as it's active (see the guards added to _muya_save()/_muya_flush_before_switch()
+    # above) so this app never overwrites what an external process (another synced device,
+    # an AI agent editing the file directly) is writing. Ephemeral — always starts off,
+    # never persisted, and auto-disables itself the moment the underlying file is about to
+    # be replaced by a normal reload (see the hook in _load_muya_shell()). Refresh is the
+    # one-shot manual counterpart: reload-from-disk-right-now, with a confirm if there are
+    # local unsaved edits. Built generically on MuyaSession so any future session (the
+    # general webview, To-Do) could reuse the same mechanism, even though only Notes has UI
+    # for it today.
+
+    def _muya_live_view_set_active(self, session, active):
+        """Turn Live View on/off for `session`. Does not touch any Notes-specific UI itself
+        — callers that care about button state call _update_notes_live_view_btn()/
+        _update_notes_save_btn() afterward. Returns whether the requested state was actually
+        reached — QFileSystemWatcher.addPath() can fail (e.g. the OS's inotify watch limit
+        is exhausted), and silently treating that as "on" would leave Live View permanently
+        non-functional with no way to tell."""
+        if active == session.live_view_active:
+            return True
+        if active:
+            if not session.path or not os.path.exists(session.path):
+                return False
+            if session.live_view_watcher.files():
+                session.live_view_watcher.removePaths(session.live_view_watcher.files())
+            if not session.live_view_watcher.addPath(session.path):
+                return False
+            session.live_view_active = True
+            session.autosave_timer.stop()
+        else:
+            session.live_view_active = False
+            session.live_view_debounce_timer.stop()
+            if session.live_view_watcher.files():
+                session.live_view_watcher.removePaths(session.live_view_watcher.files())
+            if session.editing and not session.autosave_timer.isActive():
+                session.autosave_timer.start()
+        return True
+
+    def _muya_live_view_file_changed(self, session, changed_path):
+        """QFileSystemWatcher.fileChanged handler. Many editors/sync clients replace a file
+        via unlink+recreate rather than an in-place write, which silently drops the path from
+        the watch list after firing once — re-add it here if so. Actual reload is debounced
+        (see _muya_live_view_apply_pending_reload()) since one external save can fire several
+        rapid signals (e.g. truncate-then-write) and reading immediately risks a partial
+        write."""
+        if not session.live_view_active:
+            return
+        # Diagnostic: confirms the raw OS-level change notification was actually received,
+        # independent of whatever the debounced reload below does afterward — lets a failure
+        # further down the pipeline be distinguished from the signal never arriving at all.
+        if session is getattr(self, '_notes_muya_session', None):
+            self.set_status(f"👁 Live View: change detected for {os.path.basename(changed_path)}…", "info")
+        if session.path and os.path.exists(session.path) and session.path not in session.live_view_watcher.files():
+            session.live_view_watcher.addPath(session.path)
+        session.live_view_debounce_timer.start()
+
+    def _muya_live_view_apply_pending_reload(self, session):
+        """Debounced external-change handler.
+
+        Confirmed live (2026-11-11), across several rounds of diagnosis: pushing new
+        content into an ALREADY-RENDERED session via window.__setMuyaMarkdown()
+        (replaceContent()) reliably updates Muya's own data model (verified via
+        getMarkdown() matching) but DOES NOT reliably repaint on screen on at least one
+        real machine — a Qt-level "Compositor returned null texture" message showed up
+        around the same moment, and neither forcing a resize-event dispatch nor an
+        explicit QWidget.update() fixed it, including with document.hidden/
+        visibilityState confirmed "visible" (so it isn't simply page-visibility
+        throttling from an occluded window either). A FULL reload via _load_muya_shell()
+        (the same setHtml()+__initMuya() path Refresh and every tab-switch/project-switch
+        already use) was confirmed reliable throughout this same investigation, so Live
+        View now uses that instead, at one real cost: Muya's undo/redo history is wiped
+        on every external-change pickup (setHtml()-based loads always do this — see
+        __initMuya() in editor.html), unlike Refresh's dedicated, undo-preserving
+        __refreshMuyaMarkdown(). Accepted deliberately — Live View's whole premise is
+        watching an external process edit the file hands-off, not interleaving your own
+        typing with it, so losing undo continuity across an external pickup is a much
+        smaller cost than the update silently not appearing at all.
+
+        Captures the current cursor position first and feeds it through as view_state,
+        so the reload at least restores your place afterward (the same mechanism
+        tab-switching already relies on) — a reasonable bonus, not a strict requirement,
+        since content arriving externally may not keep the same coordinates meaningful
+        anyway. External content always wins — no dirty-check, no confirmation."""
+        if not session.live_view_active or not session.editing or not session.webview:
+            return
+        path = session.path
+        is_notes = session is getattr(self, '_notes_muya_session', None)
+        if not path or not os.path.exists(path):
+            self._muya_live_view_set_active(session, False)
+            if is_notes:
+                self._update_notes_live_view_btn()
+                self._update_notes_save_btn()
+            self.set_status(f"Live View: {os.path.basename(path or '')} was deleted — Live View turned off", "error")
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.set_status(f"✗ Live View: could not read {os.path.basename(path)}: {e}", "error")
+            return
+
+        extra_css = self._notes_paper_css() if is_notes else ""
+
+        def on_cursor_captured(cursor_state):
+            self._load_muya_shell(
+                session, path, content, extra_css=extra_css,
+                view_state=cursor_state, preserve_live_view=True,
+            )
+            if is_notes and path == self.get_notes_file_path():
+                self.notes_data["content"] = content
+            if is_notes:
+                self._update_notes_save_btn()
+                # Live-View pickups were previously silent -- indistinguishable from
+                # "nothing happened yet" when debugging whether this is actually firing.
+                self.set_status(f"👁 Live View: picked up external change to {os.path.basename(path)}", "info")
+            # Defensive re-add — covers the case where the atomic-replace race landed
+            # between the fileChanged signal and this debounced read rather than before it.
+            if os.path.exists(path) and path not in session.live_view_watcher.files():
+                session.live_view_watcher.addPath(path)
+
+        session.webview.page().runJavaScript(
+            "window.__getMuyaCursorState ? window.__getMuyaCursorState() : null",
+            on_cursor_captured,
+        )
+
+    def _notes_toggle_live_view(self):
+        """Handler for the Notes panel's "👁 Live View" toggle button."""
+        session = self._notes_muya_session
+        turning_on = self.notes_live_view_btn.isChecked()
+        if turning_on and not (session.editing and session.path and os.path.exists(session.path)):
+            self.notes_live_view_btn.setChecked(False)
+            self.set_status("✗ Live View: no note file to watch", "error")
+            return
+        watched_path = session.path
+        ok = self._muya_live_view_set_active(session, turning_on)
+        if turning_on and not ok:
+            self.notes_live_view_btn.setChecked(False)
+            self.set_status(f"✗ Live View: could not watch {watched_path} (addPath failed)", "error")
+            self._update_notes_live_view_btn()
+            self._update_notes_save_btn()
+            return
+        self._update_notes_live_view_btn()
+        self._update_notes_save_btn()
+        if turning_on:
+            # Full path (not just basename) deliberately shown here -- useful for
+            # confirming exactly which file is being watched when diagnosing a report of
+            # "Live View isn't picking up my external edits".
+            self.set_status(f"👁 Live View on — watching {watched_path}, autosave suspended", "info")
+        else:
+            self.set_status("Live View off — autosave resumed", "info")
+
+    def _update_notes_live_view_btn(self):
+        """Resyncs the Live View toggle (and gates Refresh) against the Notes session's
+        actual state. Called from _open_notes_in_muya() after every (re)load, and from the
+        auto-disable hook in _load_muya_shell(). Independent of _update_notes_toolbar()/
+        _update_notes_save_btn(), since notes_live_view_btn/notes_refresh_btn live in their
+        own always-visible row (notes_action_row) — unlike notes_archive_section's
+        controls, which are hidden while an arbitrary (non-project) note is loaded, these
+        two work generically on whatever note is currently open and stay visible/working
+        either way, in both layouts."""
+        session = self._notes_muya_session
+        live_btn = getattr(self, 'notes_live_view_btn', None)
+        refresh_btn = getattr(self, 'notes_refresh_btn', None)
+        has_file = bool(session.path)
+        if live_btn:
+            live_btn.setChecked(session.live_view_active)
+            live_btn.setEnabled(has_file)
+        if refresh_btn:
+            refresh_btn.setEnabled(has_file and not session.live_view_active)
+
+    def _notes_refresh_from_disk(self):
+        """Handler for the Notes panel's "↻ Refresh" button — reloads the current note from
+        disk into the already-open session without wiping undo history, restoring the caret
+        afterward (see window.__refreshMuyaMarkdown in editor.html). Confirms first (default
+        Cancel) if the editor has unsaved changes, since unlike Live View this is a one-shot
+        action against a file that isn't necessarily being watched/expected to change."""
+        session = self._notes_muya_session
+        if not session.editing or not session.path:
+            return
+        if not os.path.exists(session.path):
+            self.set_status(f"✗ Refresh: {os.path.basename(session.path)} no longer exists", "error")
+            return
+
+        def on_dirty(is_dirty):
+            if is_dirty:
+                reply = QMessageBox.question(
+                    self, "Unsaved Changes",
+                    f"'{os.path.basename(session.path)}' has unsaved changes. "
+                    "Reloading from disk will discard them. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            self._do_notes_refresh_from_disk(session)
+
+        session.webview.page().runJavaScript(
+            "window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty
+        )
+
+    def _do_notes_refresh_from_disk(self, session):
+        try:
+            with open(session.path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.set_status(f"✗ Refresh failed: {e}", "error")
+            return
+        processed = self._absolutize_note_images(content, session.path)
+        js = f"window.__refreshMuyaMarkdown && window.__refreshMuyaMarkdown({json.dumps(processed)})"
+
+        def on_done(ok):
+            session.dirty = False
+            if session.path == self.get_notes_file_path():
+                self.notes_data["content"] = content
+            self._update_notes_save_btn()
+
+            def _restore_refresh_btn():
+                if getattr(self, 'notes_refresh_btn', None):
+                    self.notes_refresh_btn.setText("↻ Refresh")
+                    self.notes_refresh_btn.setStyleSheet(getattr(self, '_notes_archive_btn_style', ''))
+
+            self._flash_button_saved(getattr(self, 'notes_refresh_btn', None), _restore_refresh_btn)
+            self.set_status(f"✓ Refreshed {os.path.basename(session.path)}", "success")
+
+        session.webview.page().runJavaScript(js, on_done)
 
     def _muya_switch_to_preview(self):
         """Leave the main webview's Muya editor (autosaving first) and show the rendered read-only preview."""
