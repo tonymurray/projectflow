@@ -1247,6 +1247,17 @@ class CodeEditorSession:
         self.pending_view_state = None
         self.dirty_poll_timer = QTimer()
         self.dirty_poll_timer.setInterval(dirty_poll_interval_ms)
+        # Live View: see MuyaSession's own fields above — identical mechanism, reused here
+        # so .txt/.html/etc. files (which default into this editor rather than Muya, see
+        # CLAUDE.md's Code Editor section) can also watch for external changes. Unlike
+        # Muya's "external content always wins", the apply step here skips a reload while
+        # the tab is dirty instead of silently overwriting unsaved edits — consistent with
+        # this class's own no-silent-side-effects philosophy (see docstring above).
+        self.live_view_active = False
+        self.live_view_watcher = QFileSystemWatcher()
+        self.live_view_debounce_timer = QTimer()
+        self.live_view_debounce_timer.setSingleShot(True)
+        self.live_view_debounce_timer.setInterval(250)
 
 
 class PdfTabState:
@@ -1684,6 +1695,12 @@ class ProjectFlowApp(QMainWindow):
         )
         self._code_session.dirty_poll_timer.timeout.connect(
             lambda: self._code_editor_dirty_poll_tick(self._code_session)
+        )
+        self._code_session.live_view_watcher.fileChanged.connect(
+            lambda p: self._code_editor_live_view_file_changed(self._code_session, p)
+        )
+        self._code_session.live_view_debounce_timer.timeout.connect(
+            lambda: self._code_editor_live_view_apply_pending_reload(self._code_session)
         )
         # Multi-instance Editor tabs (see CodeTabState) — restored only on an actual
         # project switch (load_config()'s is_project_switch block), NOT on every incidental
@@ -3728,20 +3745,56 @@ class ProjectFlowApp(QMainWindow):
         self.save_settings()
         self.refresh_projects()
 
+    def _project_docs_hidden_paths_key(self):
+        """Absolute path of the current config — scopes project_docs_hidden_paths per
+        project. Mirrors _ai_hidden_paths_key()."""
+        if getattr(self, 'current_config_file', None):
+            return os.path.abspath(self.current_config_file)
+        return None
+
+    def _get_project_docs_hidden_paths(self):
+        key = self._project_docs_hidden_paths_key()
+        if not key:
+            return set()
+        return set(self.settings.get('project_docs_hidden_paths', {}).get(key, []))
+
+    def _toggle_project_doc_item_hidden(self, path):
+        """Hide a Project Documents item (👁 toggle) — stored in .projectflow_settings.json,
+        never the project JSON, same reasoning as _toggle_ai_item_hidden(): a personal
+        declutter preference, not project content. These items aren't self.COLUMN_1 data
+        either (see _get_project_documents_category_items())."""
+        key = self._project_docs_hidden_paths_key()
+        if not key:
+            return
+        hidden = self.settings.setdefault('project_docs_hidden_paths', {}).setdefault(key, [])
+        abs_path = os.path.abspath(path)
+        if abs_path not in hidden:
+            hidden.append(abs_path)
+        self.save_settings()
+        self.refresh_projects()
+
     def _get_all_hidden_items(self):
-        """Everything currently hidden from the AI bucket (the only place a per-item 👁
-        hide toggle still exists — real Docs/Resources items have no hide
-        state, only delete) — for the "N hidden — Manage" dialog."""
-        return [
-            {'label': os.path.basename(abs_path), 'path': abs_path}
+        """Everything currently hidden via a per-item 👁 toggle — the AI bucket and the
+        Project Documents bucket are the only two places this exists (real Docs/Resources
+        items have no hide state, only delete) — for the "N hidden — Manage" dialog.
+        Each entry is tagged with its source so _unhide_item() can reverse the right one."""
+        items = [
+            {'label': os.path.basename(abs_path), 'path': abs_path, 'source': 'ai'}
             for abs_path in sorted(self._get_ai_hidden_paths())
         ]
+        items += [
+            {'label': f"{os.path.basename(abs_path)} (Project Documents)", 'path': abs_path, 'source': 'project_docs'}
+            for abs_path in sorted(self._get_project_docs_hidden_paths())
+        ]
+        return items
 
     def _unhide_item(self, hidden_entry):
-        """Reverse _toggle_ai_item_hidden() for one entry from _get_all_hidden_items()."""
-        key = self._ai_hidden_paths_key()
+        """Reverse _toggle_ai_item_hidden()/_toggle_project_doc_item_hidden() for one entry
+        from _get_all_hidden_items(), based on its 'source' tag."""
+        settings_key = 'ai_hidden_paths' if hidden_entry.get('source') == 'ai' else 'project_docs_hidden_paths'
+        key = self._ai_hidden_paths_key() if hidden_entry.get('source') == 'ai' else self._project_docs_hidden_paths_key()
         if key:
-            hidden_list = self.settings.get('ai_hidden_paths', {}).get(key, [])
+            hidden_list = self.settings.get(settings_key, {}).get(key, [])
             if hidden_entry['path'] in hidden_list:
                 hidden_list.remove(hidden_entry['path'])
             self.save_settings()
@@ -3753,7 +3806,7 @@ class ProjectFlowApp(QMainWindow):
         dialog's style — no search/bulk actions, per the "tidy up later" scope decision."""
         hidden = self._get_all_hidden_items()
         dialog = QDialog(self)
-        dialog.setWindowTitle("Hidden from Docs")
+        dialog.setWindowTitle("Hidden Items")
         dialog.resize(420, 320)
         layout = QVBoxLayout(dialog)
 
@@ -3836,6 +3889,61 @@ class ProjectFlowApp(QMainWindow):
             if os.path.isfile(full_path) and full_path not in hidden_paths:
                 items.append([real_name, full_path, "default"])
                 seen.add(real_name.lower())
+        return items
+
+    def _get_project_documents_category_items(self):
+        """Detect files sitting directly in this project's own Documents subfolder
+        that aren't yet a real launcher item anywhere, and surface them as an automatic,
+        non-editable "Project Documents" category — mirrors _get_ai_category_items(),
+        same "live/dynamic, computed fresh every render, never written to self.COLUMN_1"
+        model, for the same reason: no precedent in this codebase for a background scan
+        silently persisting new launcher items (see CLAUDE.md's "no silent side effects").
+
+        Uses _preview_project_documents_path() rather than
+        _get_or_create_project_documents_folder() deliberately — the latter creates the
+        folder and persists documents_subfolder into the project's config, which would
+        itself be a silent side effect of merely rendering the launcher column on a
+        project that's never used Docs/New Note/Upload. Returns [] (no folder created)
+        if that folder doesn't exist yet, same as AI's "no ai/ folder" behavior.
+
+        Only scans the top level (no recursion into subfolders) — matches the AI
+        category's own flat scan and this project's one confirmed use case. Skips
+        dotfiles, subdirectories, symlinks (same "skip, don't follow" precedent as the
+        Backup feature — a symlink's target usually lives outside this folder), and
+        todo.md specifically (the To-Do viewer's own backing file, not a dropped-in
+        document — computed inline rather than via _get_or_create_todo_file(), which
+        would create todo.md as a side effect of this scan)."""
+        folder = self._preview_project_documents_path()
+        if not folder or not os.path.isdir(folder):
+            return []
+        todo_path = os.path.abspath(os.path.join(folder, "todo.md"))
+        hidden_paths = self._get_project_docs_hidden_paths()
+        # Dedup against EVERY real category (not just Docs) — broader than
+        # _scan_for_docs()'s own Docs-only check, matching add_resource_to_project()'s
+        # full-COLUMN_1 walk, since "not already in one of the other sections" means any
+        # section, not just Docs.
+        existing_paths = {
+            os.path.abspath(os.path.expanduser(item[1]))
+            for cat_dict in self.COLUMN_1
+            for cat_items in cat_dict.values()
+            for item in cat_items if len(item) > 1
+        }
+        items = []
+        try:
+            entries = sorted(os.listdir(folder), key=str.lower)
+        except OSError:
+            return []
+        for fname in entries:
+            if fname.startswith('.'):
+                continue
+            full_path = os.path.join(folder, fname)
+            if os.path.islink(full_path) or not os.path.isfile(full_path):
+                continue
+            abs_path = os.path.abspath(full_path)
+            if abs_path == todo_path or abs_path in existing_paths or abs_path in hidden_paths:
+                continue
+            stem = os.path.splitext(fname)[0]
+            items.append([self._titleize_stem(stem), full_path, "default"])
         return items
 
     def _build_grouped_categories(self):
@@ -9483,6 +9591,8 @@ function filterAliases(q) {{
         _code_is_project_switch = self.current_config_file != getattr(self, '_code_session_loaded_for', None)
         self._code_session_loaded_for = self.current_config_file
         if hasattr(self, '_code_session') and _code_is_project_switch:
+            if self._code_session.live_view_active:
+                self._code_editor_live_view_set_active(self._code_session, False)
             self._code_session.editing = False
             self._code_session.path = None
             self._code_session.language = None
@@ -14041,6 +14151,114 @@ function filterAliases(q) {{
                             )
                         )
 
+            # Add Project Documents category at the bottom of Column 1 — same guard/
+            # placement reasoning as the Tagged Files block directly below (Resources
+            # only in Focus layout, unconditional in Standard layout): files dropped
+            # directly into this project's own Documents subfolder that aren't yet a
+            # real launcher item anywhere (see _get_project_documents_category_items()).
+            # Rendered as its own self-contained block (not through the generic
+            # category/grouped-bucket machinery) since these items have no real
+            # self.COLUMN_1 backing to drag/rename/delete — only AI/real items do.
+            if (
+                col_idx == 0 and not hide_launchers_for_folder_panel
+                and not (focus_launcher_tab_active and self.active_launcher_tab == "docs")
+            ):
+                project_doc_items = self._get_project_documents_category_items()
+                if project_doc_items:
+                    proj_docs_container = QWidget()
+                    proj_docs_container_layout = QVBoxLayout(proj_docs_container)
+                    proj_docs_container_layout.setSpacing(0)
+                    proj_docs_container_layout.setContentsMargins(0, 0, 0, 0)
+
+                    proj_docs_header = QPushButton("📁 Project Documents")
+                    proj_docs_header.setMinimumHeight(30)
+                    proj_docs_header.setStyleSheet(f"""
+                        QPushButton {{
+                            text-align: left;
+                            padding-left: 10px;
+                            background-color: {self.t('bg_warning')};
+                            color: {self.t('fg_on_dark')};
+                            border: 2px solid {self.t('bg_warning')};
+                            border-radius: 5px;
+                            font-weight: bold;
+                            font-size: 12px;
+                        }}
+                        QPushButton:hover {{
+                            background-color: {self.t('bg_category_hover')};
+                            border: 2px solid {self.t('border_dark')};
+                            color: {self.t('fg_on_dark')};
+                        }}
+                    """)
+                    proj_docs_header.setToolTip(
+                        "Files found directly in this project's Documents folder that "
+                        "aren't filed anywhere else yet"
+                    )
+                    proj_docs_container_layout.addWidget(proj_docs_header)
+
+                    proj_docs_group = QGroupBox()
+                    proj_docs_group.setStyleSheet(f"""
+                        QGroupBox {{
+                            font-weight: bold;
+                            border: 1px solid {self.t('border')};
+                            border-top: none;
+                            border-top-left-radius: 0px;
+                            border-top-right-radius: 0px;
+                            border-bottom-left-radius: 5px;
+                            border-bottom-right-radius: 5px;
+                            padding-top: 10px;
+                            background-color: {self.t('bg_purple_light')};
+                            margin-top: 0px;
+                        }}
+                    """)
+                    proj_docs_group_layout = QVBoxLayout()
+                    proj_docs_group_layout.setSpacing(3)
+
+                    for display_name, full_path, app in project_doc_items:
+                        row = QWidget()
+                        row_layout = QHBoxLayout(row)
+                        row_layout.setContentsMargins(0, 0, 0, 0)
+                        row_layout.setSpacing(2)
+
+                        file_btn = QPushButton(f"📄 {display_name}")
+                        file_btn.setMinimumHeight(30)
+                        file_btn.setStyleSheet(f"""
+                            QPushButton {{
+                                text-align: left;
+                                padding-left: 10px;
+                                background-color: {self.t('bg_button')};
+                                color: {self.t('fg_primary')};
+                                border: 1px solid {self.t('border')};
+                                border-radius: {_pf_btn_radius};
+                            }}
+                            QPushButton:hover {{
+                                background-color: {self.t('bg_warning')};
+                                color: {self.t('fg_on_dark')};
+                                border: 1px solid {self.t('bg_warning')};
+                            }}
+                        """)
+                        file_btn.setToolTip(f"{full_path}\n(Not yet filed as a launcher item)")
+                        file_btn.clicked.connect(
+                            lambda checked=False, p=full_path, a=app: self.open_in_app(p, a)
+                        )
+                        row_layout.addWidget(file_btn, 1)
+
+                        if self.edit_mode:
+                            hide_btn = QPushButton("👁")
+                            hide_btn.setFixedWidth(28)
+                            hide_btn.setMinimumHeight(30)
+                            hide_btn.setToolTip("Hide from Project Documents")
+                            hide_btn.setStyleSheet(self.get_item_button_style())
+                            hide_btn.clicked.connect(
+                                lambda checked=False, p=full_path: self._toggle_project_doc_item_hidden(p)
+                            )
+                            row_layout.addWidget(hide_btn)
+
+                        proj_docs_group_layout.addWidget(row)
+
+                    proj_docs_group.setLayout(proj_docs_group_layout)
+                    proj_docs_container_layout.addWidget(proj_docs_group)
+                    column_layout.addWidget(proj_docs_container)
+
             # Add Tagged Files category at the bottom of Column 1 — Resources only in
             # Focus layout (not Docs): this block isn't part of the Docs/Resources
             # tab-content dispatch above, so without this guard it renders unconditionally
@@ -15200,50 +15418,6 @@ function filterAliases(q) {{
         if self.layout_mode == "focus":
             self.create_notes_toolbar(notes_panel_layout)
 
-        notes_panel_layout.addWidget(self.notes_webview, 1)
-
-        # Only reload notes content into the webview when the project, layout, or theme has
-        # actually changed since the last load (the paper CSS depends on layout_mode/
-        # current_theme) — an incidental refresh (editing a launcher, etc.) just re-adds the
-        # already-loaded, already-live webview to its (possibly freshly-rebuilt) container.
-        #
-        # Lazy in Focus layout — only initializes Notes' Muya session here when Notes is
-        # actually the active viewer tab; otherwise deferred to switch_to_viewer_mode()'s
-        # own "notes" branch, the same pattern _ensure_web_tabs_loaded() already uses for
-        # Web tabs. Initializing Muya was found to reliably crash the whole app on at least
-        # one machine (a fatal QtWebEngine GPU-compositor SIGILL, occurring within ~100ms of
-        # Muya's own init and independent of actual page content size — confirmed via a
-        # DOM-size probe showing normal, tiny dimensions right up to the crash) — so doing
-        # this unconditionally in the background on every project load, even when the user
-        # is looking at an entirely different tab (or none at all, e.g. Folder), was a real
-        # crash risk on that machine, not just wasted work. Standard layout's Notes column
-        # is a fixed, always-visible pane (not a tab that can be hidden), so it stays eager
-        # there — there's no "not yet looking at it" state to defer to.
-        notes_reload_key = (self.current_config_file, self.layout_mode, self.current_theme)
-        notes_is_active_or_fixed = self.layout_mode != "focus" or self.column2_mode == "notes"
-        notes_should_reload = notes_is_active_or_fixed and getattr(self, '_notes_loaded_for', None) != notes_reload_key
-        if notes_should_reload:
-            self._notes_loaded_for = notes_reload_key
-            # A genuine reload is about to happen below — clear the "already showing this
-            # tab" tracker so _activate_notes_tab()'s skip-guard doesn't mistake the index
-            # match for content that's actually on screen yet (it isn't, this is the reload).
-            self._notes_tab_content_loaded_index = None
-            # self.notes_tabs was already (re)built from disk in load_notes(), above — just
-            # activate whichever tab was active (never _open_notes_tab(), which would create
-            # a brand new one instead of restoring the existing list).
-            _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
-            self._activate_notes_tab(_restore_notes_index)
-
-        # Same reload-gating idea as Notes just above — lazy, only initializing To-Do's
-        # Muya session when it's actually the active viewer tab, for the same crash-
-        # avoidance reason (see the comment on Notes above). To-Do has no Standard-layout
-        # fixed-pane equivalent, so this is unconditionally lazy, no layout branching needed.
-        todo_reload_key = (self.current_config_file, self.current_theme)
-        todo_should_reload = self.column2_mode == "todo" and getattr(self, '_todo_loaded_for', None) != todo_reload_key
-        if todo_should_reload:
-            self._todo_loaded_for = todo_reload_key
-            self._open_todo_in_muya()
-
         # Refresh / Live View — reload the CURRENTLY LOADED note from disk, or watch it
         # continuously for external edits (e.g. another synced device, or an AI agent
         # editing the file directly). Deliberately a separate row, NOT inside
@@ -15253,10 +15427,13 @@ function filterAliases(q) {{
         # self._notes_muya_session.path, whatever that currently is (the project's own
         # note, or an arbitrary one opened via _open_note_in_notes_tab() — Focus layout
         # only) — so they stay visible and working regardless of which note is shown,
-        # rather than being hidden along with the project-note-only controls.
+        # rather than being hidden along with the project-note-only controls. Placed
+        # ABOVE the webview (not below, next to the archive bar, as originally built) so
+        # it sits in the same "top of the panel" spot as the Code Editor's own Refresh/
+        # Live View buttons, by request.
         notes_action_row = QWidget()
         notes_action_layout = QHBoxLayout(notes_action_row)
-        notes_action_layout.setContentsMargins(0, 5, 0, 0)
+        notes_action_layout.setContentsMargins(0, 0, 0, 5)
 
         notes_action_btn_style = f"""
             QPushButton {{
@@ -15317,6 +15494,50 @@ function filterAliases(q) {{
 
         notes_panel_layout.addWidget(notes_action_row)
         self._immersive_hide_widgets.append(notes_action_row)
+
+        notes_panel_layout.addWidget(self.notes_webview, 1)
+
+        # Only reload notes content into the webview when the project, layout, or theme has
+        # actually changed since the last load (the paper CSS depends on layout_mode/
+        # current_theme) — an incidental refresh (editing a launcher, etc.) just re-adds the
+        # already-loaded, already-live webview to its (possibly freshly-rebuilt) container.
+        #
+        # Lazy in Focus layout — only initializes Notes' Muya session here when Notes is
+        # actually the active viewer tab; otherwise deferred to switch_to_viewer_mode()'s
+        # own "notes" branch, the same pattern _ensure_web_tabs_loaded() already uses for
+        # Web tabs. Initializing Muya was found to reliably crash the whole app on at least
+        # one machine (a fatal QtWebEngine GPU-compositor SIGILL, occurring within ~100ms of
+        # Muya's own init and independent of actual page content size — confirmed via a
+        # DOM-size probe showing normal, tiny dimensions right up to the crash) — so doing
+        # this unconditionally in the background on every project load, even when the user
+        # is looking at an entirely different tab (or none at all, e.g. Folder), was a real
+        # crash risk on that machine, not just wasted work. Standard layout's Notes column
+        # is a fixed, always-visible pane (not a tab that can be hidden), so it stays eager
+        # there — there's no "not yet looking at it" state to defer to.
+        notes_reload_key = (self.current_config_file, self.layout_mode, self.current_theme)
+        notes_is_active_or_fixed = self.layout_mode != "focus" or self.column2_mode == "notes"
+        notes_should_reload = notes_is_active_or_fixed and getattr(self, '_notes_loaded_for', None) != notes_reload_key
+        if notes_should_reload:
+            self._notes_loaded_for = notes_reload_key
+            # A genuine reload is about to happen below — clear the "already showing this
+            # tab" tracker so _activate_notes_tab()'s skip-guard doesn't mistake the index
+            # match for content that's actually on screen yet (it isn't, this is the reload).
+            self._notes_tab_content_loaded_index = None
+            # self.notes_tabs was already (re)built from disk in load_notes(), above — just
+            # activate whichever tab was active (never _open_notes_tab(), which would create
+            # a brand new one instead of restoring the existing list).
+            _restore_notes_index = self.notes_active_index if 0 <= self.notes_active_index < len(self.notes_tabs) else 0
+            self._activate_notes_tab(_restore_notes_index)
+
+        # Same reload-gating idea as Notes just above — lazy, only initializing To-Do's
+        # Muya session when it's actually the active viewer tab, for the same crash-
+        # avoidance reason (see the comment on Notes above). To-Do has no Standard-layout
+        # fixed-pane equivalent, so this is unconditionally lazy, no layout branching needed.
+        todo_reload_key = (self.current_config_file, self.current_theme)
+        todo_should_reload = self.column2_mode == "todo" and getattr(self, '_todo_loaded_for', None) != todo_reload_key
+        if todo_should_reload:
+            self._todo_loaded_for = todo_reload_key
+            self._open_todo_in_muya()
 
         # Archive/Joplin/external-editor controls — all keyed to the project's own
         # get_notes_file_path()/get_archive_file_path() (archive_notes(), view_archive(),
@@ -18645,6 +18866,32 @@ function filterAliases(q) {{
         self.md_preview_btn.clicked.connect(self._muya_switch_to_preview)
         toolbar_layout.addWidget(self.md_preview_btn)
 
+        # Refresh + Live View — same pair/mechanism as Notes' and To-Do's own rows (see
+        # _general_webview_toggle_live_view()/_general_webview_refresh_from_disk()).
+        # Visibility is gated the same way md_preview_btn's is, in _update_md_edit_buttons().
+        self._md_toolbar_btn_style = btn_style
+        self.md_refresh_btn = QPushButton("↻ Refresh")
+        self.md_refresh_btn.setStyleSheet(btn_style)
+        self.md_refresh_btn.setToolTip("Reload this file from disk (discards unsaved changes, with confirmation)")
+        self.md_refresh_btn.clicked.connect(self._general_webview_refresh_from_disk)
+        toolbar_layout.addWidget(self.md_refresh_btn)
+
+        md_live_view_btn_style = btn_style + f"""
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+        self.md_live_view_btn = QPushButton("👁 Live View")
+        self.md_live_view_btn.setStyleSheet(md_live_view_btn_style)
+        self.md_live_view_btn.setToolTip(
+            "Watch this file on disk and show external edits near-instantly -- suspends autosave while on"
+        )
+        self.md_live_view_btn.setCheckable(True)
+        self.md_live_view_btn.clicked.connect(self._general_webview_toggle_live_view)
+        toolbar_layout.addWidget(self.md_live_view_btn)
+
         # "Edit Source" — opt-in counterpart to local .html/.htm's default behavior
         # (render it). Only visible when the webview is currently showing a local HTML
         # file as rendered content (not Muya-editing markdown). Mirrors the code editor's
@@ -19160,6 +19407,29 @@ function filterAliases(q) {{
         self.code_source_toggle_btn.clicked.connect(self._code_editor_switch_to_rendered)
         self.code_source_toggle_btn.setVisible(False)
         toolbar_layout.addWidget(self.code_source_toggle_btn)
+
+        # Refresh + Live View, in that order — matches the Notes panel's own row exactly
+        # (see notes_action_row in build_main_content()), both placed here in the TOP
+        # toolbar rather than a separate bottom row, by request.
+        self.code_refresh_btn = QPushButton("↻ Refresh")
+        self.code_refresh_btn.setStyleSheet(btn_style)
+        self.code_refresh_btn.setToolTip("Reload this file from disk (discards unsaved changes, with confirmation)")
+        self.code_refresh_btn.clicked.connect(self._code_editor_refresh_from_disk)
+        self.code_refresh_btn.setEnabled(bool(self._code_session.editing and self._code_session.path))
+        toolbar_layout.addWidget(self.code_refresh_btn)
+
+        # Watches the open file on disk and reloads it when changed externally (e.g. a
+        # pastebin-style .txt file edited from another device, or an AI agent writing to
+        # it directly) — see the "Live View (Code Editor)" block above _confirm_discard_
+        # code_changes() for the full mechanism and how it differs from Muya's version.
+        self.code_live_view_btn = QPushButton("👁 Live View")
+        self.code_live_view_btn.setStyleSheet(btn_style)
+        self.code_live_view_btn.setToolTip("Watch this file on disk and auto-reload when it changes externally")
+        self.code_live_view_btn.setCheckable(True)
+        self.code_live_view_btn.setChecked(self._code_session.live_view_active)
+        self.code_live_view_btn.setEnabled(bool(self._code_session.editing and self._code_session.path))
+        self.code_live_view_btn.clicked.connect(self._code_editor_toggle_live_view)
+        toolbar_layout.addWidget(self.code_live_view_btn)
 
         self.code_save_btn = QPushButton("💾 Save")
         self.code_save_btn.setStyleSheet(btn_style)
@@ -21921,8 +22191,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         # is about to be replaced out from under it (see _muya_live_view_set_active()).
         if session.live_view_active and not preserve_live_view:
             self._muya_live_view_set_active(session, False)
-            if session is getattr(self, '_notes_muya_session', None):
-                self._update_notes_live_view_btn()
+            self._sync_live_view_btn_for_session(session)
         editor_dir = os.path.join(self.script_dir, "assets", "muya")
         editor_html = os.path.join(editor_dir, "editor.html")
         if not os.path.exists(editor_html):
@@ -22503,6 +22772,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             self._todo_muya_session, todo_path,
             extra_css=self._todo_paper_css(), view_state=view_state
         )
+        self._update_todo_live_view_btn()
 
     def create_todo_toolbar(self, parent_layout):
         """The To-Do viewer's own minimal toolbar — just a single "☑ Add Task" button.
@@ -22542,6 +22812,33 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         toolbar_layout.addWidget(add_task_btn)
 
         toolbar_layout.addStretch()
+
+        # Refresh + Live View, same pair/order as Notes' and the general webview's own
+        # rows — see _todo_toggle_live_view()/_todo_refresh_from_disk().
+        self._todo_toolbar_btn_style = btn_style
+        self.todo_refresh_btn = QPushButton("↻ Refresh")
+        self.todo_refresh_btn.setStyleSheet(btn_style)
+        self.todo_refresh_btn.setToolTip("Reload todo.md from disk (discards unsaved changes, with confirmation)")
+        self.todo_refresh_btn.clicked.connect(self._todo_refresh_from_disk)
+        toolbar_layout.addWidget(self.todo_refresh_btn)
+
+        live_view_btn_style = btn_style + f"""
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border: 1px solid {self.t('bg_category_hover')};
+            }}
+        """
+        self.todo_live_view_btn = QPushButton("👁 Live View")
+        self.todo_live_view_btn.setStyleSheet(live_view_btn_style)
+        self.todo_live_view_btn.setToolTip(
+            "Watch todo.md on disk and show external edits near-instantly -- suspends autosave while on"
+        )
+        self.todo_live_view_btn.setCheckable(True)
+        self.todo_live_view_btn.clicked.connect(self._todo_toggle_live_view)
+        toolbar_layout.addWidget(self.todo_live_view_btn)
+        self._update_todo_live_view_btn()
+
         parent_layout.addWidget(toolbar_widget)
 
     def _prompt_and_add_as_todo(self, default_title, source_path=None):
@@ -23269,8 +23566,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         is_notes = session is getattr(self, '_notes_muya_session', None)
         if not path or not os.path.exists(path):
             self._muya_live_view_set_active(session, False)
+            self._sync_live_view_btn_for_session(session)
             if is_notes:
-                self._update_notes_live_view_btn()
                 self._update_notes_save_btn()
             self.set_status(f"Live View: {os.path.basename(path or '')} was deleted — Live View turned off", "error")
             return
@@ -23304,6 +23601,20 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             "window.__getMuyaCursorState ? window.__getMuyaCursorState() : null",
             on_cursor_captured,
         )
+
+    def _sync_live_view_btn_for_session(self, session):
+        """Dispatch to whichever Live View button belongs to `session` (Notes/To-Do/the
+        general webview) and resync it against the session's actual state. Used by the two
+        session-generic Live View hooks above (_load_muya_shell()'s auto-disable,
+        _muya_live_view_apply_pending_reload()'s deletion path) which are shared across all
+        three sessions and don't know ahead of time which UI (if any) exists for whichever
+        one is calling them."""
+        if session is getattr(self, '_notes_muya_session', None):
+            self._update_notes_live_view_btn()
+        elif session is getattr(self, '_todo_muya_session', None):
+            self._update_todo_live_view_btn()
+        elif session is getattr(self, '_muya_session', None):
+            self._update_general_webview_live_view_btn()
 
     def _notes_toggle_live_view(self):
         """Handler for the Notes panel's "👁 Live View" toggle button."""
@@ -23406,12 +23717,202 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         session.webview.page().runJavaScript(js, on_done)
 
+    # --- To-Do's own Refresh / Live View --------------------------------------------
+    # Same mechanism as Notes' pair above, just targeting _todo_muya_session/
+    # todo_refresh_btn/todo_live_view_btn instead — kept as separate, parallel functions
+    # rather than generalizing the toggle/button-update/refresh handlers themselves
+    # (only the session-generic Live View core above is actually shared), matching this
+    # file's own convention elsewhere (e.g. _toggle_ai_item_hidden() vs.
+    # _toggle_project_doc_item_hidden()). To-Do has no Save button of its own to sync
+    # (pure autosave, like the general webview) and no notes_data-style mirror to update.
+
+    def _todo_toggle_live_view(self):
+        """Handler for the To-Do viewer's "👁 Live View" toggle button."""
+        session = self._todo_muya_session
+        turning_on = self.todo_live_view_btn.isChecked()
+        if turning_on and not (session.editing and session.path and os.path.exists(session.path)):
+            self.todo_live_view_btn.setChecked(False)
+            self.set_status("✗ Live View: no file to watch", "error")
+            return
+        watched_path = session.path
+        ok = self._muya_live_view_set_active(session, turning_on)
+        if turning_on and not ok:
+            self.todo_live_view_btn.setChecked(False)
+            self.set_status(f"✗ Live View: could not watch {watched_path} (addPath failed)", "error")
+            self._update_todo_live_view_btn()
+            return
+        self._update_todo_live_view_btn()
+        if turning_on:
+            self.set_status(f"👁 Live View on — watching {watched_path}, autosave suspended", "info")
+        else:
+            self.set_status("Live View off — autosave resumed", "info")
+
+    def _update_todo_live_view_btn(self):
+        """Resyncs the Live View toggle (and gates Refresh) against the To-Do session's
+        actual state — mirrors _update_notes_live_view_btn()."""
+        if not hasattr(self, 'todo_live_view_btn'):
+            return
+        session = self._todo_muya_session
+        has_file = bool(session.path)
+        self.todo_live_view_btn.setChecked(session.live_view_active)
+        self.todo_live_view_btn.setEnabled(has_file)
+        if hasattr(self, 'todo_refresh_btn'):
+            self.todo_refresh_btn.setEnabled(has_file and not session.live_view_active)
+
+    def _todo_refresh_from_disk(self):
+        """Handler for the To-Do viewer's "↻ Refresh" button — mirrors
+        _notes_refresh_from_disk()/_do_notes_refresh_from_disk() exactly, targeting
+        _todo_muya_session instead."""
+        session = self._todo_muya_session
+        if not session.editing or not session.path:
+            return
+        if not os.path.exists(session.path):
+            self.set_status(f"✗ Refresh: {os.path.basename(session.path)} no longer exists", "error")
+            return
+
+        def on_dirty(is_dirty):
+            if is_dirty:
+                reply = QMessageBox.question(
+                    self, "Unsaved Changes",
+                    f"'{os.path.basename(session.path)}' has unsaved changes. "
+                    "Reloading from disk will discard them. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            self._do_todo_refresh_from_disk(session)
+
+        session.webview.page().runJavaScript(
+            "window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty
+        )
+
+    def _do_todo_refresh_from_disk(self, session):
+        try:
+            with open(session.path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.set_status(f"✗ Refresh failed: {e}", "error")
+            return
+        processed = self._absolutize_note_images(content, session.path)
+        js = f"window.__refreshMuyaMarkdown && window.__refreshMuyaMarkdown({json.dumps(processed)})"
+
+        def on_done(ok):
+            session.dirty = False
+
+            def _restore_refresh_btn():
+                if getattr(self, 'todo_refresh_btn', None):
+                    self.todo_refresh_btn.setText("↻ Refresh")
+                    self.todo_refresh_btn.setStyleSheet(getattr(self, '_todo_toolbar_btn_style', ''))
+
+            self._flash_button_saved(getattr(self, 'todo_refresh_btn', None), _restore_refresh_btn)
+            self.set_status(f"✓ Refreshed {os.path.basename(session.path)}", "success")
+
+        session.webview.page().runJavaScript(js, on_done)
+
+    # --- General webview's own Refresh / Live View ----------------------------------
+    # Same mechanism again, targeting _muya_session/md_refresh_btn/md_live_view_btn —
+    # the Standard-layout "open an arbitrary local .md file" viewer. Like To-Do, no Save
+    # button or notes_data-style mirror to sync; _update_md_edit_buttons() gates visibility
+    # (markdown-editing only) the same way it already gates md_edit_btn/md_preview_btn.
+
+    def _general_webview_toggle_live_view(self):
+        """Handler for the general webview's "👁 Live View" toggle button."""
+        session = self._muya_session
+        turning_on = self.md_live_view_btn.isChecked()
+        if turning_on and not (session.editing and session.path and os.path.exists(session.path)):
+            self.md_live_view_btn.setChecked(False)
+            self.set_status("✗ Live View: no file to watch", "error")
+            return
+        watched_path = session.path
+        ok = self._muya_live_view_set_active(session, turning_on)
+        if turning_on and not ok:
+            self.md_live_view_btn.setChecked(False)
+            self.set_status(f"✗ Live View: could not watch {watched_path} (addPath failed)", "error")
+            self._update_general_webview_live_view_btn()
+            return
+        self._update_general_webview_live_view_btn()
+        if turning_on:
+            self.set_status(f"👁 Live View on — watching {watched_path}, autosave suspended", "info")
+        else:
+            self.set_status("Live View off — autosave resumed", "info")
+
+    def _update_general_webview_live_view_btn(self):
+        """Resyncs the Live View toggle (and gates Refresh) against the general webview
+        session's actual state — mirrors _update_notes_live_view_btn()."""
+        if not hasattr(self, 'md_live_view_btn'):
+            return
+        session = self._muya_session
+        has_file = bool(session.path)
+        self.md_live_view_btn.setChecked(session.live_view_active)
+        self.md_live_view_btn.setEnabled(has_file)
+        if hasattr(self, 'md_refresh_btn'):
+            self.md_refresh_btn.setEnabled(has_file and not session.live_view_active)
+
+    def _general_webview_refresh_from_disk(self):
+        """Handler for the general webview's "↻ Refresh" button — mirrors
+        _notes_refresh_from_disk()/_do_notes_refresh_from_disk() exactly, targeting
+        _muya_session instead."""
+        session = self._muya_session
+        if not session.editing or not session.path:
+            return
+        if not os.path.exists(session.path):
+            self.set_status(f"✗ Refresh: {os.path.basename(session.path)} no longer exists", "error")
+            return
+
+        def on_dirty(is_dirty):
+            if is_dirty:
+                reply = QMessageBox.question(
+                    self, "Unsaved Changes",
+                    f"'{os.path.basename(session.path)}' has unsaved changes. "
+                    "Reloading from disk will discard them. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            self._do_general_webview_refresh_from_disk(session)
+
+        session.webview.page().runJavaScript(
+            "window.__muyaIsDirty ? window.__muyaIsDirty() : false", on_dirty
+        )
+
+    def _do_general_webview_refresh_from_disk(self, session):
+        try:
+            with open(session.path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.set_status(f"✗ Refresh failed: {e}", "error")
+            return
+        processed = self._absolutize_note_images(content, session.path)
+        js = f"window.__refreshMuyaMarkdown && window.__refreshMuyaMarkdown({json.dumps(processed)})"
+
+        def on_done(ok):
+            session.dirty = False
+
+            def _restore_refresh_btn():
+                if getattr(self, 'md_refresh_btn', None):
+                    self.md_refresh_btn.setText("↻ Refresh")
+                    self.md_refresh_btn.setStyleSheet(getattr(self, '_md_toolbar_btn_style', ''))
+
+            self._flash_button_saved(getattr(self, 'md_refresh_btn', None), _restore_refresh_btn)
+            self.set_status(f"✓ Refreshed {os.path.basename(session.path)}", "success")
+
+        session.webview.page().runJavaScript(js, on_done)
+
     def _muya_switch_to_preview(self):
         """Leave the main webview's Muya editor (autosaving first) and show the rendered read-only preview."""
         session = self._muya_session
         if not session.path or not session.webview:
             return
         path = session.path
+        # Leaving the editor entirely for the read-only preview — stop watching this path
+        # (now that Live View exists on this session too; see _general_webview_toggle_
+        # live_view()) rather than leaving a stale watcher on a path session.path is about
+        # to be cleared from.
+        if session.live_view_active:
+            self._muya_live_view_set_active(session, False)
+            self._update_general_webview_live_view_btn()
         session.autosave_timer.stop()
 
         def on_markdown(markdown):
@@ -23434,6 +23935,11 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         is_md = bool(getattr(self, 'webview_md_path', None))
         self.md_edit_btn.setVisible(is_md and not self._muya_session.editing)
         self.md_preview_btn.setVisible(is_md and self._muya_session.editing)
+        if hasattr(self, 'md_refresh_btn'):
+            self.md_refresh_btn.setVisible(is_md and self._muya_session.editing)
+        if hasattr(self, 'md_live_view_btn'):
+            self.md_live_view_btn.setVisible(is_md and self._muya_session.editing)
+        self._update_general_webview_live_view_btn()
 
         # "Edit Source" — visible only when the webview is showing a local .html/.htm
         # file as rendered content (not markdown-editing, not a plain URL/non-HTML file).
@@ -23527,7 +24033,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
             return {"keyword": "#ff7b72", "string": "#a5d6ff", "comment": "#8b949e"}
         return {"keyword": "#cf222e", "string": "#0a3069", "comment": "#6e7781"}
 
-    def _load_code_editor_shell(self, session, path, content, language, initial_dirty=False, view_state=None):
+    def _load_code_editor_shell(self, session, path, content, language, initial_dirty=False,
+                                 view_state=None, preserve_live_view=False):
         """Load the code editor shell (CodeMirror 6 or Monaco, per resolve_code_editor_backend())
         into session.webview with the given content. This is the ONLY function in the whole
         file that needs to know two backends exist — CodeEditorSession/CodeTabState, the
@@ -23539,9 +24046,22 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         restoring an Editor tab whose cached content differs from disk (the editor's own
         dirty tracking would otherwise read false, since nothing's changed since THIS init).
         view_state, if given, is an opaque dict captured by __getCodeEditorViewState() before
-        this tab was last switched away from — see _activate_code_tab()."""
+        this tab was last switched away from — see _activate_code_tab().
+
+        preserve_live_view=True skips the auto-disable below — used ONLY by
+        _code_editor_live_view_apply_pending_reload(), which deliberately reuses this full-
+        reload path for its own external-change pickups and needs Live View to stay ON
+        through its own reload, not be treated as "this file is being replaced out from
+        under it" (mirrors _load_muya_shell()'s identical preserve_live_view param)."""
         if not session.webview:
             return
+        # Every full-reload path (tab switch, project switch, theme toggle) funnels through
+        # here — one chokepoint to auto-disable Live View whenever the file it was watching
+        # is about to be replaced out from under it (see _muya_live_view_set_active()'s
+        # Code Editor counterpart, _code_editor_live_view_set_active()).
+        if session.live_view_active and not preserve_live_view:
+            self._code_editor_live_view_set_active(session, False)
+            self._update_code_editor_live_view_btn()
         backend = self.resolve_code_editor_backend()
         editor_dir = os.path.join(self.script_dir, "assets", "monaco" if backend == "monaco" else "codemirror")
         editor_html = os.path.join(editor_dir, "editor.html")
@@ -23672,6 +24192,200 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if self._code_session.webview:
             js = f"window.__setCodeEditorWrap && window.__setCodeEditorWrap({json.dumps(enabled)})"
             self._code_session.webview.page().runJavaScript(js)
+
+    # --- Live View (Code Editor) -----------------------------------------------------
+    # Same QFileSystemWatcher/debounce mechanism as Muya's Live View (see
+    # "Live View / Refresh" above) — watches the open file on disk and pushes external
+    # changes into the editor. The one deliberate difference: Muya's version always wins
+    # ("external content always wins — no dirty-check, no confirmation"); this version
+    # skips a pending reload while the tab is dirty instead, since CodeEditorSession is
+    # built around never silently discarding unsaved edits (no autosave_timer exists here
+    # for the same reason — see its class docstring). There's also no autosave_timer to
+    # suspend/resume around Live View, unlike Muya — dirty_poll_timer only ever updates
+    # the Save button's label, so it keeps running unconditionally either way.
+
+    def _code_editor_live_view_set_active(self, session, active):
+        """Turn Live View on/off for the code editor's one shared session. Mirrors
+        _muya_live_view_set_active() — see that docstring for why addPath()'s return value
+        matters (an exhausted OS inotify watch limit would otherwise look like success)."""
+        if active == session.live_view_active:
+            return True
+        if active:
+            if not session.path or not os.path.exists(session.path):
+                return False
+            if session.live_view_watcher.files():
+                session.live_view_watcher.removePaths(session.live_view_watcher.files())
+            if not session.live_view_watcher.addPath(session.path):
+                return False
+            session.live_view_active = True
+        else:
+            session.live_view_active = False
+            session.live_view_debounce_timer.stop()
+            if session.live_view_watcher.files():
+                session.live_view_watcher.removePaths(session.live_view_watcher.files())
+        return True
+
+    def _code_editor_live_view_file_changed(self, session, changed_path):
+        """QFileSystemWatcher.fileChanged handler — mirrors _muya_live_view_file_changed(),
+        including the re-add-if-dropped handling for editors/sync clients that replace a
+        file via unlink+recreate rather than an in-place write."""
+        if not session.live_view_active:
+            return
+        if session.path and os.path.exists(session.path) and session.path not in session.live_view_watcher.files():
+            session.live_view_watcher.addPath(session.path)
+        session.live_view_debounce_timer.start()
+
+    def _code_editor_live_view_apply_pending_reload(self, session):
+        """Debounced external-change handler. Skips the reload (leaving Live View ON) if
+        the tab is currently dirty — see the block comment above for why this deliberately
+        doesn't match Muya's unconditional overwrite. A save made after a skip does NOT
+        retroactively retry the skipped reload; the next external change will still be
+        picked up normally, so this only matters if nothing else touches the file again."""
+        if not session.live_view_active or not session.editing or not session.webview:
+            return
+        path = session.path
+        if not path or not os.path.exists(path):
+            self._code_editor_live_view_set_active(session, False)
+            self._update_code_editor_live_view_btn()
+            self.set_status(f"Live View: {os.path.basename(path or '')} was deleted — Live View turned off", "error")
+            return
+        if session.dirty:
+            self.set_status(
+                f"👁 Live View: external change to {os.path.basename(path)} skipped — unsaved edits present",
+                "info",
+            )
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.set_status(f"✗ Live View: could not read {os.path.basename(path)}: {e}", "error")
+            return
+
+        def on_view_state_captured(view_state):
+            self._load_code_editor_shell(
+                session, path, content, session.language,
+                initial_dirty=False, view_state=view_state, preserve_live_view=True,
+            )
+            self._update_code_editor_buttons()
+            self.set_status(f"👁 Live View: picked up external change to {os.path.basename(path)}", "info")
+            if os.path.exists(path) and path not in session.live_view_watcher.files():
+                session.live_view_watcher.addPath(path)
+
+        session.webview.page().runJavaScript(
+            "window.__getCodeEditorViewState ? window.__getCodeEditorViewState() : null",
+            on_view_state_captured,
+        )
+
+    def _code_editor_toggle_live_view(self):
+        """Handler for the Code Editor toolbar's "👁 Live View" toggle button."""
+        session = self._code_session
+        turning_on = self.code_live_view_btn.isChecked()
+        if turning_on and not (session.editing and session.path and os.path.exists(session.path)):
+            self.code_live_view_btn.setChecked(False)
+            self.set_status("✗ Live View: no file open to watch", "error")
+            return
+        watched_path = session.path
+        ok = self._code_editor_live_view_set_active(session, turning_on)
+        if turning_on and not ok:
+            self.code_live_view_btn.setChecked(False)
+            self.set_status(f"✗ Live View: could not watch {watched_path} (addPath failed)", "error")
+            self._update_code_editor_live_view_btn()
+            return
+        self._update_code_editor_live_view_btn()
+        if turning_on:
+            self.set_status(f"👁 Live View on — watching {watched_path}", "info")
+        else:
+            self.set_status("Live View off", "info")
+
+    def _update_code_editor_live_view_btn(self):
+        """Resyncs the Live View toggle (and gates Refresh) against the session's actual
+        state — mirrors _update_notes_live_view_btn()."""
+        session = self._code_session
+        has_file = bool(session.editing and session.path)
+        if hasattr(self, 'code_live_view_btn'):
+            self.code_live_view_btn.setChecked(session.live_view_active)
+            self.code_live_view_btn.setEnabled(has_file)
+            if session.live_view_active:
+                self.code_live_view_btn.setToolTip(f"Watching {session.path} for external changes — click to stop")
+            else:
+                self.code_live_view_btn.setToolTip("Watch this file on disk and auto-reload when it changes externally")
+        if hasattr(self, 'code_refresh_btn'):
+            # Disabled while Live View is on — it already keeps this file current, same
+            # convention as Notes' refresh_btn.setEnabled(has_file and not live_view_active).
+            self.code_refresh_btn.setEnabled(has_file and not session.live_view_active)
+
+    def _code_editor_refresh_from_disk(self):
+        """Handler for the Code Editor toolbar's "↻ Refresh" button — reloads the current
+        file from disk into the already-open editor without wiping undo history
+        (window.__refreshCodeEditorContent, the undo-preserving counterpart to
+        __initCodeEditor — see assets/codemirror|monaco/editor.html), restoring the cursor/
+        scroll position afterward. Confirms first (default Cancel) if the editor has
+        unsaved changes — mirrors _notes_refresh_from_disk() exactly, adapted to the Code
+        Editor's own dirty/view-state bridge functions."""
+        session = self._code_session
+        if not session.editing or not session.path:
+            return
+        if not os.path.exists(session.path):
+            self.set_status(f"✗ Refresh: {os.path.basename(session.path)} no longer exists", "error")
+            return
+
+        def on_dirty(is_dirty):
+            if is_dirty:
+                reply = QMessageBox.question(
+                    self, "Unsaved Changes",
+                    f"'{os.path.basename(session.path)}' has unsaved changes. "
+                    "Reloading from disk will discard them. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            self._do_code_editor_refresh_from_disk(session)
+
+        session.webview.page().runJavaScript(
+            "window.__codeEditorIsDirty ? window.__codeEditorIsDirty() : false", on_dirty
+        )
+
+    def _do_code_editor_refresh_from_disk(self, session):
+        try:
+            with open(session.path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            self.set_status(f"✗ Refresh failed: {e}", "error")
+            return
+
+        def on_view_state_captured(view_state):
+            js = (
+                "window.__refreshCodeEditorContent && window.__refreshCodeEditorContent("
+                f"{json.dumps(content)}, {json.dumps(view_state)})"
+            )
+
+            def on_done(ok):
+                session.dirty = False
+                # Also clear the active tab's own sticky dirty flag/cached content — same
+                # reasoning as _code_editor_save()'s identical block.
+                if 0 <= self.code_active_index < len(self.code_tabs):
+                    active_tab = self.code_tabs[self.code_active_index]
+                    active_tab.dirty = False
+                    active_tab.pending_unsaved_content = None
+                self._update_code_editor_buttons()
+                self._rebuild_code_tab_strip()
+
+                def _restore_refresh_btn():
+                    if getattr(self, 'code_refresh_btn', None):
+                        self.code_refresh_btn.setText("↻ Refresh")
+                        self.code_refresh_btn.setStyleSheet(getattr(self, '_code_toolbar_btn_style', ''))
+
+                self._flash_button_saved(getattr(self, 'code_refresh_btn', None), _restore_refresh_btn)
+                self.set_status(f"✓ Refreshed {os.path.basename(session.path)}", "success")
+
+            session.webview.page().runJavaScript(js, on_done)
+
+        session.webview.page().runJavaScript(
+            "window.__getCodeEditorViewState ? window.__getCodeEditorViewState() : null",
+            on_view_state_captured,
+        )
 
     def _confirm_discard_code_changes(self):
         """Returns True if it's safe to proceed (no dirty code file open anywhere, or the
@@ -24011,6 +24725,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         self.code_tabs.pop(index)
         if not self.code_tabs:
             self.code_active_index = -1
+            if self._code_session.live_view_active:
+                self._code_editor_live_view_set_active(self._code_session, False)
             self._code_session.editing = False
             self._code_session.path = None
             self._code_session.language = None
@@ -24110,6 +24826,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         if hasattr(self, 'code_source_toggle_btn'):
             is_html = bool(session.path) and os.path.splitext(session.path)[1].lower() in ('.html', '.htm')
             self.code_source_toggle_btn.setVisible(is_html)
+        self._update_code_editor_live_view_btn()
 
     def _code_editor_switch_to_rendered(self):
         """"👁 Rendered" button: leave the code editor for the currently-open .html/.htm
@@ -24121,6 +24838,8 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         path = session.path
         if session.dirty and not self._confirm_discard_code_changes():
             return
+        if session.live_view_active:
+            self._code_editor_live_view_set_active(session, False)
         session.editing = False
         session.dirty = False
         session.dirty_poll_timer.stop()

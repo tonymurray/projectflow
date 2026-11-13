@@ -138,6 +138,30 @@
     return view ? view.state.doc.toString() : "";
   };
 
+  // Undo-preserving counterpart to __initCodeEditor (which recreates the EditorState from
+  // scratch, wiping undo history) -- used by the "↻ Refresh" button to pull in an external
+  // change without losing whatever undo history existed before it. A single dispatch()
+  // replacing the whole document is one ordinary transaction, recorded onto CM6's existing
+  // history by the history extension basicSetup already includes -- unlike
+  // __initCodeEditor's EditorState.create(), nothing here discards prior entries.
+  // viewState (if given) is
+  // restored the same way __initCodeEditor's own cursor/scroll restore works.
+  window.__refreshCodeEditorContent = function (content, viewState) {
+    if (!view) return false;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content || "" } });
+    dirty = false;
+    if (viewState) {
+      try {
+        var docLen = view.state.doc.length;
+        var anchor = Math.min(viewState.anchor || 0, docLen);
+        var head = Math.min(viewState.head || 0, docLen);
+        view.dispatch({ selection: { anchor: anchor, head: head } });
+      } catch (e) {}
+      if (viewState.scrollTop) view.scrollDOM.scrollTop = viewState.scrollTop;
+    }
+    return true;
+  };
+
   window.__codeEditorIsDirty = function () {
     return !!dirty;
   };

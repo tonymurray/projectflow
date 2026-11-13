@@ -2,6 +2,42 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-11-13 (Desktop: automatic "Project Documents" section; Refresh/Live View extended to the Code Editor, To-Do, and the general webview — and repositioned to the top everywhere)
+
+### Added
+- **"📁 Project Documents" launcher section**: any file dropped directly into a project's
+  own `documents/<slug>/` folder (e.g. via Nextcloud sync) that isn't already a real
+  launcher item anywhere in the project now appears automatically as a launcher, the
+  moment the project is opened — no manual "Add Launcher" step needed. Live/dynamic and
+  never written to the project's config, following the same model as the existing
+  automatic "AI" category: computed fresh on every render, absent entirely for a project
+  that's never used the Documents folder. Scans only the top level (no subfolders);
+  skips dotfiles, symlinks, and `todo.md` (the To-Do viewer's own file, not a dropped-in
+  document). Each item opens via the normal default-type routing (`.md` → Notes editor,
+  `.pdf` → PDF viewer, images → image viewer, etc.). Has its own 👁 hide toggle in edit
+  mode (personal, machine-local — never written to the project file), sharing the AI
+  category's existing "N hidden — Manage" dialog.
+- **Live View added to the Code Editor**: files like a pastebin-style `.txt` dropped
+  into a synced folder default into the Code Editor rather than the Notes/Muya editor,
+  so they never had access to Muya's own Live View until now. Watches the open file on
+  disk and reloads it on external change — unlike Muya's "external content always wins,"
+  a pending reload is skipped (not applied) while the tab has unsaved edits, rather than
+  silently discarding them, matching this editor's existing no-autosave philosophy.
+- **Refresh button added to the Code Editor**, undo-preserving (unlike a full reload):
+  a new shared bridge function, `window.__refreshCodeEditorContent()`, implemented
+  natively per backend — a single CodeMirror 6 transaction, or Monaco's `executeEdits()`
+  — so existing undo history survives a refresh instead of being wiped the way a full
+  `__initCodeEditor()` reinit would.
+- **Refresh + Live View extended to the To-Do viewer and the general webview** (the
+  viewer used for an arbitrary `.md` file in Standard layout) — previously Notes-only.
+  Both now get the same "↻ Refresh" / "👁 Live View" pair Notes already had.
+
+### Changed
+- **Notes' "↻ Refresh" / "👁 Live View" buttons moved from below the editor (just above
+  the archive bar) to above it**, directly under the toolbar — the same "top of the
+  panel" placement the Code Editor's own pair already used, for consistency across both
+  editors.
+
 ## 2026-11-02 (Desktop: "Insert Clipboard" button + voice dictation insert-position fix)
 
 ### Added

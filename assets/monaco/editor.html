@@ -206,6 +206,22 @@
     return currentModel ? currentModel.getValue() : "";
   };
 
+  // Undo-preserving counterpart to __initCodeEditor (which disposes and recreates the
+  // model, wiping undo history) -- used by the "↻ Refresh" button. executeEdits() is the
+  // same undo-history-safe programmatic-edit mechanism cutCurrentLine() already uses above,
+  // applied to the whole document in one edit rather than recreating the model, so prior
+  // undo history survives. viewState (if given) is restored the same way doInit() does.
+  window.__refreshCodeEditorContent = function (content, viewState) {
+    if (!editor || !currentModel) return false;
+    var fullRange = currentModel.getFullModelRange();
+    editor.executeEdits("refreshFromDisk", [{ range: fullRange, text: content || "", forceMoveMarkers: true }]);
+    dirty = false;
+    if (viewState) {
+      try { editor.restoreViewState(viewState); } catch (e) {}
+    }
+    return true;
+  };
+
   window.__codeEditorIsDirty = function () {
     return !!dirty;
   };
