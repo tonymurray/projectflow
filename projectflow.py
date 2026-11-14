@@ -2996,6 +2996,77 @@ class ProjectFlowApp(QMainWindow):
 
         layout.addRow(QLabel(""))
 
+        # Category Header Colors — custom colors for the two automatic/dynamic launcher
+        # category headers ("📁 Project Documents", "🏷️ Tagged Files" — see CLAUDE.md's
+        # Adding Resources / Group-by-Type Launcher View sections). Unlike Modern Theme
+        # Colors above, these apply in EVERY theme, not just "modern" — so each swatch
+        # tracks an 'is_default' flag alongside its working 'hex' (see apply_settings()):
+        # resetting clears the settings key entirely rather than freezing in today's
+        # computed theme color, so the header keeps following the active theme's own
+        # bg_warning/bg_purple automatically until the user picks an explicit override.
+        category_colors_label = QLabel("Category Header Colors:")
+        category_colors_label.setStyleSheet(f"color: {self.t('fg_primary')}; font-weight: bold; font-size: 13px;")
+        layout.addRow(category_colors_label)
+
+        category_colors_hint = QLabel("Applies in every theme. ↺ clears the override and follows the theme's own color again.")
+        category_colors_hint.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 11px;")
+        layout.addRow("", category_colors_hint)
+
+        def _style_category_swatch(btn, hex_value):
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {hex_value}; "
+                f"border: 1px solid {self.t('border')}; border-radius: 4px; }}"
+            )
+
+        def _pick_category_color(label_text, btn):
+            from PyQt6.QtWidgets import QColorDialog
+            from PyQt6.QtGui import QColor
+            chosen = QColorDialog.getColor(QColor(btn.property('hex')), self, f"Choose {label_text}")
+            if chosen.isValid():
+                btn.setProperty('hex', chosen.name())
+                btn.setProperty('is_default', False)
+                _style_category_swatch(btn, chosen.name())
+
+        def _reset_category_color(default_hex, btn):
+            btn.setProperty('hex', default_hex)
+            btn.setProperty('is_default', True)
+            _style_category_swatch(btn, default_hex)
+
+        self._settings_category_color_swatches = {}
+        category_color_rows = [
+            ("project_docs_header_color", "📁 Project Documents", self.t('bg_warning')),
+            ("tagged_files_header_color", "🏷️ Tagged Files", self.t('bg_purple')),
+        ]
+        for settings_key, label_text, theme_default in category_color_rows:
+            row_label = QLabel(f"  {label_text}:")
+            row_label.setStyleSheet(label_style)
+            swatch_btn = QPushButton()
+            swatch_btn.setFixedSize(32, 24)
+            saved_hex = self.settings.get(settings_key)
+            initial_hex = saved_hex or theme_default
+            swatch_btn.setProperty('hex', initial_hex)
+            swatch_btn.setProperty('is_default', saved_hex is None)
+            _style_category_swatch(swatch_btn, initial_hex)
+            swatch_btn.clicked.connect(
+                lambda checked=False, lt=label_text, b=swatch_btn: _pick_category_color(lt, b)
+            )
+            self._settings_category_color_swatches[settings_key] = swatch_btn
+
+            reset_btn = QPushButton("↺")
+            reset_btn.setFixedSize(24, 24)
+            reset_btn.setToolTip("Reset to this theme's default color")
+            reset_btn.clicked.connect(
+                lambda checked=False, d=theme_default, b=swatch_btn: _reset_category_color(d, b)
+            )
+
+            swatch_row = QHBoxLayout()
+            swatch_row.addWidget(swatch_btn)
+            swatch_row.addWidget(reset_btn)
+            swatch_row.addStretch()
+            layout.addRow(row_label, swatch_row)
+
+        layout.addRow(QLabel(""))
+
         # Muya Heading Colors — one hue dropdown per heading level (H2-H6; H1 stays plain
         # ink, not configurable, matching the common documentation convention of a neutral
         # title). The shade (darkest for light theme, a lighter one for dark theme) is
@@ -3890,6 +3961,18 @@ class ProjectFlowApp(QMainWindow):
                 items.append([real_name, full_path, "default"])
                 seen.add(real_name.lower())
         return items
+
+    def _project_docs_header_color(self):
+        """Resolved header color for the "📁 Project Documents" category block — a user
+        override (Settings → Themes tab → Category Header Colors) if one is set, else the
+        active theme's own `bg_warning`. See apply_settings()'s save block for why the
+        override is stored as an explicit hex rather than derived at save time."""
+        return self.settings.get('project_docs_header_color') or self.t('bg_warning')
+
+    def _tagged_files_header_color(self):
+        """Resolved header color for the "🏷️ Tagged Files" category block — same override
+        mechanism as _project_docs_header_color(), falling back to `bg_purple`."""
+        return self.settings.get('tagged_files_header_color') or self.t('bg_purple')
 
     def _get_project_documents_category_items(self):
         """Detect files sitting directly in this project's own Documents subfolder
@@ -6699,6 +6782,17 @@ class ProjectFlowApp(QMainWindow):
                 key: btn.property('hex')
                 for key, btn in self._settings_modern_accent_swatches.items()
             }
+
+            # Save Category Header Colors (📁 Project Documents / 🏷️ Tagged Files) — unlike
+            # the two blocks above, these apply in every theme, so "is_default" (set by
+            # _reset_category_color()) means "no override" and the key is removed entirely
+            # rather than writing today's computed theme color as a frozen hex — otherwise
+            # a later theme/light-dark switch would never be reflected again.
+            for settings_key, btn in getattr(self, '_settings_category_color_swatches', {}).items():
+                if btn.property('is_default'):
+                    self.settings.pop(settings_key, None)
+                else:
+                    self.settings[settings_key] = btn.property('hex')
 
             # Save "modern" theme font (see MODERN_FONT_CHOICES)
             self.settings["modern_font"] = self._settings_modern_font_combo.currentText()
@@ -10412,6 +10506,10 @@ function filterAliases(q) {{
             }}
         """)
         self.mega_menu_btn.clicked.connect(self._show_project_mega_menu)
+        # Explicit hover-icon swap (see eventFilter()) — guarantees the same visible
+        # mid-grey icon on hover as on press/menu-open, rather than depending on
+        # whichever QIcon::Mode the active Qt style happens to map hover to.
+        self.mega_menu_btn.installEventFilter(self)
         title_bar.addWidget(self.mega_menu_btn)
 
         # Project title on left (clickable search)
@@ -10601,6 +10699,12 @@ function filterAliases(q) {{
 
         pos = QPoint(avail.x() + (avail.width() - menu_width) // 2,
                      avail.y() + (avail.height() - menu_height) // 2)
+        # Explicitly clear the button's pressed/sunken visual before the blocking exec()
+        # below takes over the event loop -- `clicked` fires on mouse-release, but without
+        # this the button can stay looking pressed (icon included) for the entire time the
+        # popup is open, since the normal "release" repaint never gets a chance to run
+        # first. See _hamburger_icon()'s own docstring for the matching symptom this fixes.
+        self.mega_menu_btn.setDown(False)
         menu.exec(pos)
 
     def _build_project_mega_menu_content(self, menu):
@@ -14170,16 +14274,29 @@ function filterAliases(q) {{
                     proj_docs_container_layout.setSpacing(0)
                     proj_docs_container_layout.setContentsMargins(0, 0, 0, 0)
 
-                    proj_docs_header = QPushButton("📁 Project Documents")
+                    proj_docs_header = QPushButton(" Project Documents")
                     proj_docs_header.setMinimumHeight(30)
+                    # Same bundled white flat icon as the Launcher Tab Bar's "Files" tab
+                    # button (assets/tab-icons/files.png) — not a 📁/📂 emoji folder glyph,
+                    # per this app's standing "no yellow folders" convention (see CLAUDE.md's
+                    # Folder browser section on _folder_icon()).
+                    proj_docs_files_icon_path = os.path.join(self.script_dir, "assets", "tab-icons", "files.png")
+                    if os.path.exists(proj_docs_files_icon_path):
+                        proj_docs_header.setIcon(QIcon(proj_docs_files_icon_path))
+                        proj_docs_header.setIconSize(QSize(16, 16))
+                    proj_docs_color = self._project_docs_header_color()
+                    # Same radius_card-in-modern/5px-otherwise rule the real category
+                    # headers use (_header_radius above) — this block builds its own
+                    # header outside that loop, so it needs its own copy of the same rule.
+                    _proj_docs_header_radius = self.t('radius_card') if self.current_theme == "modern" else "5px"
                     proj_docs_header.setStyleSheet(f"""
                         QPushButton {{
                             text-align: left;
                             padding-left: 10px;
-                            background-color: {self.t('bg_warning')};
+                            background-color: {proj_docs_color};
                             color: {self.t('fg_on_dark')};
-                            border: 2px solid {self.t('bg_warning')};
-                            border-radius: 5px;
+                            border: 2px solid {proj_docs_color};
+                            border-radius: {_proj_docs_header_radius};
                             font-weight: bold;
                             font-size: 12px;
                         }}
@@ -14231,9 +14348,9 @@ function filterAliases(q) {{
                                 border-radius: {_pf_btn_radius};
                             }}
                             QPushButton:hover {{
-                                background-color: {self.t('bg_warning')};
+                                background-color: {proj_docs_color};
                                 color: {self.t('fg_on_dark')};
-                                border: 1px solid {self.t('bg_warning')};
+                                border: 1px solid {proj_docs_color};
                             }}
                         """)
                         file_btn.setToolTip(f"{full_path}\n(Not yet filed as a launcher item)")
@@ -14281,14 +14398,19 @@ function filterAliases(q) {{
                     # Category header
                     tagged_header = QPushButton("🏷️ Tagged Files")
                     tagged_header.setMinimumHeight(30)
+                    tagged_files_color = self._tagged_files_header_color()
+                    # Same radius_card-in-modern/5px-otherwise rule the real category
+                    # headers use (_header_radius above) — see the matching comment on
+                    # the Project Documents header just above this block.
+                    _tagged_header_radius = self.t('radius_card') if self.current_theme == "modern" else "5px"
                     tagged_header.setStyleSheet(f"""
                         QPushButton {{
                             text-align: left;
                             padding-left: 10px;
-                            background-color: {self.t('bg_purple')};
+                            background-color: {tagged_files_color};
                             color: {self.t('fg_on_dark')};
-                            border: 2px solid {self.t('bg_purple')};
-                            border-radius: 5px;
+                            border: 2px solid {tagged_files_color};
+                            border-radius: {_tagged_header_radius};
                             font-weight: bold;
                             font-size: 12px;
                         }}
@@ -14337,9 +14459,9 @@ function filterAliases(q) {{
                                 border-radius: {_pf_btn_radius};
                             }}
                             QPushButton:hover {{
-                                background-color: {self.t('bg_purple')};
+                                background-color: {tagged_files_color};
                                 color: {self.t('fg_on_dark')};
-                                border: 1px solid {self.t('bg_purple')};
+                                border: 1px solid {tagged_files_color};
                             }}
                         """)
                         file_btn.setToolTip(f"{filepath}\n(Tagged in Dolphin - remove tag there to unlink)")
@@ -20904,17 +21026,89 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
+    def _hamburger_grey_pixmap(self):
+        """Mid-grey (#999999) recolored pixmap of the current theme's hamburger icon —
+        shared by _hamburger_icon()'s Active/Selected QIcon::Mode pixmaps and
+        _hamburger_icon_hover()'s explicit hover-swap icon (see eventFilter()). Same
+        SourceIn-composite recoloring technique as _recolor_icon()."""
+        cache_attr = f'_hamburger_grey_pixmap_cache_{self.current_theme}'
+        pixmap = getattr(self, cache_attr, None)
+        if pixmap is None:
+            fname = "hamburger-dark.png" if self.current_theme == "dark" else "hamburger-light.png"
+            src = QPixmap(os.path.join(self.script_dir, "assets", "icons", fname))
+            pixmap = QPixmap()
+            if not src.isNull():
+                pixmap = QPixmap(src.size())
+                pixmap.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pixmap)
+                painter.drawPixmap(0, 0, src)
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+                painter.fillRect(pixmap.rect(), QColor("#999999"))
+                painter.end()
+            setattr(self, cache_attr, pixmap)
+        return pixmap
+
     def _hamburger_icon(self):
         """Plain single-color hamburger (☰) icon for the title-bar project mega-menu button —
         same light/dark PNG pair convention as _open_icon()/_pin_icon(), since it sits on the
-        plain title-bar background, not a colored tab row."""
+        plain title-bar background, not a colored tab row.
+
+        Also supplies the mid-grey pixmap (_hamburger_grey_pixmap()) for the icon's Active/
+        Selected modes — reported live: the icon goes dark/invisible specifically while the
+        mega-menu popup is open. _show_project_mega_menu() opens that popup via a synchronous
+        menu.exec() called from this button's own `clicked` handler, which fires on mouse-
+        RELEASE — a known Qt quirk is that the button can stay visually sunken/pressed for as
+        long as a dialog/menu exec()'d from its own clicked slot remains open, since the
+        "released" repaint never gets to run first. Many styles darken a pressed button's
+        icon for that whole duration, and the plain light/dark pixmap here was invisible
+        against that darkened look regardless of theme. Supplying a guaranteed-visible
+        mid-grey pixmap for Active/Selected means whichever mode the active style actually
+        requests while "down" gets this instead of an auto-generated/further-darkened
+        variant. _show_project_mega_menu()'s own setDown(False) call right before
+        menu.exec() addresses the same root cause more directly; the explicit hover-icon
+        swap in eventFilter() (via _hamburger_icon_hover()) is a third, style-independent
+        layer that guarantees hover shows this exact same grey too, not just press/active,
+        regardless of whether a given style even maps hover to QIcon::Active at all."""
         cache_attr = f'_hamburger_icon_cache_{self.current_theme}'
         icon = getattr(self, cache_attr, None)
         if icon is None:
             fname = "hamburger-dark.png" if self.current_theme == "dark" else "hamburger-light.png"
-            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            normal_path = os.path.join(self.script_dir, "assets", "icons", fname)
+            icon = QIcon(normal_path)
+            grey = self._hamburger_grey_pixmap()
+            if not grey.isNull():
+                icon.addPixmap(grey, QIcon.Mode.Active)
+                icon.addPixmap(grey, QIcon.Mode.Selected)
             setattr(self, cache_attr, icon)
         return icon
+
+    def _hamburger_icon_hover(self):
+        """Mid-grey-only variant of the hamburger icon, explicitly swapped in via
+        self.mega_menu_btn's event filter on hover-enter (see eventFilter()) and swapped
+        back to _hamburger_icon() on hover-leave. Unlike relying on QIcon::Mode selection
+        (style-dependent, unconfirmed without a real display to test against — see
+        _hamburger_icon()'s docstring), this guarantees hover shows the exact same visible
+        grey as the press/menu-open state regardless of style."""
+        cache_attr = f'_hamburger_icon_hover_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            grey = self._hamburger_grey_pixmap()
+            icon = QIcon(grey) if not grey.isNull() else self._hamburger_icon()
+            setattr(self, cache_attr, icon)
+        return icon
+
+    def eventFilter(self, obj, event):
+        """Only handles self.mega_menu_btn's hover-enter/leave today (see
+        _hamburger_icon_hover()'s docstring for why) — swaps its icon to the explicit
+        mid-grey variant on hover, back to normal on leave. Falls through to the base
+        QMainWindow implementation for every other object/event, so this is safe to add
+        without affecting any existing event handling elsewhere in the window."""
+        if obj is getattr(self, 'mega_menu_btn', None):
+            if event.type() == QEvent.Type.Enter:
+                self.mega_menu_btn.setIcon(self._hamburger_icon_hover())
+            elif event.type() == QEvent.Type.Leave:
+                self.mega_menu_btn.setIcon(self._hamburger_icon())
+        return super().eventFilter(obj, event)
 
     def _render_folder_tree(self, entries, target=None):
         """Render scanned entries into a tree/details view — self.folder_browser by default,

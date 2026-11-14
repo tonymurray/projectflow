@@ -2,6 +2,36 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-11-14 (Desktop: customizable category header colors; hamburger menu icon visibility fix; Project Documents polish)
+
+### Added
+- **Custom colors for the "📁 Project Documents" and "🏷️ Tagged Files" category
+  headers** (Settings → Themes tab → "Category Header Colors"): a swatch + "↺" reset
+  per row. Absent (the default) means the header keeps following the active theme's
+  own color; resetting clears the override entirely rather than freezing in today's
+  computed color, so it keeps tracking theme/light-dark switches automatically until
+  you pick an explicit override again.
+
+### Fixed
+- **Hamburger (☰) project mega-menu icon going dark/invisible on hover and while the
+  popup is open**: the button can stay visually "pressed" for the whole time a menu
+  opened synchronously from its own `clicked` handler is showing (a known Qt quirk —
+  `clicked` fires on mouse-release, but the "released" repaint never gets a chance to
+  run first), and several styles darken a pressed icon for that whole duration. Fixed
+  with three layered measures: explicitly clearing the pressed visual before the popup
+  opens, supplying a guaranteed-visible mid-grey icon variant for the modes a style
+  might request while "down," and — since plain hover showed the same symptom with no
+  click involved — an explicit hover-icon swap that no longer depends on the active
+  style's own icon-mode behavior at all.
+- **Project Documents / Tagged Files headers now match every other category header's
+  rounded corners** — previously hardcoded to a flat 5px radius regardless of theme,
+  visibly mismatched against the "modern" theme's larger rounded corners elsewhere.
+
+### Changed
+- **Project Documents category icon**: replaced a 📁 emoji with the same icon the
+  Launcher Tab Bar's "Files" tab button uses, matching this app's standing convention
+  of never using 📁/📂 emoji glyphs for folder-related UI.
+
 ## 2026-11-13 (Desktop: automatic "Project Documents" section; Refresh/Live View extended to the Code Editor, To-Do, and the general webview — and repositioned to the top everywhere)
 
 ### Added
