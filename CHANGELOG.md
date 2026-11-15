@@ -2,6 +2,14 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-11-15 (Mobile: automatic "Project Documents" section; All Projects picker polish)
+
+### Added
+- **"Project Documents" launcher section**: mirrors desktop's own automatic category (added 2026-11-13) — any top-level file sitting directly in a project's `documents/<slug>/` folder that isn't already a real launcher item now shows up on mobile too, via a plain WebDAV directory listing (`listProjectDocuments()` in `lib/webdav.js`) against the configured Documents folder. Previously these files were desktop-only, since desktop computes this list from the local filesystem and never writes it into the project's JSON. Requires `documents_subfolder` to already be resolved on the project (desktop sets this the first time its own Documents feature is used) and a Documents folder configured in Settings → Advanced — silently shows nothing otherwise, matching desktop's own "absent until actually used" behavior.
+
+### Fixed
+- **All Projects picker**: row spacing was tight enough that descenders (g/q/j) looked clipped against the row below. Tightened the grid gap slightly and rebalanced each row's vertical padding so text sits properly centered.
+
 ## 2026-11-14 (Desktop: customizable category header colors; hamburger menu icon visibility fix; Project Documents polish)
 
 ### Added

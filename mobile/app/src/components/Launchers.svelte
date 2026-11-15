@@ -1,7 +1,7 @@
 <script>
   import { Capacitor, registerPlugin } from '@capacitor/core';
   import { activeConfig, isMobileLauncher, getLaunchUrl, config } from '../lib/store.js';
-  import { resolveToNextcloudRelPath, nextcloudWebUrl, getNextcloudFileId } from '../lib/webdav.js';
+  import { resolveToNextcloudRelPath, nextcloudWebUrl, getNextcloudFileId, listProjectDocuments } from '../lib/webdav.js';
 
   const NextcloudApp = Capacitor.isNativePlatform() ? registerPlugin('NextcloudApp') : null;
 
@@ -12,6 +12,49 @@
     const items = (cat[name] || []).filter(item => isMobileLauncher(item[2] || '', item[1] || ''));
     return { name, items };
   }).filter(c => c.items.length > 0);
+
+  // Mirrors desktop's automatic "Project Documents" category (CLAUDE.md → Adding
+  // Resources): files sitting directly in this project's own documents/<slug>/ folder
+  // that aren't already a real launcher item anywhere. Desktop computes this from the
+  // local filesystem on every render; here it's one WebDAV listing per project load
+  // (see listProjectDocuments) — kept as separate component state rather than a plain
+  // `$:` derivation since it's inherently async.
+  let docItems = [];
+  let docsToken = 0;
+  $: loadProjectDocuments($activeConfig);
+
+  function titleizeStem(filename) {
+    const stem = filename.replace(/\.[^./]+$/, '');
+    return stem.replace(/[_-]+/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  async function loadProjectDocuments(cfg) {
+    const token = ++docsToken;
+    docItems = [];
+    if (!cfg?.documents_subfolder) return;
+    // Dedup against every real launcher item's own Nextcloud-resolved path, across every
+    // category (not just the mobile-launchable ones) — same "any real category, not just
+    // Docs" dedup scope as desktop's _get_project_documents_category_items().
+    const existing = new Set(
+      (cfg.columns?.[0] ?? [])
+        .flatMap(cat => Object.values(cat)[0] || [])
+        .map(item => resolveToNextcloudRelPath(item[1] || ''))
+        .filter(Boolean)
+    );
+    let docs = [];
+    try {
+      docs = await listProjectDocuments(cfg.documents_subfolder);
+    } catch {
+      docs = [];
+    }
+    docs = docs.filter(d => !existing.has(d.relPath));
+    if (token === docsToken) docItems = docs; // discard a stale result if the project changed again mid-fetch
+  }
+
+  async function launchDocument(doc) {
+    if ($config?.openMethod === 'nextcloud-app' && await tryOpenInNextcloudApp(doc.fileId)) return;
+    window.open(nextcloudWebUrl(doc.relPath, doc.fileId), '_blank');
+  }
 
   // Best-effort: builds a Nextcloud "direct link" (https://server/f/{fileid}) from the
   // file's WebDAV oc:fileid and hands it to the native plugin, which targets the Nextcloud
@@ -48,7 +91,7 @@
 <div class="launchers">
   {#if !$activeConfig}
     <p class="empty">No project selected</p>
-  {:else if mobileCats.length === 0}
+  {:else if mobileCats.length === 0 && docItems.length === 0 && !viewerUrl}
     <p class="empty">No mobile-compatible launchers</p>
   {:else}
     {#each mobileCats as cat}
@@ -76,6 +119,17 @@
         {/each}
       </div>
     {/each}
+    {#if docItems.length > 0}
+      <div class="category">
+        <div class="cat-header">Project Documents</div>
+        {#each docItems as doc}
+          <button class="launcher link" on:click={() => launchDocument(doc)} title="Open in Nextcloud">
+            <span class="name">{titleizeStem(doc.name)}</span>
+            <span class="arrow nc">NC↗</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
     {#if viewerUrl}
       <div class="category">
         <div class="cat-header">Links (viewers)</div>

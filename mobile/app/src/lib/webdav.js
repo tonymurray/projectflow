@@ -327,3 +327,54 @@ export async function uploadDocumentToProject(documentsSubfolder, filename, base
   if (!res.ok) throw new HttpError(res.status, 'PUT');
   return relPath;
 }
+
+// ── Documents (auto-discovered "Project Documents" listing) ─────────────────────────
+
+// Mirrors desktop's automatic "Project Documents" category (CLAUDE.md → Adding
+// Resources → #3): any top-level file sitting directly in a project's own
+// documents/<slug>/ folder is a real document worth showing, even if it was never
+// added as a launcher item. Desktop computes this from the local filesystem; here it's
+// a plain depth-1 PROPFIND against the same Nextcloud folder (documentsRoot +
+// documents_subfolder) — same folder, reached the Nextcloud-native way since mobile has
+// no local filesystem access to it at all. Requesting oc:fileid up front avoids an
+// extra round-trip per file when a result is actually opened (mirrors getNextcloudFileId).
+const LIST_DOCS_BODY = `<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop><d:resourcetype/><oc:fileid/></d:prop>
+</d:propfind>`;
+
+export async function listProjectDocuments(documentsSubfolder) {
+  if (!_config?.documentsRoot || !documentsSubfolder) return [];
+  const root = `${_config.server}/remote.php/dav/files/${encodeURIComponent(_config.username)}`;
+  const docsRoot = _config.documentsRoot.replace(/^\//, '').replace(/\/$/, '');
+  const relFolder = `${docsRoot}/${documentsSubfolder}`;
+  const url = `${root}/${encodePath(relFolder)}`;
+  let res;
+  try {
+    res = await request('PROPFIND', url, LIST_DOCS_BODY, {
+      Depth: '1',
+      'Content-Type': 'application/xml; charset=utf-8',
+    });
+  } catch {
+    return []; // offline/unreachable — same "nothing to show" fallback as desktop's missing-folder case
+  }
+  if (!res.ok) return []; // folder doesn't exist yet (404) or no access — not worth surfacing as an error
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  return [...doc.querySelectorAll('response')]
+    .filter(r => {
+      const isDir = r.querySelector('resourcetype collection') !== null;
+      const href = decodeURIComponent(r.querySelector('href')?.textContent || '');
+      const name = href.replace(/\/$/, '').split('/').pop();
+      // Depth:1 also returns the folder's own entry (isDir, filtered above); also skip
+      // dotfiles and todo.md, same exclusions as desktop's _get_project_documents_category_items().
+      return !isDir && name && !name.startsWith('.') && name !== 'todo.md';
+    })
+    .map(r => {
+      const href = decodeURIComponent(r.querySelector('href')?.textContent || '');
+      const name = href.replace(/\/$/, '').split('/').pop();
+      const fileId = r.getElementsByTagNameNS('http://owncloud.org/ns', 'fileid')[0]?.textContent?.trim() || null;
+      return { name, relPath: `${relFolder}/${name}`, fileId };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}

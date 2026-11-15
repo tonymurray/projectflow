@@ -73,7 +73,7 @@
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 6px; padding: 12px;
+    gap: 4px; padding: 12px;
     overflow-y: auto;
   }
 
@@ -91,8 +91,8 @@
   .name-btn {
     flex: 1; min-width: 0; background: none; border: none;
     color: var(--t-sec); font-size: 0.85rem;
-    padding: 10px 6px 10px 12px;
-    text-align: left; line-height: 1.3;
+    padding: 9px 6px 7px 12px;
+    text-align: left; line-height: 1.4;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     display: flex; align-items: center;
   }
@@ -101,7 +101,7 @@
   .pin-btn {
     background: none; border: none;
     border-left: 1px solid var(--bd-sub);
-    font-size: 0.75rem; padding: 10px 8px;
+    font-size: 0.75rem; padding: 9px 8px 7px;
     flex-shrink: 0; opacity: 0.25;
     transition: opacity 0.15s;
     display: flex; align-items: center; justify-content: center;
@@ -113,10 +113,10 @@
   @media (min-width: 550px) {
     .grid {
       grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 8px; padding: 16px;
+      gap: 6px; padding: 16px;
     }
-    .name-btn { font-size: 1.05rem; padding: 14px 8px 14px 16px; }
-    .pin-btn  { font-size: 0.95rem; padding: 14px 10px; }
+    .name-btn { font-size: 1.05rem; padding: 10px 8px 12px 16px; }
+    .pin-btn  { font-size: 0.95rem; padding: 10px 10px 12px; }
     .title    { font-size: 1.2rem; }
     .close-btn { font-size: 1.3rem; }
   }
