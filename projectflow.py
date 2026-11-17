@@ -818,6 +818,56 @@ class ViewerResizeHandle(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class AllTodoTaskEdit(QLineEdit):
+    """A task row's text in the All To-Dos aggregator — looks like a plain label
+    (no border/background, same font styling) until clicked, at which point it
+    becomes a real editable field. Commits on Enter or on losing focus; losing
+    focus with the text emptied out reverts rather than saving a blank task title,
+    since there's no undo for an aggregator-driven edit the way there is for an
+    in-editor keystroke. `on_commit(new_text)` is only called when the text
+    actually changed."""
+
+    def __init__(self, text, on_commit, parent=None):
+        super().__init__(text, parent)
+        self._original = text
+        self._on_commit = on_commit
+        self.setReadOnly(True)
+        self.setFrame(False)
+        self.setCursorPosition(0)
+        self.returnPressed.connect(self._commit)
+
+    def mousePressEvent(self, event):
+        if self.isReadOnly():
+            self.setReadOnly(False)
+            self.selectAll()
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and not self.isReadOnly():
+            self.setText(self._original)
+            self.setReadOnly(True)
+            self.clearFocus()
+            return
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        if not self.isReadOnly():
+            self._commit()
+
+    def _commit(self):
+        new_text = self.text().strip()
+        self.setReadOnly(True)
+        self.setCursorPosition(0)
+        if not new_text:
+            self.setText(self._original)
+            return
+        if new_text != self._original:
+            self._original = new_text
+            self.setText(new_text)
+            self._on_commit(new_text)
+
+
 class ClickableSearchTitle(QWidget):
     """A title widget that transforms into a search input on click"""
 
@@ -3678,6 +3728,7 @@ class ProjectFlowApp(QMainWindow):
         viewer_tab_defs = {
             "notes": "Notes",
             "todo": "To-Do",
+            "alltodo": "All To-Dos",
             "code": "Editor",
             "console": "Terminal",
             "webview": "Web",
@@ -5354,7 +5405,12 @@ class ProjectFlowApp(QMainWindow):
             [""] + self._ordered_tab_ids("launcher_tab_order", launcher_tab_ids, self._enabled_launcher_tab_ids())
         )
         viewer_tab_canonical = list(self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1])
-        viewer_tab_valid = [t for t in viewer_tab_canonical if self._is_viewer_tab_enabled(t)]
+        # "alltodo" is excluded from this dropdown deliberately — its content is
+        # identical regardless of which project is "current," so a per-project
+        # pinned default would never carry its usual meaning (and load_notes()'s own
+        # config_column2_default whitelist deliberately omits it too, so picking it
+        # here would silently never take effect on a real subsequent project switch).
+        viewer_tab_valid = [t for t in viewer_tab_canonical if t != "alltodo" and self._is_viewer_tab_enabled(t)]
         self._proj_default_viewer.clear()
         self._proj_default_viewer.addItems(
             [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_canonical, viewer_tab_valid, project_order=getattr(self, 'config_viewer_tab_order', None)) + ["help"]
@@ -8670,17 +8726,17 @@ StartupNotify=true
     # so the two stay in sync if this line is ever changed.
     TODO_STARTER_LINE = "- [ ] "
 
-    def _get_project_pending_tasks(self, config_path):
-        """Read-only: outstanding (unchecked) task strings from config_path's own
-        todo.md, for an ARBITRARY other project — used by the project mega-menu's
-        Tasks column (see _build_project_mega_menu_content()). Deliberately never
-        creates anything (no os.makedirs/open(..., 'w') anywhere in this method),
-        mirroring _viewer_tab_has_content()'s own read-only "todo" branch, just
-        sourced from the other project's own JSON rather than self.config_*
-        (which only reflects whichever project is currently loaded). A project
-        that's never used Docs/Notes/To-Do at all (no documents_subfolder yet) or
-        whose todo.md is still just the untouched starter line correctly returns
-        an empty list, not an error."""
+    def _get_project_todo_items(self, config_path, include_done=False):
+        """Read-only: (line_index, text, done) tuples for config_path's own todo.md,
+        for an ARBITRARY other project — the shared scan both _get_project_pending_tasks()
+        (unchecked only, the mega-menu's Tasks column) and the All To-Dos aggregated
+        viewer's "Show Completed" toggle (unchecked + checked) build on. Deliberately
+        never creates anything (no os.makedirs/open(..., 'w') anywhere in this method),
+        mirroring _viewer_tab_has_content()'s own read-only "todo" branch, just sourced
+        from the other project's own JSON rather than self.config_* (which only
+        reflects whichever project is currently loaded). A project that's never used
+        Docs/Notes/To-Do at all (no documents_subfolder yet) correctly returns an
+        empty list, not an error."""
         try:
             with open(config_path, 'r') as f:
                 data = json.load(f)
@@ -8697,12 +8753,30 @@ StartupNotify=true
                 content = f.read()
         except OSError:
             return []
-        tasks = []
-        for line in content.splitlines():
-            match = re.match(r'^- \[ \]\s*(.*)$', line.strip())
-            if match and match.group(1).strip():
-                tasks.append(match.group(1).strip())
-        return tasks
+        items = []
+        for idx, line in enumerate(content.splitlines()):
+            match = re.match(r'^- \[( |x)\]\s*(.*)$', line.strip())
+            if not match or not match.group(2).strip():
+                continue
+            done = match.group(1) == 'x'
+            if done and not include_done:
+                continue
+            items.append((idx, match.group(2).strip(), done))
+        return items
+
+    def _get_project_pending_tasks(self, config_path, with_line_index=False):
+        """Read-only: outstanding (unchecked) task strings from config_path's own
+        todo.md — used by the project mega-menu's Tasks column
+        (_build_project_mega_menu_content()). A thin shape-adapter over
+        _get_project_todo_items(include_done=False); with_line_index=True returns
+        (line_index, text) tuples instead of bare text — needed by the All To-Dos
+        aggregator to toggle one specific task unambiguously even when two tasks
+        share identical text. The mega-menu's own call site relies on the default
+        bare-list shape, unchanged."""
+        items = self._get_project_todo_items(config_path, include_done=False)
+        if with_line_index:
+            return [(idx, text) for idx, text, _done in items]
+        return [text for _idx, text, _done in items]
 
     def _get_or_create_todo_file(self):
         """Path to this project's todo.md, inside its own documents subfolder —
@@ -8720,6 +8794,214 @@ StartupNotify=true
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(self.TODO_STARTER_LINE)
         return path
+
+    def _all_known_project_paths(self):
+        """Every known non-archived project's config path — main projects/*.json plus
+        .projectflow folder projects. Archived main projects live under
+        projects/.archive/ (excluded by this plain top-level listdir); archived folder
+        projects live in the separate archived_folder_projects setting (excluded by
+        scanning folder_projects alone) — see archive_project(). Mirrors the mega-menu's
+        own inline all_paths/folder_paths assembly
+        (_build_project_mega_menu_content()), but as a reusable method for the All
+        To-Dos aggregator, which needs this set repeatedly (every tab-entry and Refresh
+        click) rather than just once per menu-open."""
+        configs_dir = self.get_projects_directory()
+        main_paths = []
+        if os.path.isdir(configs_dir):
+            main_paths = sorted(
+                (os.path.join(configs_dir, f) for f in os.listdir(configs_dir) if f.endswith('.json')),
+                key=lambda p: os.path.basename(p).lower()
+            )
+        folder_paths = [p for p in self.settings.get("folder_projects", []) if os.path.exists(p)]
+        return main_paths + folder_paths
+
+    def _push_todo_markdown_to_live_session(self, new_markdown, todo_path):
+        """If the To-Do tab's Muya session is currently editing exactly `todo_path`,
+        push freshly-written disk content back into the live webview and clear its
+        dirty flag — shared tail used by both _write_todo_line() (append) and
+        _commit_todo_toggle() (toggle), so a direct disk write is never silently
+        clobbered by the next autosave tick and the live editor never shows stale
+        content."""
+        session = getattr(self, '_todo_muya_session', None)
+        if session is not None and session.editing and session.webview and session.path == todo_path:
+            session.webview.page().runJavaScript(
+                f"window.__setMuyaMarkdown && window.__setMuyaMarkdown({json.dumps(new_markdown)})"
+            )
+            session.dirty = False
+
+    def _get_or_create_todo_file_for_project(self, config_path):
+        """Arbitrary-project sibling of _get_or_create_project_documents_folder()/
+        _get_or_create_todo_file() — resolves (and lazily creates) config_path's OWN
+        documents subfolder + todo.md, reading/writing THAT project's own JSON
+        directly rather than self.config_*/self.current_config_file. Duplicates
+        _resolve_project_documents_slug()'s collision-avoidance logic rather than
+        sharing it, since that method is hardcoded to the currently active project —
+        used only by the All To-Dos aggregator's Add Task affordance, the one place a
+        project other than the currently active one may need its todo.md created from
+        scratch."""
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        slug = data.get('documents_subfolder')
+        if not slug:
+            base = self.get_documents_folder()
+            candidate = self._slugify_project_name(self.get_display_name_for_config_path(config_path))
+            slug = candidate
+            n = 2
+            while os.path.isdir(os.path.join(base, slug)):
+                slug = f"{candidate}_{n}"
+                n += 1
+            data['documents_subfolder'] = slug
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+            except Exception as e:
+                print(f"Error saving documents_subfolder for {config_path}: {e}")
+            if config_path == getattr(self, 'current_config_file', None):
+                self.config_documents_subfolder = slug  # keep in-memory state in sync, defensive
+        folder = os.path.join(self.get_documents_folder(), slug)
+        os.makedirs(folder, exist_ok=True)
+        todo_path = os.path.join(folder, "todo.md")
+        if not os.path.exists(todo_path):
+            with open(todo_path, 'w', encoding='utf-8') as f:
+                f.write(self.TODO_STARTER_LINE)
+        return todo_path
+
+    def _add_todo_to_project(self, config_path, title):
+        """Append a new GFM checklist line to config_path's own todo.md — arbitrary-
+        project sibling of _add_as_todo(), used by the All To-Dos aggregator's Add Task
+        row. Session-aware only when config_path happens to be the currently active
+        project AND its To-Do tab session is mid-edit; every other project's todo.md is
+        a plain direct disk read-modify-write."""
+        line = f"- [ ] {title}"
+        todo_path = self._get_or_create_todo_file_for_project(config_path)
+        session = getattr(self, '_todo_muya_session', None)
+        if session is not None and session.editing and session.webview and session.path == todo_path:
+            session.webview.page().runJavaScript(
+                "window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null",
+                lambda markdown: self._write_todo_line(line, markdown or "", todo_path=todo_path)
+            )
+        else:
+            with open(todo_path, 'r', encoding='utf-8') as f:
+                current = f.read()
+            self._write_todo_line(line, current, todo_path=todo_path)
+
+    def _toggle_project_todo_line(self, config_path, line_index, expected_text):
+        """Flip one specific outstanding task in config_path's own todo.md from
+        "- [ ]" to "- [x]" — used by the All To-Dos aggregator's per-task checkbox.
+        Session-aware only when config_path is the currently active project AND its
+        To-Do session is mid-edit (mirrors _write_todo_line()'s dance); otherwise a
+        plain direct disk read-modify-write."""
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            return
+        slug = data.get('documents_subfolder')
+        if not slug:
+            return
+        todo_path = os.path.join(self.get_documents_folder(), slug, "todo.md")
+        if not os.path.exists(todo_path):
+            return
+        session = getattr(self, '_todo_muya_session', None)
+        if session is not None and session.editing and session.webview and session.path == todo_path:
+            session.webview.page().runJavaScript(
+                "window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null",
+                lambda markdown: self._commit_todo_toggle(todo_path, line_index, expected_text, markdown or "")
+            )
+        else:
+            with open(todo_path, 'r', encoding='utf-8') as f:
+                current = f.read()
+            self._commit_todo_toggle(todo_path, line_index, expected_text, current)
+
+    @staticmethod
+    def _find_todo_line_index(lines, line_index, expected_text):
+        """Shared lookup for _commit_todo_toggle()/_commit_todo_rename(): the matching
+        line (checked OR unchecked — the All To-Dos aggregator's "Show Completed"
+        toggle means a task being acted on may now be in either state), by index
+        first, falling back to a text match if the file changed since the
+        aggregator's last read (e.g. from a live Muya session's own async round-
+        trip). Returns (index, done) or None if the task is already gone — both
+        callers silently no-op in that case; the aggregator's own full-rebuild-on-
+        action reconciles on the next refresh regardless."""
+        def _match(line):
+            m = re.match(r'^- \[( |x)\]\s*(.*)$', line.strip())
+            if m and m.group(2).strip() == expected_text:
+                return m.group(1) == 'x'
+            return None
+        if 0 <= line_index < len(lines):
+            done = _match(lines[line_index])
+            if done is not None:
+                return line_index, done
+        for i, l in enumerate(lines):
+            done = _match(l)
+            if done is not None:
+                return i, done
+        return None
+
+    def _commit_todo_toggle(self, todo_path, line_index, expected_text, current_markdown):
+        """Shared write-back for _toggle_project_todo_line() — flips the matching
+        line (see _find_todo_line_index()) between checked and unchecked, in
+        whichever direction it currently isn't (bidirectional, so a completed task
+        shown via "Show Completed" can be unchecked again, not just checked once)."""
+        lines = current_markdown.splitlines()
+        found = self._find_todo_line_index(lines, line_index, expected_text)
+        if found is None:
+            return
+        target, done = found
+        if done:
+            lines[target] = lines[target].replace('- [x]', '- [ ]', 1)
+        else:
+            lines[target] = lines[target].replace('- [ ]', '- [x]', 1)
+        new_markdown = "\n".join(lines) + "\n"
+        with open(todo_path, 'w', encoding='utf-8') as f:
+            f.write(new_markdown)
+        self._push_todo_markdown_to_live_session(new_markdown, todo_path)
+
+    def _rename_project_todo_line(self, config_path, line_index, expected_text, new_text):
+        """Rename one specific outstanding task's text in config_path's own todo.md —
+        used by the All To-Dos aggregator's click-to-edit task label (AllTodoTaskEdit).
+        Session-aware the same way as _toggle_project_todo_line()."""
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            return
+        slug = data.get('documents_subfolder')
+        if not slug:
+            return
+        todo_path = os.path.join(self.get_documents_folder(), slug, "todo.md")
+        if not os.path.exists(todo_path):
+            return
+        session = getattr(self, '_todo_muya_session', None)
+        if session is not None and session.editing and session.webview and session.path == todo_path:
+            session.webview.page().runJavaScript(
+                "window.__getMuyaMarkdown ? window.__getMuyaMarkdown() : null",
+                lambda markdown: self._commit_todo_rename(todo_path, line_index, expected_text, new_text, markdown or "")
+            )
+        else:
+            with open(todo_path, 'r', encoding='utf-8') as f:
+                current = f.read()
+            self._commit_todo_rename(todo_path, line_index, expected_text, new_text, current)
+
+    def _commit_todo_rename(self, todo_path, line_index, expected_text, new_text, current_markdown):
+        """Shared write-back for _rename_project_todo_line() — replaces the matching
+        line's text (see _find_todo_line_index()), preserving its current checked/
+        unchecked state rather than assuming unchecked (a completed task shown via
+        "Show Completed" can be renamed without silently un-checking it)."""
+        lines = current_markdown.splitlines()
+        found = self._find_todo_line_index(lines, line_index, expected_text)
+        if found is None:
+            return
+        target, done = found
+        marker = 'x' if done else ' '
+        lines[target] = f"- [{marker}] {new_text}"
+        new_markdown = "\n".join(lines) + "\n"
+        with open(todo_path, 'w', encoding='utf-8') as f:
+            f.write(new_markdown)
+        self._push_todo_markdown_to_live_session(new_markdown, todo_path)
 
     # ------------------------------------------------------------------
     # Backup
@@ -9851,6 +10133,10 @@ function filterAliases(q) {{
                 # old configs that still have this saved rather than silently ignoring them.
                 if self.config_column2_default == "examples":
                     self.config_column2_default = "help"
+                # "alltodo" is deliberately NOT in this whitelist — its content is the
+                # same regardless of which project is current, so there is no sensible
+                # per-project "default" for it (see the matching exclusion on the
+                # Project Settings "Default Viewer" dropdown).
                 if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes", "code", "todo"):
                     self.column2_mode = self.config_column2_default
 
@@ -11942,7 +12228,7 @@ function filterAliases(q) {{
     # Project Settings dropdowns, so there is exactly one place each row's default order lives.
     _TAB_ORDER_CONFIG = {
         DraggableTabButton.LAUNCHER_TAB_MIME: ("launcher_tab_order", ["docs", "resources", "files", "apps"]),
-        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "todo", "code", "console", "webview", "pdf", "image", "time"]),
+        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "todo", "alltodo", "code", "console", "webview", "pdf", "image", "time"]),
     }
 
     def _ordered_tab_ids(self, setting_key, canonical_order, valid_ids, project_order=None):
@@ -14588,6 +14874,7 @@ function filterAliases(q) {{
                 viewer_tab_defs = {
                     "notes":   ("Notes",    "Project notes"),
                     "todo":    ("To-Do",    "Project to-do list"),
+                    "alltodo": ("All To-Dos", "Outstanding tasks across every project"),
                     "code":    ("Editor",   "Code editor"),
                     "console": ("Terminal", "Embedded console"),
                     "webview": ("Web",      "Web viewer"),
@@ -15365,6 +15652,8 @@ function filterAliases(q) {{
 
                 # Build Kimai time viewer
                 self._build_time_viewer()
+                # Build the cross-project All To-Dos viewer
+                self._build_all_todos_viewer()
 
                 # Notes viewer container — notes_panel is reparented here in Focus layout
                 self.notes_viewer_container = QWidget()
@@ -15382,6 +15671,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.notes_viewer_container)
                 self.column2_stack_layout.addWidget(self.code_container)
                 self.column2_stack_layout.addWidget(self.todo_container)
+                self.column2_stack_layout.addWidget(self.alltodo_container)
                 self.column2_stack_layout.addWidget(self.settings_container)
 
                 # Show correct container based on mode
@@ -15395,6 +15685,7 @@ function filterAliases(q) {{
                 self.notes_viewer_container.hide()
                 self.code_container.hide()
                 self.todo_container.hide()
+                self.alltodo_container.hide()
                 self.settings_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
@@ -15420,6 +15711,9 @@ function filterAliases(q) {{
                     self.notes_viewer_container.show()
                 elif self.column2_mode == "todo":
                     self.todo_container.show()
+                elif self.column2_mode == "alltodo":
+                    self.alltodo_container.show()
+                    self._refresh_all_todos_view()
                 elif self.column2_mode == "settings":
                     self.settings_container.show()
                     # Populate only if not already loaded for this project — see
@@ -17016,6 +17310,436 @@ function filterAliases(q) {{
         self._kimai_no_project_widget.setVisible(not has_project)
         self._kimai_main_widget.setVisible(has_project)
 
+    def _build_all_todos_viewer(self):
+        """Build the All To-Dos aggregated viewer panel — tasks across every known
+        project (_all_known_project_paths()), read via _get_project_todo_items(),
+        toggled/renamed/added via _toggle_project_todo_line()/
+        _rename_project_todo_line()/_add_todo_to_project(). Plain native-widget tree
+        (pill rows built by _build_alltodo_project_group()), not a Muya session —
+        unlike the per-project To-Do tab, this shows many projects' files at once,
+        not one document being edited live."""
+        self.alltodo_container = QWidget()
+        outer = QVBoxLayout(self.alltodo_container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+        input_style = f"""
+            QLineEdit, QComboBox {{
+                background-color: {self.t('bg_secondary')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 6px;
+                font-size: 12px;
+            }}
+        """
+        # Stashed so _build_alltodo_project_group() (called again and again on every
+        # refresh, not just once at build time) can style its own small "open in new
+        # window" buttons identically without redeclaring the stylesheet string.
+        self._alltodo_btn_style = btn_style
+
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(6)
+
+        refresh_btn = QPushButton("↻ Refresh")
+        refresh_btn.setStyleSheet(btn_style)
+        refresh_btn.setToolTip("Re-scan every known project's todo.md")
+        refresh_btn.clicked.connect(self._refresh_all_todos_view)
+        toolbar_layout.addWidget(refresh_btn)
+
+        # Shared "pressed/active" style for both toggle buttons below — highlighted
+        # like the checkable Live View buttons elsewhere (self.todo_live_view_btn etc.).
+        toggle_style = btn_style + f"""
+            QPushButton:checked {{
+                background-color: {self.t('bg_category')};
+                color: {self.t('fg_on_dark')};
+                border-color: {self.t('bg_category_hover')};
+            }}
+        """
+
+        # "Show All" / "Current" scope toggle — defaults to All (the whole point of
+        # this aggregated view), machine-wide like every other setting here. "Current"
+        # narrows the list down to just the project that's open right now — plain text
+        # labels only (no icon/emoji), per two confirmed-broken glyph attempts earlier
+        # in this feature's history (see _open_new_window_icon()'s docstring) that
+        # taught this app's bundled font can't be trusted with anything beyond the
+        # commonly-used emoji already proven elsewhere.
+        self._alltodo_scope_btn = QPushButton()
+        self._alltodo_scope_btn.setCheckable(True)
+        self._alltodo_scope_btn.setChecked(self.settings.get("alltodo_scope", "all") == "current")
+        self._alltodo_scope_btn.setStyleSheet(toggle_style)
+        self._alltodo_scope_btn.clicked.connect(self._alltodo_toggle_scope)
+        self._update_alltodo_scope_btn()
+        toolbar_layout.addWidget(self._alltodo_scope_btn)
+
+        # "Show Completed" / "Hide Completed" — off by default (matches the original
+        # always-pending-only behavior). With it on, checking a task no longer makes
+        # the row vanish immediately — it stays shown as completed instead, which
+        # also guards against an accidental click, per direct user request. Label is
+        # action-based like the scope toggle above (see _update_alltodo_scope_btn()'s
+        # docstring) — says what clicking will DO, not what's currently showing.
+        self._alltodo_show_completed_btn = QPushButton()
+        self._alltodo_show_completed_btn.setCheckable(True)
+        self._alltodo_show_completed_btn.setChecked(self.settings.get("alltodo_show_completed", False))
+        self._alltodo_show_completed_btn.setStyleSheet(toggle_style)
+        self._alltodo_show_completed_btn.clicked.connect(self._alltodo_toggle_show_completed)
+        self._update_alltodo_show_completed_btn()
+        toolbar_layout.addWidget(self._alltodo_show_completed_btn)
+
+        toolbar_layout.addStretch()
+
+        # Add Task row — a single shared project picker rather than a per-group "+",
+        # since it must also be able to address a project with ZERO current pending
+        # tasks (no group exists yet for such a project to attach a "+" to). The
+        # picker's first entry, "Current project" (userData=None), is the default
+        # and is literally accurate as a label, not just a placeholder — leaving it
+        # selected files the task into whichever project is CURRENTLY OPEN (see
+        # _alltodo_add_task_clicked()), so quickly jotting down a task for the
+        # project you're already looking at needs no picker interaction at all.
+        self._alltodo_task_input = QLineEdit()
+        self._alltodo_task_input.setPlaceholderText("New task…")
+        self._alltodo_task_input.setStyleSheet(input_style)
+        self._alltodo_task_input.returnPressed.connect(self._alltodo_add_task_clicked)
+        toolbar_layout.addWidget(self._alltodo_task_input, 1)
+
+        self._alltodo_project_picker = QComboBox()
+        self._alltodo_project_picker.setStyleSheet(input_style)
+        self._alltodo_project_picker.setMinimumWidth(160)
+        toolbar_layout.addWidget(self._alltodo_project_picker)
+
+        add_btn = QPushButton("+ Add")
+        add_btn.setStyleSheet(btn_style)
+        add_btn.clicked.connect(self._alltodo_add_task_clicked)
+        toolbar_layout.addWidget(add_btn)
+
+        outer.addWidget(toolbar_widget)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {self.t('border')};")
+        outer.addWidget(sep)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll_content = QWidget()
+        self._alltodo_list_layout = QVBoxLayout(scroll_content)
+        self._alltodo_list_layout.setContentsMargins(8, 8, 8, 8)
+        self._alltodo_list_layout.setSpacing(10)
+        scroll.setWidget(scroll_content)
+        outer.addWidget(scroll, 1)
+
+        self._refresh_alltodo_project_picker()
+
+    def _refresh_alltodo_project_picker(self):
+        """Repopulate the Add Task row's project dropdown from the current set of
+        known projects — called on initial build and on every refresh, since a
+        project may have been created/renamed/archived since the picker was last
+        built. Preserves the current selection across a rebuild where possible.
+        Item 0 is always "Current project" (userData=None) — leaving it selected
+        (the default, since a fresh/rebuilt combo box starts at index 0) means
+        _alltodo_add_task_clicked() falls back to the currently open project; the
+        label names that fallback directly rather than reading as a bare
+        placeholder."""
+        if not hasattr(self, '_alltodo_project_picker'):
+            return
+        current_path = self._alltodo_project_picker.currentData()
+        self._alltodo_project_picker.blockSignals(True)
+        self._alltodo_project_picker.clear()
+        self._alltodo_project_picker.addItem("Current project", None)
+        for path in self._all_known_project_paths():
+            self._alltodo_project_picker.addItem(self.get_display_name_for_config_path(path), path)
+        if current_path:
+            idx = self._alltodo_project_picker.findData(current_path)
+            if idx >= 0:
+                self._alltodo_project_picker.setCurrentIndex(idx)
+        self._alltodo_project_picker.blockSignals(False)
+
+    def _alltodo_add_task_clicked(self):
+        """Add Task row's "+ Add"/Enter handler — appends the typed title to whichever
+        project is selected in the picker, via _add_todo_to_project() (arbitrary-
+        project, session-aware, lazily creates that project's documents folder/todo.md
+        if this is its first task ever). Leaving the picker on its default "Current
+        project" entry (currentData() is None) files the task into whichever project
+        is currently open, rather than requiring an explicit pick every time."""
+        path = self._alltodo_project_picker.currentData() or getattr(self, 'current_config_file', None)
+        title = self._alltodo_task_input.text().strip()
+        if not path or not title:
+            return
+        self._add_todo_to_project(path, title)
+        self._alltodo_task_input.clear()
+        self.set_status(f"✓ Added to To-Do: {title}", "success")
+        self._refresh_all_todos_view()
+
+    def _alltodo_open_project_todo(self, path):
+        """Project-name header button — switches the whole app to that project AND
+        lands on its own To-Do tab (switching config alone could land on whatever
+        OTHER viewer that project happens to be pinned to)."""
+        self.switch_to_config(path)
+        self.switch_to_viewer_mode("todo")
+
+    def _alltodo_toggle_task(self, config_path, line_index, task_text):
+        """A task row's circle button handler — commits the toggle to disk (and the
+        live Muya session if it happens to be the active project's own To-Do tab),
+        then does a full rebuild of the list, same semantics as the Refresh button."""
+        self._toggle_project_todo_line(config_path, line_index, task_text)
+        self._refresh_all_todos_view()
+
+    def _alltodo_rename_task(self, config_path, line_index, old_text, new_text):
+        """A task row's inline-edited label commit handler — mirrors
+        _alltodo_toggle_task() but renames instead of checking off."""
+        self._rename_project_todo_line(config_path, line_index, old_text, new_text)
+        self._refresh_all_todos_view()
+
+    def _alltodo_toggle_show_completed(self):
+        """"Completed"/"To-do" toolbar toggle handler — persists the choice (machine-
+        wide, like the rest of this view's settings), updates the button's own
+        label, and rebuilds. See _refresh_all_todos_view()/
+        _build_alltodo_project_group() for how the flag changes both which rows are
+        fetched and how a completed one is rendered."""
+        self.settings["alltodo_show_completed"] = self._alltodo_show_completed_btn.isChecked()
+        self.save_settings()
+        self._update_alltodo_show_completed_btn()
+        self._refresh_all_todos_view()
+
+    def _update_alltodo_show_completed_btn(self):
+        """Keeps the "Include completed"/"To-do only" toggle's label in sync with its
+        checked state — same action-not-state convention as _update_alltodo_scope_btn()
+        (the text names the TARGET state a click leads to): unchecked (pending-only)
+        shows "Include completed" (click to also show completed tasks); checked
+        (completed tasks included) shows "To-do only" (click to go back to pending-
+        only). Full words rather than a terser "Completed"/"To-do", per direct user
+        feedback that there's enough toolbar space for the clearer wording."""
+        if self._alltodo_show_completed_btn.isChecked():
+            self._alltodo_show_completed_btn.setText("To-do only")
+            self._alltodo_show_completed_btn.setToolTip("Showing completed tasks too — click to show only outstanding ones")
+        else:
+            self._alltodo_show_completed_btn.setText("Include completed")
+            self._alltodo_show_completed_btn.setToolTip("Showing only outstanding tasks — click to also show completed ones")
+
+    def _update_alltodo_scope_btn(self):
+        """Keeps the scope toggle's own label in sync with its checked state — the
+        text names the ACTION a click performs (per direct user feedback: clicking
+        "All projects" should show all), not the state currently showing. The
+        checked/highlighted look (toggle_style's :checked rule) still reflects the
+        current state (highlighted = currently scoped to "current") — only the
+        text's meaning is action-not-state. Full words rather than a terser "Show
+        All"/"Current", per direct user feedback that there's enough toolbar space
+        for the clearer wording. Says "This project" rather than "Current project"
+        specifically — the Add Task row's own project picker (later on the same
+        toolbar line) already uses "Current project" as its default entry, and
+        having both labels identical on one line read as confusing/duplicated."""
+        if self._alltodo_scope_btn.isChecked():
+            # Currently scoped to the current project — clicking switches to All.
+            self._alltodo_scope_btn.setText("All projects")
+            self._alltodo_scope_btn.setToolTip("Showing only the current project's tasks — click to show every project")
+        else:
+            # Currently showing every project — clicking narrows to just this one.
+            self._alltodo_scope_btn.setText("This project")
+            self._alltodo_scope_btn.setToolTip("Showing tasks from every known project — click to narrow to the current project")
+
+    def _alltodo_toggle_scope(self):
+        """"Show All"/"Current" toolbar toggle handler — persists the choice (machine-
+        wide, like the rest of this view's settings), updates the button's own label,
+        and rebuilds. See _refresh_all_todos_view() for how the scope changes which
+        projects are scanned. The Add Task row's project picker is deliberately
+        unaffected by this — it always lists every known project regardless of scope,
+        since scope only filters what's DISPLAYED, not what can be acted on."""
+        scope = "current" if self._alltodo_scope_btn.isChecked() else "all"
+        self.settings["alltodo_scope"] = scope
+        self.save_settings()
+        self._update_alltodo_scope_btn()
+        self._refresh_all_todos_view()
+
+    def _alltodo_pill_colors(self):
+        """The exact literal colors _todo_paper_css() uses for the real per-project
+        To-Do pill rows (see that method's docstring for the full design history) —
+        reused here so the All To-Dos aggregator's native-widget rows read as the
+        same visual language as the Muya-rendered ones, not a second, different
+        "to-do" look."""
+        if self.current_theme == "dark":
+            return {
+                "row_bg": "#1a4a5c", "row_ink": "#dbe9f2", "done_ink": "#7a99a8",
+                "checkbox_bg": "#4a4a4a", "done_bg": "#4c9f70",
+            }
+        return {
+            "row_bg": "#dedede", "row_ink": "#0c426f", "done_ink": "#6b8aa3",
+            "checkbox_bg": "#9a9a9a", "done_bg": "#2f9e57",
+        }
+
+    def _build_alltodo_project_group(self, path, items):
+        """One project's group of tasks for the All To-Dos aggregator — a header
+        (project-name button + a bundled "open in new window" icon, see
+        _open_new_window_icon() — two Unicode glyphs, "↗" then "⧉", were tried first
+        as plain button text and both confirmed rendering as mangled tofu) and one
+        pill-styled row per task, echoing the real per-project To-Do tab's own look
+        (_todo_paper_css()) rather than a plain default QCheckBox. A completed task
+        (only present when "Show Completed" is on) renders with a green checkmark
+        circle and struck-through, dimmed text rather than a plain grey circle —
+        same visual language as _todo_paper_css()'s own done state. `items` is a
+        list of (line_index, text, done) tuples from
+        _get_project_todo_items(path, include_done=...), pending tasks first (in
+        their original file order), completed ones after — so a completed task
+        doesn't visually interrupt the active list it just left."""
+        group = QWidget()
+        group_layout = QVBoxLayout(group)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.setSpacing(6)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+
+        name_btn = QPushButton(self.get_display_name_for_config_path(path))
+        name_btn.setFlat(True)
+        name_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        name_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {self.t('fg_primary')};
+                font-weight: bold;
+                font-size: 13px;
+                text-align: left;
+                border: none;
+                padding: 2px 0;
+            }}
+            QPushButton:hover {{
+                color: {self.t('bg_category')};
+                text-decoration: underline;
+            }}
+        """)
+        name_btn.clicked.connect(lambda checked=False, p=path: self._alltodo_open_project_todo(p))
+        header_layout.addWidget(name_btn)
+        header_layout.addStretch()
+
+        open_btn = QPushButton()
+        open_btn.setIcon(self._open_new_window_icon())
+        open_btn.setIconSize(QSize(16, 16))
+        open_btn.setFixedWidth(26)
+        open_btn.setToolTip("Open this project in a new window")
+        open_btn.setStyleSheet(getattr(self, '_alltodo_btn_style', ''))
+        open_btn.clicked.connect(lambda checked=False, p=path: self.open_config_in_new_window(p))
+        header_layout.addWidget(open_btn)
+
+        group_layout.addWidget(header)
+
+        colors = self._alltodo_pill_colors()
+        ordered_items = sorted(items, key=lambda item: item[2])  # pending (False) before done (True)
+        for line_index, text, done in ordered_items:
+            row = QWidget()
+            row.setObjectName("alltodoPill")
+            row.setStyleSheet(
+                f"#alltodoPill {{ background-color: {colors['row_bg']}; border-radius: 16px; }}"
+            )
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(14, 7, 14, 7)
+            row_layout.setSpacing(10)
+
+            circle = QPushButton()
+            circle.setFixedSize(22, 22)
+            circle.setCursor(Qt.CursorShape.PointingHandCursor)
+            circle.setToolTip("Mark as not done" if done else "Mark as done")
+            circle_bg = colors['done_bg'] if done else colors['checkbox_bg']
+            circle_hover_bg = colors['checkbox_bg'] if done else colors['done_bg']
+            circle.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {circle_bg};
+                    border: none;
+                    border-radius: 11px;
+                }}
+                QPushButton:hover {{
+                    background-color: {circle_hover_bg};
+                }}
+            """)
+            if done:
+                circle.setIcon(self._alltodo_checkmark_icon())
+                circle.setIconSize(QSize(12, 12))
+            circle.clicked.connect(
+                lambda checked=False, p=path, idx=line_index, t=text: self._alltodo_toggle_task(p, idx, t)
+            )
+            row_layout.addWidget(circle)
+
+            label = AllTodoTaskEdit(
+                text,
+                lambda new_text, p=path, idx=line_index, t=text: self._alltodo_rename_task(p, idx, t, new_text)
+            )
+            label.setToolTip("Click to rename")
+            label_color = colors['done_ink'] if done else colors['row_ink']
+            label.setStyleSheet(f"""
+                QLineEdit {{
+                    background: transparent;
+                    border: none;
+                    color: {label_color};
+                    font-weight: bold;
+                    font-size: 12px;
+                }}
+            """)
+            if done:
+                font = label.font()
+                font.setStrikeOut(True)
+                label.setFont(font)
+            row_layout.addWidget(label, 1)
+
+            group_layout.addWidget(row)
+
+        return group
+
+    def _refresh_all_todos_view(self):
+        """Full rebuild-from-disk of the All To-Dos list — called on every entry into
+        the "alltodo" viewer tab and by its own Refresh button. Deliberately no
+        QFileSystemWatcher: watching every known project's todo.md simultaneously is
+        an N-watcher, debounce-storm risk for a view this cheap to just re-read on
+        demand — a manual Refresh button is the same convention every other viewer
+        already uses."""
+        if not hasattr(self, '_alltodo_list_layout'):
+            return
+        while self._alltodo_list_layout.count():
+            item = self._alltodo_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        show_completed = self.settings.get("alltodo_show_completed", False)
+        scope_current = self.settings.get("alltodo_scope", "all") == "current"
+        if scope_current and getattr(self, 'current_config_file', None):
+            scan_paths = [self.current_config_file]
+        else:
+            scan_paths = self._all_known_project_paths()
+
+        any_tasks = False
+        for path in scan_paths:
+            items = self._get_project_todo_items(path, include_done=show_completed)
+            if not items:
+                continue
+            any_tasks = True
+            self._alltodo_list_layout.addWidget(self._build_alltodo_project_group(path, items))
+
+        if not any_tasks:
+            scope_phrase = "the current project" if scope_current else "any project"
+            msg = f"No tasks in {scope_phrase}." if show_completed else f"No outstanding tasks in {scope_phrase}."
+            empty = QLabel(msg)
+            empty.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px; padding: 8px 0;")
+            empty.setWordWrap(True)
+            self._alltodo_list_layout.addWidget(empty)
+
+        self._alltodo_list_layout.addStretch(1)
+        self._refresh_alltodo_project_picker()
+
     @staticmethod
     def _parse_csv_duration(value):
         """Parse a CSV Duration field to seconds. Handles int seconds or 'H:MM' / 'H:MM:SS' strings."""
@@ -18470,6 +19194,8 @@ function filterAliases(q) {{
             self.code_container.hide()
         if hasattr(self, 'todo_container'):
             self.todo_container.hide()
+        if hasattr(self, 'alltodo_container'):
+            self.alltodo_container.hide()
         if hasattr(self, 'settings_container'):
             self.settings_container.hide()
 
@@ -18489,6 +19215,8 @@ function filterAliases(q) {{
             mode_info["code"] = ("Editor", "Code Editor", self.code_container)
         if hasattr(self, 'todo_container'):
             mode_info["todo"] = ("To-Do", "Project To-Do", self.todo_container)
+        if hasattr(self, 'alltodo_container'):
+            mode_info["alltodo"] = ("All To-Dos", "All To-Dos", self.alltodo_container)
         if hasattr(self, 'settings_container'):
             mode_info["settings"] = ("Settings", "Project Settings", self.settings_container)
 
@@ -18522,6 +19250,11 @@ function filterAliases(q) {{
             if getattr(self, '_todo_loaded_for', None) != todo_reload_key:
                 self._todo_loaded_for = todo_reload_key
                 self._open_todo_in_muya()
+        elif mode == "alltodo":
+            # Always refresh on entry — a cheap read of a handful of small files, not
+            # an expensive Muya init, so no reload-key gate is needed here unlike
+            # Notes/To-Do above.
+            self._refresh_all_todos_view()
         elif mode == "folder":
             self.populate_folder_browser(self.folder_current_path)
         elif mode == "time":
@@ -20945,6 +21678,36 @@ function filterAliases(q) {{
             setattr(self, cache_attr, icon)
         return icon
 
+    def _open_new_window_icon(self):
+        """Plain single-color 'external link / open in new window' icon (a box with
+        an arrow out of its top-right corner) for the All To-Dos aggregator's per-
+        project header button — replaces a first attempt using the Unicode glyphs
+        "↗" then "⧉" as plain button text, both confirmed (via a live screenshot) to
+        render as mangled tofu/fallback glyphs rather than the intended arrow, since
+        the bundled Lato font doesn't cover them. Same theme-matched light/dark PNG
+        pair convention as _open_icon() — a bundled icon guarantees it always shows,
+        the same reasoning CLAUDE.md already documents for QIcon.fromTheme() lookups
+        and the tab-icons row, just extended to a button's Unicode-text glyph too."""
+        cache_attr = f'_open_new_window_icon_cache_{self.current_theme}'
+        icon = getattr(self, cache_attr, None)
+        if icon is None:
+            fname = "open-new-window-dark.png" if self.current_theme == "dark" else "open-new-window-light.png"
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", fname))
+            setattr(self, cache_attr, icon)
+        return icon
+
+    def _alltodo_checkmark_icon(self):
+        """Plain white checkmark for a completed task's round toggle button in the
+        All To-Dos aggregator (see _build_alltodo_project_group()) — overlaid on the
+        same green `done_bg` fill both themes already use, so one white-on-transparent
+        asset covers both (unlike _open_icon()/_open_new_window_icon(), no light/dark
+        pair is needed here)."""
+        icon = getattr(self, '_alltodo_checkmark_icon_cache', None)
+        if icon is None:
+            icon = QIcon(os.path.join(self.script_dir, "assets", "icons", "checkmark-white.png"))
+            self._alltodo_checkmark_icon_cache = icon
+        return icon
+
     def _image_icon(self):
         """Plain single-color 'image/picture' icon (frame + sun + mountain, the standard
         flat glyph for "this is a picture") for the Folder Browser's "Show Images" toggle
@@ -23076,23 +23839,28 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 current = f.read()
             self._write_todo_line(line, current)
 
-    def _write_todo_line(self, line, current_markdown):
+    def _write_todo_line(self, line, current_markdown, todo_path=None):
         """Append `line` to `current_markdown` and write the result to todo.md. If the
-        To-Do session is currently loaded, also pushes the new content back into the
-        live editor (via __setMuyaMarkdown(), which clears its own dirty flag — mirrored
-        here on the Python side) so the addition is visible immediately without needing
-        a tab switch, and stays in sync with what was just written to disk."""
+        To-Do session is currently loaded AND editing this exact file, also pushes the
+        new content back into the live editor (via __setMuyaMarkdown(), which clears
+        its own dirty flag — mirrored here on the Python side) so the addition is
+        visible immediately without needing a tab switch, and stays in sync with what
+        was just written to disk.
+
+        `todo_path` defaults to the CURRENT project's own todo.md (unchanged behavior
+        for every pre-existing caller, all of which only ever touch the current
+        project). Passed explicitly by _add_todo_to_project() when writing an
+        ARBITRARY other project's todo.md from the All To-Dos aggregator — the path
+        comparison in _push_todo_markdown_to_live_session() is what keeps that case
+        from ever pushing into a live session that's actually showing a different
+        project's file."""
         stripped = current_markdown.rstrip("\n")
         new_markdown = f"{stripped}\n{line}\n" if stripped else f"{line}\n"
-        todo_file = self._get_or_create_todo_file()
-        with open(todo_file, 'w', encoding='utf-8') as f:
+        if todo_path is None:
+            todo_path = self._get_or_create_todo_file()
+        with open(todo_path, 'w', encoding='utf-8') as f:
             f.write(new_markdown)
-        session = getattr(self, '_todo_muya_session', None)
-        if session is not None and session.editing and session.webview:
-            session.webview.page().runJavaScript(
-                f"window.__setMuyaMarkdown && window.__setMuyaMarkdown({json.dumps(new_markdown)})"
-            )
-            session.dirty = False
+        self._push_todo_markdown_to_live_session(new_markdown, todo_path)
 
     def _trigger_dictation_shortcut(self):
         """Fires from the optional configurable shortcut (settings['speechnote_shortcut'],

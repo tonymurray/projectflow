@@ -2,6 +2,19 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-11-17 (Desktop: new "All To-Dos" aggregated viewer tab)
+
+### Added
+- **"All To-Dos" viewer tab** — a new, always-available viewer tab (hideable via Settings → Features → Viewer Tabs, like every other viewer) showing outstanding tasks across every known project, not just the current one. Promotes the project mega-menu's existing read-only "Tasks" column to a full, interactive main-screen view: a checkbox to mark a task done, click-to-rename any task's text inline, and an "Add Task" row that can add a task to the current project or any other known project — including one that's never used Docs/To-Do before (its documents folder/todo.md is created on the spot).
+  - Task rows are styled as rounded pills matching the real per-project To-Do tab's own look (grey circle checkbox, green checkmark when done, strikethrough dimmed text) rather than a plain default checkbox list.
+  - Each project's group has a header with the project's name (click to switch to it and land on its own To-Do tab) and an "open in new window" button — a bundled icon, not a Unicode glyph, after two different glyphs were tried and confirmed rendering as mangled tofu in this app's bundled font.
+  - **"This project" / "All projects"** toggle narrows the view to just the currently open project.
+  - **"Include completed" / "To-do only"** toggle reveals already-completed tasks (struck through, green checkmark) instead of having them vanish the instant they're checked off — guards against an accidental click. Both toggles are machine-wide settings and label themselves by the action a click performs, not the current state.
+  - New icon assets: `assets/tab-icons/alltodo.{svg,png}`, `assets/icons/open-new-window-{light,dark}.png`, `assets/icons/checkmark-white.png`.
+
+### Changed
+- `_get_project_pending_tasks()` gained an optional `with_line_index` parameter and is now a thin wrapper over a new `_get_project_todo_items()` (which can also include completed tasks) — the mega-menu's own Tasks column is unaffected.
+
 ## 2026-11-15 (Mobile: automatic "Project Documents" section; All Projects picker polish)
 
 ### Added
