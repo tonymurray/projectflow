@@ -1,5 +1,6 @@
 <script>
   import { activeNote, noteSaved, queueNoteSave, activeProject } from '../lib/store.js';
+  import Icon from './Icon.svelte';
 
   let editing = false;
   let textarea;
@@ -15,7 +16,7 @@
 
   // Simple markdown → HTML (headings, bold, italic, code, lists, links)
   function renderMarkdown(md) {
-    if (!md) return '<p style="color:#555">No notes yet. Tap ✏️ to add.</p>';
+    if (!md) return '<p style="color:var(--t-dim)">No notes yet. Tap the Edit button to add.</p>';
     let html = md
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       // Code blocks
@@ -55,7 +56,7 @@
       {$noteSaved ? '● Saved' : '● Saving…'}
     </span>
     <button class="edit-btn" on:click={() => editing = !editing}>
-      {editing ? '👁 View' : '✏️ Edit'}
+      <Icon name={editing ? 'eye' : 'edit-pencil'} size="0.95em" /> {editing ? 'View' : 'Edit'}
     </button>
   </div>
 
@@ -93,8 +94,9 @@
   .unsaved { color: var(--t-unsaved); }
 
   .edit-btn {
-    background: var(--bg-card); color: var(--t-muted); border: 1px solid var(--bd);
-    border-radius: 5px; padding: 5px 12px; font-size: 0.82rem;
+    background: var(--m3-surface-container); color: var(--t-muted); border: 1px solid var(--m3-outline);
+    border-radius: var(--radius-full); padding: 5px 14px; font-size: 0.82rem;
+    display: inline-flex; align-items: center; gap: 6px;
   }
 
   textarea {

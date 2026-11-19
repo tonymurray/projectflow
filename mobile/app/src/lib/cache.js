@@ -15,6 +15,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 
 const PROJECTS_DIR = 'projects-cache';
 const NOTES_DIR = 'notes-cache';
+const TODOS_DIR = 'todos-cache';
 
 async function writeEnvelope(dir, filename, data) {
   try {
@@ -58,4 +59,14 @@ export function cacheNote(filename, text) {
 
 export function getCachedNote(filename) {
   return readEnvelope(NOTES_DIR, filename);
+}
+
+// Keyed by documentsSubfolder (the same key loadTodo()/saveTodo() already use), not
+// project filename — avoids needing a second lookup table to go from one to the other.
+export function cacheTodo(documentsSubfolder, content) {
+  return writeEnvelope(TODOS_DIR, documentsSubfolder, content);
+}
+
+export function getCachedTodo(documentsSubfolder) {
+  return readEnvelope(TODOS_DIR, documentsSubfolder);
 }

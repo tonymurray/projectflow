@@ -2,6 +2,7 @@
   import { Capacitor, registerPlugin } from '@capacitor/core';
   import { activeConfig, isMobileLauncher, getLaunchUrl, config } from '../lib/store.js';
   import { resolveToNextcloudRelPath, nextcloudWebUrl, getNextcloudFileId, listProjectDocuments } from '../lib/webdav.js';
+  import Icon from './Icon.svelte';
 
   const NextcloudApp = Capacitor.isNativePlatform() ? registerPlugin('NextcloudApp') : null;
 
@@ -109,9 +110,9 @@
           >
             <span class="name">{item[0]}</span>
             {#if url}
-              <span class="arrow">↗</span>
+              <span class="arrow"><Icon name="open-new-window" size="0.85em" /></span>
             {:else if ncRel}
-              <span class="arrow nc">NC↗</span>
+              <span class="arrow nc">NC <Icon name="open-new-window" size="0.8em" /></span>
             {:else}
               <span class="na">desktop only</span>
             {/if}
@@ -121,11 +122,13 @@
     {/each}
     {#if docItems.length > 0}
       <div class="category">
-        <div class="cat-header">Project Documents</div>
+        <div class="cat-header docs">
+          <Icon name="open-folder" size="0.85em" /> Project Documents
+        </div>
         {#each docItems as doc}
           <button class="launcher link" on:click={() => launchDocument(doc)} title="Open in Nextcloud">
             <span class="name">{titleizeStem(doc.name)}</span>
-            <span class="arrow nc">NC↗</span>
+            <span class="arrow nc">NC <Icon name="open-new-window" size="0.8em" /></span>
           </button>
         {/each}
       </div>
@@ -135,7 +138,7 @@
         <div class="cat-header">Links (viewers)</div>
         <button class="launcher link" on:click={() => window.open(viewerUrl, '_blank')} title={viewerUrl}>
           <span class="name">Open Web Viewer</span>
-          <span class="arrow">↗</span>
+          <span class="arrow"><Icon name="open-new-window" size="0.85em" /></span>
         </button>
       </div>
     {/if}
@@ -149,24 +152,31 @@
   .category { margin-bottom: 16px; }
   .cat-header {
     font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--accent);
+    text-transform: uppercase; color: var(--m3-primary);
     padding: 4px 0 6px; margin-bottom: 4px;
-    border-bottom: 1px solid var(--bd-sub);
+    border-bottom: 1px solid var(--m3-outline-variant);
+  }
+  .cat-header.docs {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--m3-primary-container); color: var(--m3-on-primary-container);
+    border-radius: var(--radius-md); border-bottom: none;
+    padding: 8px 12px; margin-bottom: 8px;
   }
 
   .launcher {
     display: flex; align-items: center; justify-content: space-between;
-    width: 100%; background: var(--bg-card); border: 1px solid var(--bd);
-    border-radius: 6px; padding: 10px 14px; margin-bottom: 4px;
+    width: 100%; background: var(--m3-surface-container); border: none;
+    border-radius: var(--radius-md); padding: 11px 14px; margin-bottom: 5px;
     color: var(--t-sec); font-size: 0.9rem; text-align: left;
+    box-shadow: var(--elevation-1);
   }
   .launcher.link { color: var(--t-primary); }
-  .launcher.link:hover { background: var(--bg-hover); border-color: var(--bd-active); }
-  .launcher:disabled { opacity: 0.45; cursor: default; }
+  .launcher.link:hover { background: var(--bg-hover); }
+  .launcher:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
 
   .name { flex: 1; }
-  .arrow { color: var(--accent); font-size: 0.8rem; margin-left: 8px; }
-  .arrow.nc { color: var(--t-muted); font-size: 0.68rem; }
+  .arrow { color: var(--m3-primary); font-size: 0.8rem; margin-left: 8px; display: inline-flex; align-items: center; }
+  .arrow.nc { color: var(--t-muted); font-size: 0.68rem; display: inline-flex; align-items: center; gap: 2px; }
   .na { font-size: 0.72rem; color: var(--t-dimmer); margin-left: 8px; }
 
   @media (min-width: 550px) {

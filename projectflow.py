@@ -5126,15 +5126,58 @@ class ProjectFlowApp(QMainWindow):
         console_layout.addWidget(self._proj_console_browse_btn)
         form_layout.addRow(field_label("Terminal Path:"), console_layout)
 
-        # Folder Start Path
+        # Work Folder (label only — "Work Folder" is already the established term the
+        # Folder browser's own shortcuts row uses for this same pinned folder_path; this
+        # field used to be labeled "Folder Start Path", which named the mechanism rather
+        # than matching that existing vocabulary. Underlying attribute/JSON key
+        # (folder_path/config_folder_path) unchanged, same precedent as Terminal Path
+        # above keeping console_path.)
+        work_folder_layout = QVBoxLayout()
+        work_folder_layout.setSpacing(4)
         folder_start_layout = QHBoxLayout()
         self._proj_folder_path = QLineEdit()
-        self._proj_folder_path.setPlaceholderText("Default folder for browser (leave blank for home)")
+        self._proj_folder_path.setPlaceholderText("Default folder for the file browser (leave blank for home)")
         self._proj_folder_browse_btn = QPushButton("Browse")
         self._proj_folder_browse_btn.clicked.connect(lambda: self._browse_folder(self._proj_folder_path))
         folder_start_layout.addWidget(self._proj_folder_path)
         folder_start_layout.addWidget(self._proj_folder_browse_btn)
-        form_layout.addRow(field_label("Folder Start Path:"), folder_start_layout)
+        work_folder_layout.addLayout(folder_start_layout)
+
+        # "Use Documents Folder" — for a project that's really just a pile of documents
+        # with no separate working files (e.g. a filing/admin project), points Work Folder
+        # at the exact same place as the Documents folder instead of leaving it unset/
+        # elsewhere. Resolves/creates that folder immediately (same lazy get-or-create
+        # _get_or_create_project_documents_folder() every other "Documents" entry point
+        # uses) and just fills the text field — same "doesn't save until Save is clicked"
+        # behavior as Browse above (_proj_folder_path.textChanged is already wired to
+        # _mark_settings_form_dirty() at the end of this method). The Folder browser's own
+        # shortcuts row detects this exact-same-path case and merges "Work Folder"/
+        # "Documents" into one combined button instead of two redundant ones — see
+        # _build_folder_shortcuts_row().
+        work_folder_actions_row = QHBoxLayout()
+        self._proj_use_docs_as_work_btn = QPushButton("📁 Use Documents Folder")
+        self._proj_use_docs_as_work_btn.setToolTip(
+            "Point the Work Folder at this project's own documents/<project-name>/ folder — "
+            "useful for a documents-only project with no separate working files"
+        )
+        def _use_docs_as_work_folder():
+            self._proj_folder_path.setText(self._get_or_create_project_documents_folder())
+        self._proj_use_docs_as_work_btn.clicked.connect(_use_docs_as_work_folder)
+        work_folder_actions_row.addWidget(self._proj_use_docs_as_work_btn)
+        work_folder_actions_row.addStretch()
+        work_folder_layout.addLayout(work_folder_actions_row)
+
+        self._proj_work_folder_desc = QLabel(
+            "Typically the project's own folder — where its content or code actually lives. "
+            "Documentation and reference files are separate: upload or add them via Docs/Resources "
+            "and they're saved into this project's own documents/<project-name>/ folder, where "
+            "they show up automatically under \"Project Documents\" (Resources). For a project "
+            "that's really just documents with no working files of its own, use \"Use Documents "
+            "Folder\" above to point Work Folder at that same place."
+        )
+        self._proj_work_folder_desc.setWordWrap(True)
+        work_folder_layout.addWidget(self._proj_work_folder_desc)
+        form_layout.addRow(field_label("Work Folder:"), work_folder_layout)
 
         # Note: per-project Terminal/Browser Links override fields were removed from this
         # form — always use the global Settings dialog's values now. self.config_terminal/
@@ -5348,6 +5391,7 @@ class ProjectFlowApp(QMainWindow):
         self._proj_baloo_desc.setStyleSheet(desc_style)
         self._settings_scan_docs_desc.setStyleSheet(desc_style)
         self._settings_kickstart_desc.setStyleSheet(desc_style)
+        self._proj_work_folder_desc.setStyleSheet(desc_style)
 
     def _style_project_color_button(self):
         """Style self._proj_color_btn to preview the currently-chosen color (or a plain
@@ -21037,7 +21081,7 @@ function filterAliases(q) {{
         # having both a redundant, confusing duplicate. The "pin current folder as this
         # project's default" action "⌂⌂" also used to provide while unpinned is still
         # available via the 📌 button at the end of this toolbar (set_viewer_as_default())
-        # or the Project Settings viewer's "Folder Start Path" field.
+        # or the Project Settings viewer's "Work Folder" field.
 
         # Refresh button
         refresh_btn = QPushButton("↻")
@@ -21179,7 +21223,7 @@ function filterAliases(q) {{
         # create_folder_toolbar's main toolbar, this panel has no equivalent 📌
         # pin-default button of its own — "pin current folder as this project's default"
         # while unpinned is still reachable via the main Folder viewer's own 📌 button or
-        # the Project Settings viewer's "Folder Start Path" field, just not from here.
+        # the Project Settings viewer's "Work Folder" field, just not from here.
 
         refresh_btn = QPushButton("↻")
         refresh_btn.setStyleSheet(mini_btn_style)
@@ -22311,7 +22355,11 @@ function filterAliases(q) {{
         "Documents" doesn't come from _get_folder_location_shortcuts() and is never
         skipped — a documents subfolder is always resolvable/creatable on click, never
         "unset" (see _get_or_create_project_documents_folder()) — so this row is now never
-        fully empty either, unlike before.
+        fully empty either, unlike before. If Work Folder has been deliberately pointed at
+        the exact same path as Documents (the Project Settings viewer's "Use Documents
+        Folder" button, for a documents-only project with no separate working files), the
+        two collapse into one "Work/Documents Folder" button instead of showing the same
+        path twice.
 
         Each button is checkable and highlighted (see the QPushButton:checked rule, the
         same convention create_code_editor_toolbar's wrap-toggle button uses) whenever it
@@ -22369,15 +22417,30 @@ function filterAliases(q) {{
             row_layout.addWidget(btn)
             self._folder_shortcut_button_refs[side].append((btn, path))
 
+        # Non-mutating peek at where Documents resolves to, so it can be compared against
+        # "Work Folder" below (see "Use Documents Folder" in the Project Settings viewer,
+        # which deliberately sets folder_path to this exact same path for a documents-only
+        # project) — computed once since _preview_project_documents_path() is called from
+        # up to two places below.
+        documents_path = self._preview_project_documents_path()
+        normalized_documents_path = os.path.normpath(os.path.expanduser(documents_path))
+
         inserted_project_files = False
         for name, path in shortcuts:
+            if name == "Work Folder" and os.path.normpath(os.path.expanduser(path)) == normalized_documents_path:
+                # Work Folder and Documents are pinned to the identical folder — one
+                # combined button instead of two redundant ones pointing at the same place.
+                add_shortcut_button("Work/Documents Folder", path,
+                                     lambda checked=False, s=side: self.folder_go_project_documents(s))
+                inserted_project_files = True
+                continue
             add_shortcut_button(name, path, lambda checked=False, p=path, s=side: self._jump_to_folder_shortcut(p, s))
             if name == "Work Folder" and not inserted_project_files:
-                add_shortcut_button("Documents", self._preview_project_documents_path(),
+                add_shortcut_button("Documents", documents_path,
                                      lambda checked=False, s=side: self.folder_go_project_documents(s))
                 inserted_project_files = True
         if not inserted_project_files:
-            add_shortcut_button("Documents", self._preview_project_documents_path(),
+            add_shortcut_button("Documents", documents_path,
                                  lambda checked=False, s=side: self.folder_go_project_documents(s))
 
         row_layout.addStretch()

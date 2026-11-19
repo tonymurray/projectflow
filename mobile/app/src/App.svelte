@@ -38,6 +38,32 @@
     --t-unsaved:     #c07840;
     --t-error:       #eb5757;
     --t-link:        #5b9bd5;
+
+    /* ── Material 3 role tier (additive — existing vars above stay the source of truth for hue) ── */
+    --m3-primary:                 var(--accent-hi);
+    --m3-on-primary:              #0f1117;
+    --m3-primary-container:       #2a3f66;
+    --m3-on-primary-container:    #cfe2ff;
+    --m3-secondary-container:     #1f3d2c;
+    --m3-on-secondary-container:  #9eeec0;
+    --m3-surface:                 var(--bg-body);
+    --m3-surface-container-low:   var(--bg-header);
+    --m3-surface-container:       var(--bg-card);
+    --m3-surface-container-high:  #20243a;
+    --m3-surface-container-highest: #262b45;
+    --m3-outline:                 var(--bd);
+    --m3-outline-variant:         var(--bd-sub);
+    --m3-nav-pill:                var(--bg-active-hi);
+    --m3-on-nav-pill:             var(--accent-hi);
+
+    --elevation-0: none;
+    --elevation-1: 0 1px 3px rgba(0,0,0,0.4);
+    --elevation-2: 0 8px 32px rgba(0,0,0,0.5);
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-full: 999px;
   }
   :global([data-theme="light"]) {
     --bg-body:       #f0f2f7;
@@ -65,6 +91,32 @@
     --t-unsaved:     #b06010;
     --t-error:       #cc2222;
     --t-link:        #1a56c4;
+
+    /* ── Material 3 role tier (additive) ── */
+    --m3-primary:                 var(--accent);
+    --m3-on-primary:              #ffffff;
+    --m3-primary-container:       #d8e6fb;
+    --m3-on-primary-container:    #163865;
+    --m3-secondary-container:     #d7f3e1;
+    --m3-on-secondary-container:  #14602f;
+    --m3-surface:                 var(--bg-body);
+    --m3-surface-container-low:   var(--bg-header);
+    --m3-surface-container:       var(--bg-card);
+    --m3-surface-container-high:  #eef1f5;
+    --m3-surface-container-highest: #e4e9f5;
+    --m3-outline:                 var(--bd);
+    --m3-outline-variant:         var(--bd-sub);
+    --m3-nav-pill:                var(--bg-active);
+    --m3-on-nav-pill:             var(--accent);
+
+    --elevation-0: none;
+    --elevation-1: 0 1px 3px rgba(0,0,0,0.4);
+    --elevation-2: 0 8px 32px rgba(0,0,0,0.5);
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-full: 999px;
   }
 
   /* Scale base font up on larger screens (tablets/e-readers); phones clamp at 16px */

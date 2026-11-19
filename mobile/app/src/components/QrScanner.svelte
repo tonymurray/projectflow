@@ -98,7 +98,7 @@
     width: 100%; height: 100%;
   }
   .status {
-    color: #aaa; font-size: 0.85rem; padding: 16px 0 4px;
+    color: var(--t-dim); font-size: 0.85rem; padding: 16px 0 4px;
     flex-shrink: 0;
   }
   .preview {
@@ -107,8 +107,8 @@
   .hidden { display: none; }
   .cancel-btn {
     flex-shrink: 0; width: 100%; padding: 18px;
-    background: #1a1d26; color: #c8ddf7;
-    border: none; border-top: 1px solid #2e3244;
+    background: var(--m3-surface-container-high); color: var(--t-active);
+    border: none; border-top: 1px solid var(--bd);
     font-size: 1rem;
   }
 </style>

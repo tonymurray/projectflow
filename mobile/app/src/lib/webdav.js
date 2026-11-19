@@ -304,6 +304,24 @@ export async function getNextcloudFileId(relPath) {
 
 // ── Documents (file-share uploads) ──────────────────────────────────────────────────
 
+// Resolves a project's documents_subfolder (+ optional filename within it) against the
+// global `documentsRoot` setting. Shared by every function below that reaches into a
+// project's documents/<slug>/ folder (upload, the auto-discovered listing, and the
+// To-Dos feature's todo.md read/write) so the root/docsRoot/relPath construction lives
+// in exactly one place. Returns null if either half is missing — callers decide what
+// "no documents folder yet" means for them (hard error vs. silent skip), since that
+// differs by caller (see uploadDocumentToProject's own guard below). `relPath` (NOT
+// just `${documentsSubfolder}/${filename}`) is what callers like addFileToProject()
+// actually need to persist — it's the documentsRoot-relative path used to build a
+// `~/Nextcloud/${relPath}`-style launcher item, so it must keep the docsRoot prefix.
+function documentsRef(documentsSubfolder, filename = '') {
+  if (!_config?.documentsRoot || !documentsSubfolder) return null;
+  const root = `${_config.server}/remote.php/dav/files/${encodeURIComponent(_config.username)}`;
+  const docsRoot = _config.documentsRoot.replace(/^\//, '').replace(/\/$/, '');
+  const relPath = filename ? `${docsRoot}/${documentsSubfolder}/${filename}` : `${docsRoot}/${documentsSubfolder}`;
+  return { url: `${root}/${encodePath(relPath)}`, relPath };
+}
+
 // Uploads a shared file into a project's documents folder — resolved from the global
 // `documentsRoot` setting (Settings → Advanced → Documents folder) plus the project's own
 // `documents_subfolder` field. That field is written by the desktop app's Documents Folder
@@ -319,10 +337,7 @@ export async function uploadDocumentToProject(documentsSubfolder, filename, base
   if (!documentsSubfolder) {
     throw new Error("This project has no documents folder yet — open it on desktop and use the Docs tab once first.");
   }
-  const root = `${_config.server}/remote.php/dav/files/${encodeURIComponent(_config.username)}`;
-  const docsRoot = _config.documentsRoot.replace(/^\//, '').replace(/\/$/, '');
-  const relPath = `${docsRoot}/${documentsSubfolder}/${filename}`;
-  const url = `${root}/${encodePath(relPath)}`;
+  const { url, relPath } = documentsRef(documentsSubfolder, filename);
   const res = await request('PUT', url, null, { 'Content-Type': mimeType || 'application/octet-stream' }, base64Data);
   if (!res.ok) throw new HttpError(res.status, 'PUT');
   return relPath;
@@ -344,11 +359,9 @@ const LIST_DOCS_BODY = `<?xml version="1.0"?>
 </d:propfind>`;
 
 export async function listProjectDocuments(documentsSubfolder) {
-  if (!_config?.documentsRoot || !documentsSubfolder) return [];
-  const root = `${_config.server}/remote.php/dav/files/${encodeURIComponent(_config.username)}`;
-  const docsRoot = _config.documentsRoot.replace(/^\//, '').replace(/\/$/, '');
-  const relFolder = `${docsRoot}/${documentsSubfolder}`;
-  const url = `${root}/${encodePath(relFolder)}`;
+  const ref = documentsRef(documentsSubfolder);
+  if (!ref) return [];
+  const { url, relPath: relFolder } = ref;
   let res;
   try {
     res = await request('PROPFIND', url, LIST_DOCS_BODY, {
@@ -377,4 +390,34 @@ export async function listProjectDocuments(documentsSubfolder) {
       return { name, relPath: `${relFolder}/${name}`, fileId };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ── Todos ─────────────────────────────────────────────────────────────────────
+
+// Mirrors loadNote/saveNote exactly (404 → '', plain-text PUT body — already proven to
+// work over the native WebDavPlugin), just pointed at a project's documents/<slug>/
+// folder instead of the notes folder. A project without a documents_subfolder yet
+// reads as "no tasks" (empty string, same as a 404) rather than an error — same
+// "absent until used" convention listProjectDocuments() already follows. Saving,
+// though, can't silently no-op the same way: writing a task has to land SOMEWHERE, so
+// a missing documents folder is a real error here (mirrors uploadDocumentToProject's
+// own guard) — mobile still never invents the folder itself.
+
+export async function loadTodo(documentsSubfolder) {
+  const ref = documentsRef(documentsSubfolder, 'todo.md');
+  if (!ref) return '';
+  const res = await request('GET', ref.url);
+  if (res.status === 404) return '';
+  if (!res.ok) throw new HttpError(res.status, 'GET');
+  return await res.text();
+}
+
+export async function saveTodo(documentsSubfolder, content) {
+  const ref = documentsRef(documentsSubfolder, 'todo.md');
+  if (!ref) {
+    throw new Error("This project has no documents folder yet — open it on desktop and use the Docs tab once first.");
+  }
+  const res = await request('PUT', ref.url, content);
+  if (!res.ok) throw new HttpError(res.status, 'PUT');
+  return true;
 }

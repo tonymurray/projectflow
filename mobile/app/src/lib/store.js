@@ -1,8 +1,9 @@
 import { writable, derived, get } from 'svelte/store';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Network } from '@capacitor/network';
-import { setConfig, listProjects, loadProject, saveProjectConfig, loadNote, saveNote, notesFilename, resolveToNextcloudRelPath, uploadDocumentToProject, isOfflineish, NetworkError } from './webdav.js';
-import { cacheProject, getCachedProject, cacheNote, getCachedNote } from './cache.js';
+import { setConfig, listProjects, loadProject, saveProjectConfig, loadNote, saveNote, notesFilename, resolveToNextcloudRelPath, uploadDocumentToProject, loadTodo, saveTodo, isOfflineish, NetworkError } from './webdav.js';
+import { cacheProject, getCachedProject, cacheNote, getCachedNote, cacheTodo, getCachedTodo } from './cache.js';
+import { parseTodos, toggleLine, renameLine, appendLine } from './todoParser.js';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -359,12 +360,13 @@ export async function selectProject(project) {
   }
 }
 
-// Fetches and caches every known project's config + notes in one pass, so they're all
-// available offline afterward — not just whichever ones happen to have been opened this
-// session. Sequential rather than parallel, deliberately: this is a manual, occasional
-// "get ready to go offline" action (triggered from Settings), not something latency-
-// sensitive, and sequential avoids firing a burst of concurrent requests at the server.
-// Skips past any individual project's failure and keeps going with the rest.
+// Fetches and caches every known project's config + notes + todo.md (if it has a
+// documents_subfolder) in one pass, so they're all available offline afterward — not
+// just whichever ones happen to have been opened this session. Sequential rather than
+// parallel, deliberately: this is a manual, occasional "get ready to go offline" action
+// (triggered from Settings), not something latency-sensitive, and sequential avoids
+// firing a burst of concurrent requests at the server. Skips past any individual
+// project's failure (todo.md included) and keeps going with the rest.
 export async function precacheAllProjects() {
   const list = get(projects);
   let succeeded = 0;
@@ -376,6 +378,10 @@ export async function precacheAllProjects() {
       const nf = notesFilename(project.filename);
       const note = await loadNote(nf);
       await cacheNote(nf, note);
+      if (cfg?.documents_subfolder) {
+        const todo = await loadTodo(cfg.documents_subfolder);
+        await cacheTodo(cfg.documents_subfolder, todo);
+      }
       succeeded++;
     } catch {
       failed++;
@@ -416,9 +422,237 @@ export async function persistNote(content) {
   }
 }
 
+// ── Todos ─────────────────────────────────────────────────────────────────────
+//
+// A single aggregated list rather than desktop's "This project"/"All projects" scope
+// toggle (a deliberate mobile simplification, by direct request): the current
+// project's group is always first, every other known project follows alphabetically.
+// No scope/mode to persist — the only thing this feature remembers is the completed-
+// tasks filter.
+
+const SHOW_COMPLETED_TODOS_KEY = 'pf_show_completed_todos';
+
+export const showCompletedTodos = writable(localStorage.getItem(SHOW_COMPLETED_TODOS_KEY) === '1');
+showCompletedTodos.subscribe(v => localStorage.setItem(SHOW_COMPLETED_TODOS_KEY, v ? '1' : '0'));
+
+// [{ project: {filename, name}, items: [{lineIndex, text, done}], fromCache, cachedAt }]
+export const allTodos = writable([]);
+export const todosLoading = writable(false);
+export const todosError = writable(null);
+
+// Resolves one project's parsed config, reusing the already-in-memory activeConfig for
+// whichever project is currently active (saves a round trip) rather than always
+// re-fetching — every other project still needs its own loadProject() call, since
+// there's no in-memory map of every project's config kept around.
+async function resolveProjectConfig(project) {
+  const current = get(activeProject);
+  if (current && project.filename === current.filename) {
+    const cfg = get(activeConfig);
+    if (cfg) return cfg;
+  }
+  return await loadProject(project.filename);
+}
+
+// Network-first fetch of one project's todo.md, falling back to its cached copy on an
+// offline-ish failure (same convention selectProject() already uses) — a real error
+// (404/401/etc.) is NOT swallowed here, it propagates so the caller can decide whether
+// to skip just this one project (loadAllTodos) or surface it (a direct write action).
+async function fetchTodoWithFallback(documentsSubfolder) {
+  try {
+    const content = await loadTodo(documentsSubfolder);
+    cacheTodo(documentsSubfolder, content); // fire-and-forget, keeps the offline copy fresh
+    return { content, fromCache: false, cachedAt: null };
+  } catch (e) {
+    if (!isOfflineish(e)) throw e;
+    const cached = await getCachedTodo(documentsSubfolder);
+    if (!cached) throw e;
+    return { content: cached.data, fromCache: true, cachedAt: cached.cachedAt };
+  }
+}
+
+// Rebuilds just ONE project's group from the server (or cache) and splices it back
+// into allTodos — used after every toggle/rename/add so a single-line change doesn't
+// require re-fetching every other project's todo.md too (unlike desktop's local-disk
+// full-rebuild-after-any-action convention, a real network round trip per project is
+// too costly to redo N times for a one-line change).
+async function refreshOneGroup(project, documentsSubfolder) {
+  const { content, fromCache, cachedAt } = await fetchTodoWithFallback(documentsSubfolder);
+  const group = {
+    project: { filename: project.filename, name: project.name },
+    items: parseTodos(content),
+    fromCache,
+    cachedAt,
+  };
+  allTodos.update(groups => {
+    const exists = groups.some(g => g.project.filename === project.filename);
+    return exists
+      ? groups.map(g => (g.project.filename === project.filename ? group : g))
+      : [...groups, group];
+  });
+  return group;
+}
+
+// Builds the full aggregated list, current project's group plus every other known
+// project. A project that can't even have its config read, or that has no
+// documents_subfolder yet, is silently skipped — same "absent until used" convention
+// listProjectDocuments() already follows, not an error. A non-current project with
+// zero checklist lines at all (done or pending) is skipped too — nothing a "Include
+// completed" toggle could ever reveal for it. The CURRENT project's group is always
+// kept even when empty, since it's the Add Task row's implicit target.
+//
+// Fetched with TODOS_CONCURRENCY projects in flight at once (a small worker pool
+// pulling from a shared index, not Promise.all over everything) rather than fully
+// sequential or fully parallel — confirmed live that a strictly sequential pass over
+// 50+ projects takes tens of seconds; firing all of them at once risks hammering the
+// Nextcloud server/native WebDAV bridge with 100+ simultaneous requests. Each group
+// is pushed into `allTodos` as soon as ITS OWN fetch resolves, not batched into one
+// allTodos.set() at the end — keeps the UI filling in progressively rather than
+// sitting on stale content for the whole pass. Because workers complete out of
+// request order under concurrency, `allTodos` does NOT come out in the same order as
+// the alphabetical `ordered` list it was built from — Todos.svelte finds the current
+// project's group by filename match (not by assuming it's allTodos[0]) and re-sorts
+// "Other Projects" alphabetically for display, so the visible order stays stable and
+// predictable regardless of which network call happened to finish first.
+const TODOS_CONCURRENCY = 6;
+
+// Generation counter guarding against overlapping loadAllTodos() calls — e.g. the
+// user switches project A -> B -> C in quick succession, firing three calls before
+// the first has finished its pass. Without this, two in-flight calls' incremental
+// allTodos.update() pushes can interleave, leaving stale data from an abandoned
+// project switch mixed into the list. Same token-and-compare pattern
+// Launchers.svelte's loadProjectDocuments() already uses for its own async race.
+let _todosLoadToken = 0;
+
+async function loadOneProjectGroup(project, isCurrent, token) {
+  let cfg = null;
+  try {
+    cfg = await resolveProjectConfig(project);
+  } catch {
+    cfg = null; // for a non-current project this just means "skip it" below; for the
+    // current project it still falls through to the empty-anchor branch next.
+  }
+  if (token !== _todosLoadToken) return;
+  if (!cfg?.documents_subfolder) {
+    // No documents folder (yet) — same "absent until used" skip every OTHER project
+    // gets. The CURRENT project is the one exception: it still gets an EMPTY group
+    // pushed, so its section always appears as the Add Task row's obvious anchor,
+    // rather than silently vanishing just because it hasn't used Docs/To-Do before.
+    // (Confirmed live on-device: without this, a current project with no documents
+    // folder dropped out of the list entirely, and whichever OTHER project happened
+    // to sort first alphabetically wrongly appeared to be "pinned first" instead.)
+    if (isCurrent) {
+      allTodos.update(groups => [...groups, {
+        project: { filename: project.filename, name: project.name },
+        items: [],
+        fromCache: false,
+        cachedAt: null,
+      }]);
+    }
+    return;
+  }
+  try {
+    const { content, fromCache, cachedAt } = await fetchTodoWithFallback(cfg.documents_subfolder);
+    if (token !== _todosLoadToken) return;
+    const items = parseTodos(content);
+    if (items.length === 0 && !isCurrent) return;
+    allTodos.update(groups => [...groups, {
+      project: { filename: project.filename, name: project.name },
+      items,
+      fromCache,
+      cachedAt,
+    }]);
+  } catch {
+    // a real error (404/401) for this one project — skip it, not the whole list
+  }
+}
+
+export async function loadAllTodos() {
+  const token = ++_todosLoadToken;
+  todosLoading.set(true);
+  todosError.set(null);
+  allTodos.set([]); // clear up front so a reload never shows a stale mix of old + new
+  const current = get(activeProject);
+  const list = get(projects);
+  const ordered = [
+    ...(current ? [current] : []),
+    ...list
+      .filter(p => !current || p.filename !== current.filename)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  ];
+
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      if (token !== _todosLoadToken) return; // a newer load has since started — abandon this one
+      const i = nextIndex++;
+      if (i >= ordered.length) return;
+      const project = ordered[i];
+      await loadOneProjectGroup(project, project.filename === current?.filename, token);
+    }
+  }
+  const workerCount = Math.min(TODOS_CONCURRENCY, ordered.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+
+  if (token === _todosLoadToken) todosLoading.set(false);
+}
+
+// Each action reads the LATEST content immediately before writing (never trusts the
+// in-memory `allTodos` copy), applies exactly one change, writes back, then refreshes
+// just that project's group — so a concurrent edit from desktop is never blindly
+// clobbered, and these stay simple discrete read-modify-write actions with no
+// debouncing (unlike Notes' continuous-typing autosave, a toggle/rename/add is a single
+// tap, not a keystroke stream).
+
+export async function toggleTodoTask(project, lineIndex, text) {
+  const cfg = await resolveProjectConfig(project);
+  const slug = cfg.documents_subfolder;
+  const content = await loadTodo(slug);
+  await saveTodo(slug, toggleLine(content, lineIndex, text));
+  return refreshOneGroup(project, slug);
+}
+
+export async function renameTodoTask(project, lineIndex, oldText, newText) {
+  const cfg = await resolveProjectConfig(project);
+  const slug = cfg.documents_subfolder;
+  const content = await loadTodo(slug);
+  await saveTodo(slug, renameLine(content, lineIndex, oldText, newText));
+  return refreshOneGroup(project, slug);
+}
+
+// `project` may be the current one or an explicitly different one picked from the Add
+// Task row's project <select> (falls back to the current project when left unset).
+export async function addTodoTask(project, title) {
+  const target = project || get(activeProject);
+  const cfg = await resolveProjectConfig(target);
+  const slug = cfg?.documents_subfolder;
+  if (!slug) {
+    throw new Error("This project has no documents folder yet — open it on desktop and use the Docs tab once first.");
+  }
+  const content = await loadTodo(slug);
+  await saveTodo(slug, appendLine(content, title));
+  return refreshOneGroup(target, slug);
+}
+
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
-export const activeTab = writable('launchers'); // 'launchers' | 'notes'
+export const activeTab = writable('launchers'); // 'launchers' | 'notes' | 'todos'
+
+// ── Navigation UI state ─────────────────────────────────────────────────────
+//
+// Whether the left-edge project-switcher drawer (NavDrawer.svelte) is open —
+// replaces the old top project-chip bar + "≡" ProjectPicker modal. A plain
+// boolean store rather than component-local state so the bottom-nav hamburger
+// button (in Main.svelte) and the drawer itself (which also self-closes on
+// pick/backdrop-tap) can both read/write the same flag.
+export const drawerOpen = writable(false);
+
+// Bumped (not booled) each time the Todos FAB is tapped, so Todos.svelte's own
+// focus-the-add-task-input effect fires again even on a second consecutive tap
+// where a boolean toggle would otherwise look unchanged to a reactive block.
+export const focusAddTaskSignal = writable(0);
+export function requestFocusAddTask() {
+  focusAddTaskSignal.update(n => n + 1);
+}
 
 // ── Share-to-app (Android ACTION_SEND) ──────────────────────────────────────────
 

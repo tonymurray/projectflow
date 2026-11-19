@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import { config } from '../lib/store.js';
   import SettingsForm from './SettingsForm.svelte';
+  import Icon from './Icon.svelte';
 
   const dispatch = createEventDispatcher();
 
@@ -21,7 +22,7 @@
   <div class="panel">
     <div class="panel-header">
       <span class="title">Settings</span>
-      <button class="close-btn" on:click={() => dispatch('close')}>✕</button>
+      <button class="close-btn" on:click={() => dispatch('close')}><Icon name="close" size="1.1em" /></button>
     </div>
 
     <div class="content">
@@ -39,22 +40,23 @@
   }
 
   .panel {
-    background: var(--bg-card); border: 1px solid var(--bd);
-    border-radius: 14px; width: 100%; max-width: 480px;
+    background: var(--m3-surface-container-high); border: 1px solid var(--m3-outline);
+    border-radius: var(--radius-lg); width: 100%; max-width: 480px;
     max-height: 88vh; display: flex; flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    box-shadow: var(--elevation-2);
   }
 
   .panel-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 16px; border-bottom: 1px solid var(--bd-sub);
+    padding: 14px 16px; border-bottom: 1px solid var(--m3-outline-variant);
     flex-shrink: 0;
   }
   .title { font-size: 1rem; font-weight: 600; color: var(--t-primary); }
   .close-btn {
     background: none; border: none; color: var(--t-muted);
-    font-size: 1.1rem; padding: 2px 8px; line-height: 1;
+    padding: 6px; line-height: 1; border-radius: var(--radius-full);
+    display: flex; align-items: center;
   }
 
   .content { padding: 14px 16px; overflow-y: auto; }

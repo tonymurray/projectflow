@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { pendingShare } from '../lib/store.js';
+  import Icon from './Icon.svelte';
 
   const dispatch = createEventDispatcher();
   let text = '';
@@ -29,7 +30,7 @@
   <div class="panel">
     <div class="panel-header">
       <span class="title">Paste Text or Link</span>
-      <button class="close-btn" on:click={() => dispatch('close')}>✕</button>
+      <button class="close-btn" on:click={() => dispatch('close')}><Icon name="close" size="1.1em" /></button>
     </div>
 
     <div class="content">
@@ -56,22 +57,23 @@
   }
 
   .panel {
-    background: var(--bg-card); border: 1px solid var(--bd);
-    border-radius: 14px; width: 100%; max-width: 480px;
+    background: var(--m3-surface-container-high); border: 1px solid var(--m3-outline);
+    border-radius: var(--radius-lg); width: 100%; max-width: 480px;
     max-height: 88vh; display: flex; flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    box-shadow: var(--elevation-2);
   }
 
   .panel-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 16px; border-bottom: 1px solid var(--bd-sub);
+    padding: 14px 16px; border-bottom: 1px solid var(--m3-outline-variant);
     flex-shrink: 0;
   }
   .title { font-size: 1rem; font-weight: 600; color: var(--t-primary); }
   .close-btn {
     background: none; border: none; color: var(--t-muted);
-    font-size: 1.1rem; padding: 2px 8px; line-height: 1;
+    padding: 6px; line-height: 1; border-radius: var(--radius-full);
+    display: flex; align-items: center;
   }
 
   .content { padding: 14px 16px; }
@@ -83,19 +85,19 @@
 
   textarea {
     width: 100%; min-height: 140px; box-sizing: border-box;
-    background: var(--bg-body); color: var(--t-primary);
-    border: 1px solid var(--bd-sub); border-radius: 8px;
+    background: var(--m3-surface-container); color: var(--t-primary);
+    border: 1px solid var(--m3-outline-variant); border-radius: var(--radius-md);
     padding: 10px 12px; font-size: 0.9rem; line-height: 1.5;
     resize: vertical; margin-bottom: 12px;
   }
-  textarea:focus { outline: none; border-color: var(--accent); }
+  textarea:focus { outline: none; border-color: var(--m3-primary); }
 
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .cancel-btn, .add-btn {
-    padding: 9px 16px; border-radius: 8px; font-size: 0.88rem; border: 1px solid var(--bd);
+    padding: 9px 18px; border-radius: var(--radius-full); font-size: 0.88rem; border: 1px solid var(--m3-outline);
   }
   .cancel-btn { background: none; color: var(--t-muted); }
-  .add-btn { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .add-btn { background: var(--m3-primary); color: var(--m3-on-primary); border-color: transparent; font-weight: 600; }
   .add-btn:disabled { opacity: 0.5; }
 
   @media (min-width: 550px) {

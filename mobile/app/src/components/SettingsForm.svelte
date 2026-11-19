@@ -3,6 +3,7 @@
   import { setConfig, listProjects } from '../lib/webdav.js';
   import { precacheAllProjects } from '../lib/store.js';
   import QrScanner from './QrScanner.svelte';
+  import Icon from './Icon.svelte';
 
   // The existing config to pre-fill from — null on first run (Setup.svelte), the current
   // $config object when revisiting (Settings.svelte). Shared by both so there is exactly
@@ -113,10 +114,10 @@
         class="pw-toggle"
         on:click={() => showPassword = !showPassword}
         title={showPassword ? 'Hide password' : 'Show password'}
-      >{showPassword ? '🙈' : '👁'}</button>
+      ><Icon name={showPassword ? 'eye-off' : 'eye'} size="1em" /></button>
     </div>
     <span class="hint">Nextcloud → Settings → Security → App passwords</span>
-    <button type="button" class="qr-btn" on:click={() => scanning = true}>Scan QR Code</button>
+    <button type="button" class="qr-btn" on:click={() => scanning = true}><Icon name="qr" size="0.95em" /> Scan QR Code</button>
   </label>
   <label>Projects folder path
     <input type="text" bind:value={projectsPath} placeholder="ProjectFlow" />
@@ -143,10 +144,10 @@
         <label class="loc-field">Nextcloud path
           <input type="text" bind:value={loc.remote} placeholder="(blank = root)" />
         </label>
-        <button type="button" class="remove-btn" on:click={() => removeLocation(i)}>✕ Remove this location</button>
+        <button type="button" class="remove-btn" on:click={() => removeLocation(i)}><Icon name="close" size="0.85em" /> Remove this location</button>
       </div>
     {/each}
-    <button type="button" class="add-btn" on:click={addLocation}>＋ Add another location</button>
+    <button type="button" class="add-btn" on:click={addLocation}><Icon name="add" size="0.9em" /> Add another location</button>
   </div>
 
   <div class="advanced">
@@ -183,7 +184,7 @@
       this just does all of them in one go, ahead of time.
     </p>
     <button type="button" class="add-btn" on:click={cacheAllNow} disabled={caching}>
-      {caching ? 'Caching…' : '⬇ Cache all projects now'}
+      {#if !caching}<Icon name="cache-download" size="0.9em" />{/if} {caching ? 'Caching…' : 'Cache all projects now'}
     </button>
     {#if cacheStatus}
       <p class="hint block">{cacheStatus}</p>
@@ -209,36 +210,43 @@
   }
   label.inline { flex-direction: row; align-items: center; gap: 8px; }
   input, select {
-    background: var(--bg-card); border: 1px solid var(--bd); border-radius: 6px;
+    background: var(--m3-surface-container); border: 1px solid var(--m3-outline); border-radius: var(--radius-sm);
     color: var(--t-primary); padding: 10px 12px; font-size: 0.95rem;
   }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input:focus, select:focus { outline: none; border-color: var(--m3-primary); }
   .pw-row { display: flex; gap: 6px; align-items: stretch; }
   .pw-row input { flex: 1; min-width: 0; }
   .pw-toggle {
-    flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--bd);
-    border-radius: 6px; padding: 0 12px; font-size: 1.1rem; margin-top: 0;
+    flex-shrink: 0; background: var(--m3-surface-container); border: 1px solid var(--m3-outline);
+    border-radius: var(--radius-sm); padding: 0 12px; margin-top: 0;
+    display: flex; align-items: center; justify-content: center;
   }
   .hint { font-size: 0.75rem; color: var(--t-dim); }
   .hint.block { margin: 0 0 4px; }
   .opt  { font-size: 0.72rem; color: var(--t-ghost); font-weight: normal; }
   button {
-    background: var(--bg-active); color: var(--t-active); border: 1px solid var(--bd-active);
-    border-radius: 6px; padding: 12px; font-size: 1rem; margin-top: 8px;
+    background: var(--m3-primary); color: var(--m3-on-primary); border: none;
+    border-radius: var(--radius-full); padding: 12px; font-size: 1rem; margin-top: 8px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   }
-  button:hover:not(:disabled) { background: var(--bg-active-hi); }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
   button:disabled { opacity: 0.5; }
+  .qr-btn, .remove-btn, .add-btn {
+    background: var(--m3-surface-container); color: var(--t-sec); border: 1px solid var(--m3-outline);
+    font-weight: normal;
+  }
   .qr-btn {
     margin-top: 6px; padding: 8px 12px; font-size: 0.85rem;
-    align-self: flex-start;
+    align-self: flex-start; border-radius: var(--radius-full);
   }
-  .status { font-size: 0.9rem; padding: 8px 12px; border-radius: 6px; background: var(--bg-card); }
+  .status { font-size: 0.9rem; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--m3-surface-container); }
   .ok  { color: var(--t-saved); }
   .err { color: var(--t-error); }
 
   .advanced {
-    border-top: 1px solid var(--bd-sub);
-    padding-top: 14px;
+    background: var(--m3-surface-container);
+    border-radius: var(--radius-md);
+    padding: 14px;
     display: flex; flex-direction: column; gap: 8px;
   }
   .advanced h2 {
@@ -249,7 +257,7 @@
     display: flex; flex-direction: column; gap: 8px;
   }
   .loc-group + .loc-group {
-    border-top: 1px solid var(--bd-sub);
+    border-top: 1px solid var(--m3-outline-variant);
     padding-top: 12px;
     margin-top: 4px;
   }
@@ -259,10 +267,11 @@
   }
   .loc-field input { font-size: 0.9rem; padding: 8px 10px; }
   .remove-btn {
-    align-self: flex-start; background: none; border: 1px solid var(--bd);
-    border-radius: 6px; padding: 6px 10px; font-size: 0.78rem; margin-top: 0; color: var(--t-error);
+    align-self: flex-start; border-radius: var(--radius-full);
+    padding: 6px 12px; font-size: 0.78rem; margin-top: 0; color: var(--t-error);
   }
   .add-btn {
-    align-self: flex-start; padding: 8px 12px; font-size: 0.85rem; margin-top: 0;
+    align-self: flex-start; border-radius: var(--radius-full);
+    padding: 8px 14px; font-size: 0.85rem; margin-top: 0;
   }
 </style>
