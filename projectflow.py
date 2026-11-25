@@ -10944,6 +10944,11 @@ function filterAliases(q) {{
             fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
             zen_shortcut = QShortcut(QKeySequence("Ctrl+F11"), self)
             zen_shortcut.activated.connect(self.toggle_zen_mode)
+            # self.close() (not QApplication.quit()) so the existing closeEvent() guard
+            # still runs — confirms discarding unsaved Code Editor changes, flushes any
+            # pending Muya autosave, and stops every open terminal tab's ttyd subprocess.
+            quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
+            quit_shortcut.activated.connect(self.close)
             # Optional configurable Dictate shortcut (settings['speechnote_shortcut'],
             # see Settings -> Integrations) — empty QKeySequence if unset, which never
             # fires. _apply_settings() updates this shortcut's key live via setKey()

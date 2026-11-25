@@ -10,6 +10,7 @@ All notable changes to ProjectFlow are documented here. This project doesn't use
   - Deliberately excludes any command-executing launcher type (alias/run/terminal/npm/ssh/rsync/etc.) and the dynamic AI/Project Documents/Tagged Files categories (the latter for a real performance reason — it shells out to `baloosearch6` per project, and the former two can never carry `added_at` in the first place since they're computed fresh from disk every render, never persisted).
   - Fixed two pre-existing strict-tuple-unpacking sites (`build_main_content()`'s item renderer, `open_all_in_group()`) that would have raised `ValueError` the moment any item anywhere carried this new 4th element.
   - New icon assets: `assets/tab-icons/allresources.{svg,png}`.
+- **Ctrl+Q quits the window** — a plain global shortcut alongside the existing F11/Ctrl+F11/Ctrl+E/Ctrl+S ones, bound to `self.close()` (not `QApplication.quit()`) so it still goes through the existing `closeEvent()` guard: confirming discarding unsaved Code Editor changes, flushing any pending Muya autosave, and stopping every open terminal tab's ttyd subprocess.
 
 ### Changed
 - **"All To-Dos" renamed to "To-Dos"** in the viewer tab row, the Settings → Features checklist, and the Help viewer — now reads clearly alongside the per-project "To-Do" tab (To-Do / To-Dos) rather than echoing "All" twice once "All Projects" exists alongside it. Purely a label change: the internal mode id (`alltodo`) and every settings key are unchanged, so existing tab-order/hidden-tab preferences carry over with no migration.
