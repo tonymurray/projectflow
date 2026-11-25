@@ -65,6 +65,7 @@ done
 FILES_PYTHON+="]"
 
 python3 << EOF
+import datetime
 import json
 import os
 import re
@@ -143,7 +144,7 @@ for src in files_to_upload:
         skipped += 1
         continue
     stem = os.path.splitext(filename)[0]
-    project_files.append([titleize_stem(stem), target, "default"])
+    project_files.append([titleize_stem(stem), target, "default", datetime.datetime.now().isoformat()])
     existing_paths.add(target)
     uploaded += 1
 

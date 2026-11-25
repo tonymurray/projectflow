@@ -63,6 +63,7 @@ FILES_PYTHON+="]"
 
 # Add files to "Added Resources" category in COLUMN_1
 python3 << EOF
+import datetime
 import json
 import sys
 import os
@@ -114,7 +115,7 @@ for filepath in files_to_add:
                 app = "gwenview"
             else:
                 app = "default"
-        added_resources.append([display_name, filepath, app])
+        added_resources.append([display_name, filepath, app, datetime.datetime.now().isoformat()])
         added += 1
 
 try:

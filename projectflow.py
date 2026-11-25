@@ -3728,7 +3728,8 @@ class ProjectFlowApp(QMainWindow):
         viewer_tab_defs = {
             "notes": "Notes",
             "todo": "To-Do",
-            "alltodo": "All To-Dos",
+            "alltodo": "To-Dos",
+            "allresources": "All Projects",
             "code": "Editor",
             "console": "Terminal",
             "webview": "Web",
@@ -4417,7 +4418,7 @@ class ProjectFlowApp(QMainWindow):
             added = 0
             for name, path, app in selected:
                 if path not in existing_paths:
-                    doc_items.append([name, path, app])
+                    doc_items.append([name, path, app, datetime.datetime.now().isoformat()])
                     added += 1
 
             self.config_folder_path = current_path[0]
@@ -4806,8 +4807,16 @@ class ProjectFlowApp(QMainWindow):
             self._proj_folder_path.setText(folder_path)
 
         selected_by_category = {}
+        now_iso = datetime.datetime.now().isoformat()
         for cb, category, item in checkbox_entries:
             if cb.isChecked():
+                # Stamp added_at once here, at the point an item is actually selected —
+                # item is a fresh 3-element [name, path, app] list built by
+                # _detect_project_indicators()/_build_dev_shortcut_suggestions() for this
+                # dialog alone, not shared with any existing stored item, so mutating it
+                # in place is safe.
+                if len(item) == 3:
+                    item.append(now_iso)
                 selected_by_category.setdefault(category, []).append(item)
 
         doc_items = selected_by_category.pop("Docs", None)
@@ -4835,7 +4844,7 @@ class ProjectFlowApp(QMainWindow):
                 if dev_cat is None:
                     dev_cat = []
                     self.COLUMN_1.append({"Development": dev_cat})
-                dev_cat.append([alias_name, f"{alias_name} {folder_path}", "alias"])
+                dev_cat.append([alias_name, f"{alias_name} {folder_path}", "alias", now_iso])
                 added += 1
                 alias_created = True
             else:
@@ -4851,7 +4860,7 @@ class ProjectFlowApp(QMainWindow):
                 if links_cat is None:
                     links_cat = []
                     self.COLUMN_1.append({"Links": links_cat})
-                links_cat.append([website_title or "Project website", website, "firefox"])
+                links_cat.append([website_title or "Project website", website, "firefox", now_iso])
                 added += 1
             if website_pin_checked:
                 self.config_webview_url = website
@@ -5449,12 +5458,13 @@ class ProjectFlowApp(QMainWindow):
             [""] + self._ordered_tab_ids("launcher_tab_order", launcher_tab_ids, self._enabled_launcher_tab_ids())
         )
         viewer_tab_canonical = list(self._TAB_ORDER_CONFIG[DraggableTabButton.VIEWER_TAB_MIME][1])
-        # "alltodo" is excluded from this dropdown deliberately — its content is
-        # identical regardless of which project is "current," so a per-project
-        # pinned default would never carry its usual meaning (and load_notes()'s own
-        # config_column2_default whitelist deliberately omits it too, so picking it
-        # here would silently never take effect on a real subsequent project switch).
-        viewer_tab_valid = [t for t in viewer_tab_canonical if t != "alltodo" and self._is_viewer_tab_enabled(t)]
+        # "alltodo"/"allresources" are excluded from this dropdown deliberately — their
+        # content is identical regardless of which project is "current," so a
+        # per-project pinned default would never carry its usual meaning (and
+        # load_notes()'s own config_column2_default whitelist deliberately omits both
+        # too, so picking either here would silently never take effect on a real
+        # subsequent project switch).
+        viewer_tab_valid = [t for t in viewer_tab_canonical if t not in ("alltodo", "allresources") and self._is_viewer_tab_enabled(t)]
         self._proj_default_viewer.clear()
         self._proj_default_viewer.addItems(
             [""] + self._ordered_tab_ids("viewer_tab_order", viewer_tab_canonical, viewer_tab_valid, project_order=getattr(self, 'config_viewer_tab_order', None)) + ["help"]
@@ -5824,21 +5834,28 @@ class ProjectFlowApp(QMainWindow):
                 break
 
     def _add_item_to_config(self, col_idx, category_name, name, path, app):
-        """Add a new item to a category"""
+        """Add a new item to a category. Stamps a 4th array element, added_at (an ISO
+        datetime string), marking genuine creation time — the one signal the "All
+        Projects" cross-project viewer (_get_recent_resource_items()) ranks by. Every
+        other read site indexes items positionally (item[0]/item[1]/item[2]), so this
+        extra element is otherwise inert."""
         column = self.COLUMN_1
         for category_dict in column:
             if category_name in category_dict:
-                category_dict[category_name].append([name, path, app or "kate"])
+                category_dict[category_name].append([name, path, app or "kate", datetime.datetime.now().isoformat()])
                 break
 
     def _update_item_in_config(self, col_idx, category_name, item_idx, name, path, app):
-        """Update an existing item in the config"""
+        """Update an existing item in the config. Preserves any trailing elements
+        (added_at) the item already had — editing isn't a new "add", so this must NOT
+        stamp a fresh timestamp or silently drop the existing one."""
         column = self.COLUMN_1
         for category_dict in column:
             if category_name in category_dict:
                 items = category_dict[category_name]
                 if item_idx is not None and item_idx < len(items):
-                    items[item_idx] = [name, path, app or "kate"]
+                    existing = items[item_idx]
+                    items[item_idx] = [name, path, app or "kate"] + list(existing[3:])
                 break
 
     def _delete_item_from_dialog(self, col_idx, category_name, item_idx, tree, dialog):
@@ -8822,6 +8839,56 @@ StartupNotify=true
             return [(idx, text) for idx, text, _done in items]
         return [text for _idx, text, _done in items]
 
+    def _get_recent_resource_items(self, config_path, limit=5):
+        """Read-only: up to `limit` most-recently-added static launcher items (any real
+        category) for an ARBITRARY other project — opens config_path's own JSON
+        directly, mirroring _get_project_todo_items()'s established arbitrary-project
+        read pattern; never touches self.COLUMN_1. Used by the "All Projects" cross-
+        project aggregator (_refresh_allresources_view()).
+
+        Only items carrying a stored added_at (the 4th array element, written by
+        _add_item_to_config() and every other append site — see CLAUDE.md) are
+        eligible. An item that predates this feature, or hasn't been re-saved since,
+        has nothing to rank by and is excluded outright — never shown with a
+        guessed/fake date. Editing an existing item preserves its added_at
+        (_update_item_in_config()), so only genuine creation ever stamps a fresh one.
+
+        Excludes every COMMAND_EXECUTING_APPS type (alias/run/terminal/npm/ssh/
+        rsync/etc. — see _app_executes_command()): open_in_app()'s shared-project
+        trust check is scoped to self.current_config_file, not necessarily the
+        project that actually owns the row being clicked in this aggregator, so the
+        simplest correct fix is to never surface a command-executing item here at
+        all, rather than patch that check. Also excludes the AI/Project Documents
+        dynamic categories as a structural consequence, not a filter — those are
+        computed fresh from a filesystem scan on every render and never persisted
+        into the project JSON, so their items can never carry added_at in the first
+        place.
+
+        Returns [(display_name, path, app, category_name, added_at), ...] sorted
+        newest-first (ISO-8601 strings sort correctly as plain strings), truncated to
+        `limit`."""
+        try:
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            return []
+        columns = data.get('columns') or [[]]
+        column1 = columns[0] if columns else []
+        results = []
+        for category_dict in column1:
+            if not isinstance(category_dict, dict):
+                continue
+            for category_name, items in category_dict.items():
+                for item in items:
+                    if len(item) < 4:
+                        continue
+                    display_name, path, app, added_at = item[0], item[1], item[2], item[3]
+                    if self._app_executes_command(app):
+                        continue
+                    results.append((display_name, path, app, category_name, added_at))
+        results.sort(key=lambda r: r[4], reverse=True)
+        return results[:limit]
+
     def _get_or_create_todo_file(self):
         """Path to this project's todo.md, inside its own documents subfolder —
         creating it on first use, same lazy-creation philosophy as the Documents
@@ -10177,10 +10244,10 @@ function filterAliases(q) {{
                 # old configs that still have this saved rather than silently ignoring them.
                 if self.config_column2_default == "examples":
                     self.config_column2_default = "help"
-                # "alltodo" is deliberately NOT in this whitelist — its content is the
-                # same regardless of which project is current, so there is no sensible
-                # per-project "default" for it (see the matching exclusion on the
-                # Project Settings "Default Viewer" dropdown).
+                # "alltodo"/"allresources" are deliberately NOT in this whitelist — their
+                # content is the same regardless of which project is current, so there
+                # is no sensible per-project "default" for either (see the matching
+                # exclusion on the Project Settings "Default Viewer" dropdown).
                 if self.config_column2_default in ("pdf", "webview", "image", "help", "console", "folder", "time", "notes", "code", "todo"):
                     self.column2_mode = self.config_column2_default
 
@@ -12272,7 +12339,7 @@ function filterAliases(q) {{
     # Project Settings dropdowns, so there is exactly one place each row's default order lives.
     _TAB_ORDER_CONFIG = {
         DraggableTabButton.LAUNCHER_TAB_MIME: ("launcher_tab_order", ["docs", "resources", "files", "apps"]),
-        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "todo", "alltodo", "code", "console", "webview", "pdf", "image", "time"]),
+        DraggableTabButton.VIEWER_TAB_MIME: ("viewer_tab_order", ["notes", "todo", "alltodo", "allresources", "code", "console", "webview", "pdf", "image", "time"]),
     }
 
     def _ordered_tab_ids(self, setting_key, canonical_order, valid_ids, project_order=None):
@@ -14077,12 +14144,14 @@ function filterAliases(q) {{
                         # at true index so drag/edit/delete stay correct for the items shown.
                         if id(item) in getattr(self, '_grouped_hidden_item_ids', ()):
                             continue
-                        # Handle both 2-tuple and 3-tuple formats
+                        # Handle 2-tuple, 3-tuple, and 4-tuple (with added_at) formats —
+                        # index-based, not strict unpacking, since a 4th added_at element
+                        # (see _add_item_to_config()) would otherwise raise ValueError here.
                         if len(item) == 2:
                             display_name, path = item
                             app = "kate"  # default
                         else:
-                            display_name, path, app = item
+                            display_name, path, app = item[0], item[1], item[2]
 
                         # True origin first: a real category's items map to themselves; AI
                         # items and the pinned-notes entry have no real category backing them
@@ -14918,7 +14987,8 @@ function filterAliases(q) {{
                 viewer_tab_defs = {
                     "notes":   ("Notes",    "Project notes"),
                     "todo":    ("To-Do",    "Project to-do list"),
-                    "alltodo": ("All To-Dos", "Outstanding tasks across every project"),
+                    "alltodo": ("To-Dos", "Outstanding tasks across every project"),
+                    "allresources": ("All Projects", "Recently added documentation/resources across every project"),
                     "code":    ("Editor",   "Code editor"),
                     "console": ("Terminal", "Embedded console"),
                     "webview": ("Web",      "Web viewer"),
@@ -15698,6 +15768,8 @@ function filterAliases(q) {{
                 self._build_time_viewer()
                 # Build the cross-project All To-Dos viewer
                 self._build_all_todos_viewer()
+                # Build the cross-project All Projects (recently added resources) viewer
+                self._build_allresources_viewer()
 
                 # Notes viewer container — notes_panel is reparented here in Focus layout
                 self.notes_viewer_container = QWidget()
@@ -15716,6 +15788,7 @@ function filterAliases(q) {{
                 self.column2_stack_layout.addWidget(self.code_container)
                 self.column2_stack_layout.addWidget(self.todo_container)
                 self.column2_stack_layout.addWidget(self.alltodo_container)
+                self.column2_stack_layout.addWidget(self.allresources_container)
                 self.column2_stack_layout.addWidget(self.settings_container)
 
                 # Show correct container based on mode
@@ -15730,6 +15803,7 @@ function filterAliases(q) {{
                 self.code_container.hide()
                 self.todo_container.hide()
                 self.alltodo_container.hide()
+                self.allresources_container.hide()
                 self.settings_container.hide()
                 if self.column2_mode == "pdf":
                     self.pdf_container.show()
@@ -15758,6 +15832,9 @@ function filterAliases(q) {{
                 elif self.column2_mode == "alltodo":
                     self.alltodo_container.show()
                     self._refresh_all_todos_view()
+                elif self.column2_mode == "allresources":
+                    self.allresources_container.show()
+                    self._refresh_allresources_view()
                 elif self.column2_mode == "settings":
                     self.settings_container.show()
                     # Populate only if not already loaded for this project — see
@@ -16633,12 +16710,14 @@ function filterAliases(q) {{
         opened_count = 0
 
         for item in items:
-            # Handle both 2-tuple and 3-tuple formats
+            # Handle 2-tuple, 3-tuple, and 4-tuple (with added_at) formats — index-based,
+            # not strict unpacking, since a 4th added_at element (see _add_item_to_config())
+            # would otherwise raise ValueError here.
             if len(item) == 2:
                 display_name, path = item
                 app = "kate"
             else:
-                display_name, path, app = item
+                display_name, path, app = item[0], item[1], item[2]
 
             try:
                 self.open_in_app(path, app)
@@ -17783,6 +17862,222 @@ function filterAliases(q) {{
 
         self._alltodo_list_layout.addStretch(1)
         self._refresh_alltodo_project_picker()
+
+    def _build_allresources_viewer(self):
+        """Build the "All Projects" aggregated viewer panel — recently added static
+        launcher items (Documentation/Resources/any real category) across every known
+        project (_all_known_project_paths()), read via _get_recent_resource_items().
+        A direct structural mirror of _build_all_todos_viewer(), minus the scope/show-
+        completed toggles and the Add Task row — this tab has no meaningful "current
+        project only" mode (the whole point is cross-project) and no "add" action of
+        its own (a resource is added via the normal Add Launcher flow, not from here).
+        Plain native-widget tree (item rows built by
+        _build_allresources_project_group()), same reasoning as All To-Dos: many
+        projects' items shown at once, not one document being live-edited."""
+        self.allresources_container = QWidget()
+        outer = QVBoxLayout(self.allresources_container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {self.t('bg_button')};
+                color: {self.t('fg_primary')};
+                border: 1px solid {self.t('border')};
+                border-radius: 3px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.t('bg_button_hover')};
+                color: {self.t('fg_on_dark')};
+            }}
+        """
+        # Stashed so _build_allresources_project_group() (called again and again on
+        # every refresh) can style its own small "open in new window" button
+        # identically without redeclaring the stylesheet string — same convention
+        # _alltodo_btn_style already uses.
+        self._allresources_btn_style = btn_style
+
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(6)
+
+        refresh_btn = QPushButton("↻ Refresh")
+        refresh_btn.setStyleSheet(btn_style)
+        refresh_btn.setToolTip("Re-scan every known project for recently added items")
+        refresh_btn.clicked.connect(self._refresh_allresources_view)
+        toolbar_layout.addWidget(refresh_btn)
+
+        toolbar_layout.addStretch()
+
+        outer.addWidget(toolbar_widget)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {self.t('border')};")
+        outer.addWidget(sep)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll_content = QWidget()
+        self._allresources_list_layout = QVBoxLayout(scroll_content)
+        self._allresources_list_layout.setContentsMargins(8, 8, 8, 8)
+        self._allresources_list_layout.setSpacing(10)
+        scroll.setWidget(scroll_content)
+        outer.addWidget(scroll, 1)
+
+    def _format_recency(self, iso_str):
+        """Plain "x ago" formatting for an added_at ISO string — mirrors the mobile
+        app's own timeAgo() in spirit (lib/store.js), kept local/simple since this is
+        the only desktop call site that needs it. Falls back to the raw string on a
+        malformed/unparseable value rather than raising."""
+        try:
+            then = datetime.datetime.fromisoformat(iso_str)
+        except (ValueError, TypeError):
+            return iso_str
+        delta = datetime.datetime.now() - then
+        seconds = delta.total_seconds()
+        if seconds < 60:
+            return "just now"
+        minutes = int(seconds // 60)
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = int(minutes // 60)
+        if hours < 24:
+            return f"{hours}h ago"
+        days = int(hours // 24)
+        return f"{days}d ago"
+
+    def _build_allresources_project_group(self, path, items):
+        """One project's group of recently-added items for the "All Projects"
+        aggregator — a header (project-name button + a bundled "open in new window"
+        icon, reusing _open_new_window_icon() exactly as _build_alltodo_project_group()
+        does) and one row per item, styled identically to a normal launcher item
+        button (get_item_button_style()) so it reads as "a real launcher you can
+        click", not a to-do-style pill — unlike To-Do rows, each row here IS the
+        resource itself, clicked to open it directly. `items` is the
+        (display_name, path, app, category_name, added_at) tuple list from
+        _get_recent_resource_items(path), already newest-first."""
+        group = QWidget()
+        group_layout = QVBoxLayout(group)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.setSpacing(6)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+
+        name_btn = QPushButton(self.get_display_name_for_config_path(path))
+        name_btn.setFlat(True)
+        name_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        name_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {self.t('fg_primary')};
+                font-weight: bold;
+                font-size: 13px;
+                text-align: left;
+                border: none;
+                padding: 2px 0;
+            }}
+            QPushButton:hover {{
+                color: {self.t('bg_category')};
+                text-decoration: underline;
+            }}
+        """)
+        name_btn.clicked.connect(lambda checked=False, p=path: self._allresources_open_project(p))
+        header_layout.addWidget(name_btn)
+        header_layout.addStretch()
+
+        open_btn = QPushButton()
+        open_btn.setIcon(self._open_new_window_icon())
+        open_btn.setIconSize(QSize(16, 16))
+        open_btn.setFixedWidth(26)
+        open_btn.setToolTip("Open this project in a new window")
+        open_btn.setStyleSheet(getattr(self, '_allresources_btn_style', ''))
+        open_btn.clicked.connect(lambda checked=False, p=path: self.open_config_in_new_window(p))
+        header_layout.addWidget(open_btn)
+
+        group_layout.addWidget(header)
+
+        for display_name, item_path, app, category_name, added_at in items:
+            row = QPushButton()
+            row.setMinimumHeight(30)
+            row.setStyleSheet(self.get_item_button_style())
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            app_icon = ""
+            icon_key = self._icon_key_for_app(app, item_path)
+            svg_icon_path = None
+            if icon_key in self.APP_INFO:
+                icon_val = self.APP_INFO[icon_key]["icon"]
+                if icon_val.endswith(('.svg', '.png', '.jpg')):
+                    candidate = os.path.join(self.script_dir, icon_val)
+                    if os.path.isfile(candidate):
+                        svg_icon_path = candidate
+                else:
+                    app_icon = icon_val + " "
+
+            row.setText(f"{app_icon}{display_name}  ·  {category_name}  ·  {self._format_recency(added_at)}")
+            if svg_icon_path:
+                row.setIcon(QIcon(svg_icon_path))
+                row.setIconSize(QSize(16, 16))
+            row.setToolTip(f"[{app}] {item_path}")
+            row.clicked.connect(
+                lambda checked=False, b=row, p=item_path, a=app, n=display_name: self.on_item_clicked(b, p, a, n)
+            )
+            group_layout.addWidget(row)
+
+        return group
+
+    def _allresources_open_project(self, path):
+        """Project-name header button — switches the whole app to that project, with
+        NO forced viewer/launcher-tab change (unlike _alltodo_open_project_todo(),
+        which forces the "todo" tab). Unlike To-Do, there's no single "the"
+        destination for Docs/Resources — Standard layout's Group-by-Type toggle vs.
+        Focus layout's two separate Launcher Tab Bar tabs — so forcing one would just
+        be guessing which; landing wherever that project's own saved/pinned state
+        already points is the honest, simplest choice, same "just open it" precedent
+        open_config_in_new_window() already uses."""
+        self.switch_to_config(path)
+
+    def _refresh_allresources_view(self):
+        """Full rebuild-from-disk of the "All Projects" list — called on every entry
+        into the "allresources" viewer tab and by its own Refresh button.
+        Deliberately no QFileSystemWatcher, no scope toggle: always scans every known
+        project (_all_known_project_paths()) — same reasoning as
+        _refresh_all_todos_view(), a manual Refresh is the established convention for
+        a view this cheap to just re-read on demand, and a "current project only"
+        mode would show at most 5 items here, adding little."""
+        if not hasattr(self, '_allresources_list_layout'):
+            return
+        while self._allresources_list_layout.count():
+            item = self._allresources_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        any_items = False
+        for path in self._all_known_project_paths():
+            items = self._get_recent_resource_items(path)
+            if not items:
+                continue
+            any_items = True
+            self._allresources_list_layout.addWidget(self._build_allresources_project_group(path, items))
+
+        if not any_items:
+            empty = QLabel(
+                "No recently added items yet. Items created before this feature shipped "
+                "won't retroactively appear — only newly added documentation/resources "
+                "show up here going forward."
+            )
+            empty.setStyleSheet(f"color: {self.t('fg_secondary')}; font-size: 12px; padding: 8px 0;")
+            empty.setWordWrap(True)
+            self._allresources_list_layout.addWidget(empty)
+
+        self._allresources_list_layout.addStretch(1)
 
     @staticmethod
     def _parse_csv_duration(value):
@@ -19240,6 +19535,8 @@ function filterAliases(q) {{
             self.todo_container.hide()
         if hasattr(self, 'alltodo_container'):
             self.alltodo_container.hide()
+        if hasattr(self, 'allresources_container'):
+            self.allresources_container.hide()
         if hasattr(self, 'settings_container'):
             self.settings_container.hide()
 
@@ -19260,7 +19557,9 @@ function filterAliases(q) {{
         if hasattr(self, 'todo_container'):
             mode_info["todo"] = ("To-Do", "Project To-Do", self.todo_container)
         if hasattr(self, 'alltodo_container'):
-            mode_info["alltodo"] = ("All To-Dos", "All To-Dos", self.alltodo_container)
+            mode_info["alltodo"] = ("To-Dos", "To-Dos", self.alltodo_container)
+        if hasattr(self, 'allresources_container'):
+            mode_info["allresources"] = ("All Projects", "All Projects", self.allresources_container)
         if hasattr(self, 'settings_container'):
             mode_info["settings"] = ("Settings", "Project Settings", self.settings_container)
 
@@ -19299,6 +19598,9 @@ function filterAliases(q) {{
             # an expensive Muya init, so no reload-key gate is needed here unlike
             # Notes/To-Do above.
             self._refresh_all_todos_view()
+        elif mode == "allresources":
+            # Same reasoning as "alltodo" above — a cheap read, no reload-key gate needed.
+            self._refresh_allresources_view()
         elif mode == "folder":
             self.populate_folder_browser(self.folder_current_path)
         elif mode == "time":
@@ -26589,7 +26891,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
                 app = "default"
 
         # Add the entry
-        added_resources.append([display_name, file_path, app])
+        added_resources.append([display_name, file_path, app, datetime.datetime.now().isoformat()])
 
         # Save the config
         try:
@@ -26701,7 +27003,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
         else:
             app = "default"
 
-        doc_category.append([display_name, file_path, app])
+        doc_category.append([display_name, file_path, app, datetime.datetime.now().isoformat()])
 
         try:
             with open(project_path, 'w') as f:
@@ -26853,7 +27155,7 @@ blockquote {{ border-left:3px solid {border}; margin-left:0; padding-left:16px; 
 
         stem = os.path.splitext(filename)[0]
         display_name = self._titleize_stem(stem)
-        files_category.append([display_name, target, "default"])
+        files_category.append([display_name, target, "default", datetime.datetime.now().isoformat()])
 
         try:
             with open(project_path, 'w') as f:

@@ -2,6 +2,19 @@
 
 All notable changes to ProjectFlow are documented here. This project doesn't use semantic versioning; entries are grouped by date.
 
+## 2026-11-25 (Desktop: new "All Projects" cross-project recently-added resources viewer; "All To-Dos" renamed to "To-Dos"; Docs/Documentation naming corrected)
+
+### Added
+- **"All Projects" viewer tab** (`column2_mode == "allresources"`, positioned right after To-Dos): a cross-project "what's new" glance — the newest documentation/resource launcher items across every known project, up to 5 per project, newest first. Click an item to open it directly; click a project's name to switch to that project (landing on whatever viewer that project's own state already points to, not a forced tab — there's no single "the" destination for Docs/Resources the way To-Do has one). Modeled directly on the To-Dos aggregator's own architecture (plain rebuild-on-demand native-widget tree, no file watcher), hideable via Settings → Features → Viewer Tabs, excluded from the per-project Default Viewer dropdown for the same reason To-Dos already is (content doesn't depend on which project is current).
+  - **New per-item `added_at` field**: an optional 4th array element on a launcher item (an ISO datetime string), stamped at genuine creation time — every in-app "add a launcher" path, Kickstart, the two Folder-browser "add to an arbitrary other project" dialogs, and both Dolphin service-menu scripts. Editing an existing item preserves it rather than bumping or dropping it. Items that predate this feature, or were never re-saved since, simply have nothing to rank by and don't appear — no backdating, no guessed dates.
+  - Deliberately excludes any command-executing launcher type (alias/run/terminal/npm/ssh/rsync/etc.) and the dynamic AI/Project Documents/Tagged Files categories (the latter for a real performance reason — it shells out to `baloosearch6` per project, and the former two can never carry `added_at` in the first place since they're computed fresh from disk every render, never persisted).
+  - Fixed two pre-existing strict-tuple-unpacking sites (`build_main_content()`'s item renderer, `open_all_in_group()`) that would have raised `ValueError` the moment any item anywhere carried this new 4th element.
+  - New icon assets: `assets/tab-icons/allresources.{svg,png}`.
+
+### Changed
+- **"All To-Dos" renamed to "To-Dos"** in the viewer tab row, the Settings → Features checklist, and the Help viewer — now reads clearly alongside the per-project "To-Do" tab (To-Do / To-Dos) rather than echoing "All" twice once "All Projects" exists alongside it. Purely a label change: the internal mode id (`alltodo`) and every settings key are unchanged, so existing tab-order/hidden-tab preferences carry over with no migration.
+- **Docs/Documentation naming corrected in `CLAUDE.md`** to match what the code actually does: the real category the app creates and files things into is literally named **"Docs"**; "Documentation" is only ever recognized as a legacy name on a project that already has one from before, never created going forward. Documentation-only fix — no code or stored-data behavior changed, so nothing about existing projects is affected either way.
+
 ## 2026-11-19 (Mobile: "To-Dos" tab, project nav drawer, Material 3 visual redesign; Desktop: Work Folder rename + combined Documents option)
 
 ### Added
